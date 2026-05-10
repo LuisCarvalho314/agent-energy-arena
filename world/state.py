@@ -1,0 +1,73 @@
+"""Core dataclasses for world state. Kept minimal in the skeleton slice."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class Tile:
+    id: str
+    type: str
+    x: int
+    y: int
+    built_day: int
+    operational: bool = True
+    current_output_kw: float = 0.0
+
+
+@dataclass
+class Well:
+    id: str
+    type: str  # "production" | "injection"
+    x: int
+    y: int
+    target_z: int
+    drilled_day: int
+    setpoint_rate_bbl_day: float = 0.0
+    current_rate_bbl_day: float = 0.0
+    cumulative_produced_bbl: float = 0.0
+
+
+@dataclass
+class WorldState:
+    seed: int
+    day: int = 0
+    hour: int = 0
+    treasury: float = 0.0
+    population: int = 0
+    happiness: float = 1.0
+    tiles: list[Tile] = field(default_factory=list)
+    wells: list[Well] = field(default_factory=list)
+    reservoirs_revealed: list[dict[str, Any]] = field(default_factory=list)
+    active_events: list[dict[str, Any]] = field(default_factory=list)
+
+    weather_now: dict[str, float] = field(
+        default_factory=lambda: {
+            "solar_irradiance": 0.0,
+            "wind_speed_mps": 0.0,
+            "wind_direction_deg": 0.0,
+            "cloud_factor": 0.0,
+        }
+    )
+    power_now: dict[str, Any] = field(
+        default_factory=lambda: {
+            "demand_kw": 0.0,
+            "supply_kw": 0.0,
+            "balance_state": "balanced",
+            "by_source_kw": {},
+        }
+    )
+    today_summary_so_far: dict[str, float] = field(
+        default_factory=lambda: {
+            "tax_revenue": 0.0,
+            "power_revenue": 0.0,
+            "oil_revenue": 0.0,
+            "opex": 0.0,
+            "fuel_cost": 0.0,
+            "carbon_cost": 0.0,
+            "blackout_hours": 0.0,
+            "renewable_share": 0.0,
+        }
+    )

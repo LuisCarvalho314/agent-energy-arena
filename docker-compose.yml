@@ -1,0 +1,11 @@
+services:
+  world:
+    build: .
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      WORLD_SEED: "${WORLD_SEED:-42}"
+      GAME_DAYS: "${GAME_DAYS:-3650}"
+      MANUAL_GAME_DAYS: "${MANUAL_GAME_DAYS:-365}"
+    volumes:
+      - ./runs:/app/runs

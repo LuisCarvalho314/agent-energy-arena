@@ -1,5 +1,5 @@
 ---
-Status: needs-triage
+Status: done
 ---
 
 # 01 — Server skeleton + determinism foundation
@@ -36,3 +36,41 @@ The `/step` endpoint accepts a `days` parameter in the range `[1, 7]`, default `
 ## Blocked by
 
 None — can start immediately.
+
+## Comments
+
+### Iter 1 — 2026-05-10
+
+Implemented. All acceptance criteria met except the Docker-up timing one
+(not measured locally; image hasn't been benchmarked on a developer laptop).
+
+**Decisions:**
+- Sim RNG advances per simulated day via one mandatory `standard_normal()`
+  draw at the end of `_advance_one_day`, locking in `step(7) ≡ step(1)*7`
+  before any dynamics exist.
+- Two RNGs (`sim_rng`, `forecast_rng`) come from `SeedSequence(seed).spawn(2)`.
+- Action log lives at `runs/{run_id}/actions.jsonl`; both successes and
+  rejections are appended. The handler logs failures *after* `world.step`
+  raises; Pydantic-422 validation rejections don't reach the handler and
+  aren't logged (acceptable since they never touched the world).
+- The world's body-validation range `[1,7]` is enforced both by the Pydantic
+  body model (HTTP 422 fast-path) and by `World.step` (defence in depth for
+  internal callers).
+- UI is plain HTML + canvas + vanilla JS, no build step. Polls `/state`
+  every 500ms; "Next Day" button is rendered disabled per the slice spec.
+
+**Files:**
+- `pyproject.toml`, `.gitignore`, `Dockerfile`, `docker-compose.yml`
+- `world/{__init__,config,state,sim,catalog,action_log,api}.py`
+- `world/ui/{index.html,style.css,app.js}`
+- `world/tests/{__init__,test_determinism,test_api_smoke}.py`
+
+**Notes for next iteration:**
+- The `app = create_app()` module-level instance creates a `runs/<id>/`
+  directory at import time. That's intentional for `uvicorn world.api:app`
+  but pollutes the working directory if anyone imports the module ad-hoc.
+  Consider lazy ActionLog instantiation if it bites.
+- No `Makefile` yet (`make play`, `make eval`, `make score`); brief mentions
+  one but it isn't an acceptance criterion for this slice.
+- No score, summary, history, events, tiles, wells, reservoirs endpoints —
+  those land with their owning issues (02, 13, 11, etc.).
