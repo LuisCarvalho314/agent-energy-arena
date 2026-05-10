@@ -20,6 +20,7 @@ import numpy as np
 from world.catalog import TILE_CATALOG, is_buildable
 from world.config import Config, load_config
 from world.grid import has_road_adjacency, in_bounds
+from world.population import update_population
 from world.state import Tile, WorldState
 
 
@@ -225,6 +226,10 @@ class World:
         if opex_total:
             self.state.treasury -= opex_total
             self.state.today_summary_so_far["opex"] = opex_total
+
+        # Population dynamics + tax revenue (brief §4.8). Deterministic; no
+        # RNG draws, so the sim_rng contract below is unaffected.
+        update_population(self)
 
         # One mandatory daily draw locks in the "RNG advances per simulated
         # day" contract — even an empty world advances the stream.

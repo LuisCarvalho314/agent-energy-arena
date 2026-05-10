@@ -213,6 +213,10 @@ def test_daily_opex_deducted_during_step():
     # House: $20/day OPEX. Road: $0.
     w.build("road", cx + 1, cy)
     w.build("house", cx + 2, cy)
+    # Zero out population so tax revenue (slice 03) doesn't confound the OPEX
+    # delta we're asserting on. Town hall jobs(30) >= pop(0) and capacity > pop
+    # so the grow branch evaluates to growth=min(0,...,30)=0; pop stays at 0.
+    w.state.population = 0
     treasury_before = w.state.treasury
     w.step(days=1)
     # OPEX = 20 (house) + 0 (road) + 0 (town_hall) = 20.
@@ -224,6 +228,7 @@ def test_daily_opex_summary_field_populated():
     cx, cy = w.config.world_w // 2, w.config.world_h // 2
     w.build("road", cx + 1, cy)
     w.build("house", cx + 2, cy)  # $20/day
+    w.state.population = 0  # isolate OPEX from tax revenue.
     summary = w.step(days=3)
     # 3 days × $20 = $60.
     assert summary.summary["delta"] == pytest.approx(-60.0)
@@ -246,6 +251,7 @@ def test_step_size_invariance_with_tiles():
         b.step(days=1)
 
     assert a.state.treasury == b.state.treasury
+    assert a.state.population == b.state.population
     assert a.state.day == b.state.day == 7
     # And both RNG streams match.
     assert a.sim_rng.standard_normal() == b.sim_rng.standard_normal()

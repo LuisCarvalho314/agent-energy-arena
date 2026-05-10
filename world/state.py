@@ -49,6 +49,11 @@ class WorldState:
     reservoirs_revealed: list[dict[str, Any]] = field(default_factory=list)
     active_events: list[dict[str, Any]] = field(default_factory=list)
 
+    # Blackout hours from the previous simulated day. Drives the happiness
+    # penalty in `world.population.update_population`. Stays at 0.0 until the
+    # power-dispatch slice (05) starts populating it.
+    yesterday_blackout_hours: float = 0.0
+
     weather_now: dict[str, float] = field(
         default_factory=lambda: {
             "solar_irradiance": 0.0,
