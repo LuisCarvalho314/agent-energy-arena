@@ -21,7 +21,13 @@
     industrial: "#ff7a59",
     park: "#3fbf7f",
     pipeline: "#bdb6a8",
+    solar_farm: "#f5d76e",
+    wind_turbine: "#6dd5ed",
+    coal_plant: "#c97676",
+    gas_peaker: "#d09bff",
   };
+
+  const PLANT_TYPES = ["solar_farm", "wind_turbine", "coal_plant", "gas_peaker"];
 
   let cols = 32;
   let rows = 32;
@@ -148,7 +154,18 @@
   function renderBuildMenu() {
     if (!catalog) return;
     buildList.innerHTML = "";
-    const order = ["road", "house", "commercial", "industrial", "park", "pipeline"];
+    const order = [
+      "road",
+      "house",
+      "commercial",
+      "industrial",
+      "park",
+      "pipeline",
+      "solar_farm",
+      "wind_turbine",
+      "gas_peaker",
+      "coal_plant",
+    ];
     for (const tt of order) {
       const spec = catalog[tt];
       if (!spec) continue;
@@ -245,6 +262,93 @@
     }
   });
 
+  // Tab switching ---------------------------------------------------------
+  const tabButtons = document.querySelectorAll(".tab");
+  const tabPanels = document.querySelectorAll(".tabpanel");
+  for (const btn of tabButtons) {
+    btn.addEventListener("click", () => {
+      const target = btn.dataset.tab;
+      for (const b of tabButtons) b.classList.toggle("active", b === btn);
+      for (const p of tabPanels) p.classList.toggle("active", p.id === `tab-${target}`);
+    });
+  }
+
+  // Power tab rendering ---------------------------------------------------
+  const chartEl = document.getElementById("powerchart");
+  const plantListEl = document.getElementById("plantlist");
+
+  function renderPowerChart(supply, demand) {
+    if (!chartEl) return;
+    chartEl.innerHTML = "";
+    if (!supply || !demand || supply.length === 0) {
+      const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      t.setAttribute("x", "50%");
+      t.setAttribute("y", "50%");
+      t.setAttribute("fill", "#5a5d65");
+      t.setAttribute("text-anchor", "middle");
+      t.setAttribute("font-size", "12");
+      t.textContent = "no data — step a day to see hourly trace";
+      chartEl.appendChild(t);
+      return;
+    }
+    const W = 480;
+    const H = 200;
+    const padX = 28;
+    const padY = 8;
+    const maxY = Math.max(...supply, ...demand, 1) * 1.1;
+    const path = (series, color) => {
+      const pts = series.map((v, i) => {
+        const x = padX + (i / (series.length - 1)) * (W - padX * 2);
+        const y = H - padY - (v / maxY) * (H - padY * 2);
+        return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", pts.join(" "));
+      p.setAttribute("stroke", color);
+      p.setAttribute("stroke-width", "2");
+      p.setAttribute("fill", "none");
+      chartEl.appendChild(p);
+    };
+    // Y-axis label (max).
+    const lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    lbl.setAttribute("x", "4");
+    lbl.setAttribute("y", "14");
+    lbl.setAttribute("fill", "#5a5d65");
+    lbl.setAttribute("font-size", "10");
+    lbl.textContent = `${Math.round(maxY)} kW`;
+    chartEl.appendChild(lbl);
+    path(demand, "#ff7a59");
+    path(supply, "#4ea3ff");
+  }
+
+  function renderPlantList(allTiles) {
+    if (!plantListEl) return;
+    plantListEl.innerHTML = "";
+    const plants = allTiles.filter((t) => PLANT_TYPES.includes(t.type));
+    if (plants.length === 0) {
+      const li = document.createElement("li");
+      li.style.color = "#5a5d65";
+      li.style.fontSize = "0.8rem";
+      li.textContent = "no plants built";
+      plantListEl.appendChild(li);
+      return;
+    }
+    const caps = (catalog && Object.fromEntries(Object.entries(catalog).map(([k, v]) => [k, v.capacity_kw || 1]))) || {};
+    for (const p of plants) {
+      const cap = caps[p.type] || 1;
+      const out = p.current_output_kw || 0;
+      const pct = Math.min(100, (out / cap) * 100);
+      const li = document.createElement("li");
+      li.className = `plantrow ${p.type}`;
+      li.innerHTML = `
+        <span class="pl-name">${p.type} (${p.x},${p.y})</span>
+        <div class="pl-bar"><div class="pl-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+        <span class="pl-val">${Math.round(out)}/${cap} kW</span>
+      `;
+      plantListEl.appendChild(li);
+    }
+  }
+
   async function tick() {
     try {
       const res = await fetch("/state");
@@ -258,7 +362,11 @@
       els.treasury.textContent = Math.round(s.treasury).toLocaleString();
       els.population.textContent = s.population;
       els.happiness.textContent = s.happiness.toFixed(2);
-      els.balance.textContent = (s.power_now && s.power_now.balance_state) || "—";
+      const balanceState = (s.power_now && s.power_now.balance_state) || "—";
+      els.balance.textContent = balanceState;
+      els.balance.className = `balance-badge ${balanceState}`;
+      renderPowerChart(s.last_day_supply_kw_by_hour, s.last_day_demand_kw_by_hour);
+      renderPlantList(tiles);
       drawGrid();
     } catch (err) {
       // Server may not be up yet during boot — keep polling.

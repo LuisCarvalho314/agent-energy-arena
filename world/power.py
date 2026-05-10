@@ -1,14 +1,18 @@
-"""Hourly demand model (brief §4.3, with PRD's split-scope multipliers).
+"""Hourly demand + dispatch + balance-state model.
 
-`total_demand_kw(state, h)` is the per-hour total electric load. Sources:
+`total_demand_kw(state, h)` is the per-hour total electric load (brief §4.3
+with the PRD's split-scope event multipliers).
 
-  * Residential: `pop * PER_CAPITA_KW * hourly_factor(h)`
-  * Commercial: full demand 8 ≤ h < 20, 20% otherwise
-  * Industrial: continuous full demand
-  * Process loads (refinery + injection wells): always pass through
+`dispatch(plants, demand_kw, prev_outputs, weather, D, h)` runs the merit
+order from brief §4.4: must-take renewables → coal must-run → coal ramp by
+fuel cost → gas peakers ramp by fuel cost. Returns per-plant outputs,
+total supply, and an aggregate by source.
 
-Event multipliers, per the PRD's correction to the brief's bottom-line
-multipliers:
+`compute_balance_state(supply, demand)` returns one of "curtailment",
+"balanced", "brownout", "blackout" along with served/excess kWh — the
+thresholds match brief §4.4 with `R = supply / max(demand, 1)`.
+
+Event multipliers (PRD's correction to the brief's bottom-line multipliers):
 
   * Heatwave (1.40) multiplies *residential demand only* — A/C drives it.
   * Demand surprise (1.30) multiplies *commercial + industrial only*.
@@ -24,13 +28,33 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from world.catalog import TILE_CATALOG
+from world.weather import P_solar_kw, turbine_kw
 
 if TYPE_CHECKING:
-    from world.state import WorldState
+    from world.state import Tile, WorldState
 
 PER_CAPITA_KW: float = 0.333  # 8 kWh/day continuous; brief §4.3
 HEATWAVE_RESIDENTIAL_MULT: float = 1.40
 DEMAND_SURPRISE_IC_MULT: float = 1.30
+
+# Dispatch ramp/min-run (brief §4.4).
+COAL_RAMP_PER_HOUR: float = 0.10
+GAS_RAMP_PER_HOUR: float = 0.50
+COAL_MIN_RUN: float = 0.25
+
+# Balance-state thresholds (brief §4.4).
+R_CURTAILMENT: float = 1.15
+R_BALANCED: float = 0.95
+R_BROWNOUT: float = 0.70
+
+# Per-hour happiness penalties (brief §4.4 / PRD AC for slice 05).
+BLACKOUT_HAPPINESS_PENALTY: float = 0.20
+BROWNOUT_HAPPINESS_COEF: float = 0.05  # multiplied by (1 - R)
+
+# Plant types that participate in dispatch.
+RENEWABLE_TYPES: frozenset[str] = frozenset({"solar_farm", "wind_turbine"})
+FOSSIL_TYPES: frozenset[str] = frozenset({"coal_plant", "gas_peaker"})
+PLANT_TYPES: frozenset[str] = RENEWABLE_TYPES | FOSSIL_TYPES
 
 
 def hourly_factor(h: int) -> float:
@@ -90,3 +114,117 @@ def total_demand_kw(state: WorldState, h: int) -> float:
     )
     process = _process_loads_kw(state)
     return float(res + ic + process)
+
+
+# -- Dispatch ----------------------------------------------------------------
+
+
+def dispatch(
+    plants: list[Tile],
+    demand_kw: float,
+    prev_outputs: dict[str, float],
+    weather: dict[str, float],
+    D: int,
+    h: int,
+) -> tuple[dict[str, float], float, dict[str, float]]:
+    """Run the merit-order dispatch for one hour.
+
+    Returns (outputs_by_plant_id, supply_kw, by_source_kw). by_source_kw
+    aggregates outputs into the four canonical keys: "solar", "wind",
+    "coal", "gas". Non-operational plants are zeroed; they neither
+    consume ramp room nor count toward must-run.
+    """
+    outputs: dict[str, float] = {p.id: 0.0 for p in plants}
+
+    cloud = float(weather.get("cloud_factor", 0.85))
+    wind_v = float(weather.get("wind_speed_mps", 0.0))
+
+    operational = [p for p in plants if p.operational]
+    solar = [p for p in operational if p.type == "solar_farm"]
+    wind = [p for p in operational if p.type == "wind_turbine"]
+    coal = sorted(
+        (p for p in operational if p.type == "coal_plant"),
+        key=lambda x: (TILE_CATALOG[x.type].fuel_cost_per_mwh, x.id),
+    )
+    gas = sorted(
+        (p for p in operational if p.type == "gas_peaker"),
+        key=lambda x: (TILE_CATALOG[x.type].fuel_cost_per_mwh, x.id),
+    )
+
+    # Step 1: must-take renewables
+    for p in solar:
+        outputs[p.id] = P_solar_kw(D, h, cloud)
+    for p in wind:
+        outputs[p.id] = turbine_kw(wind_v)
+
+    supply = sum(outputs.values())
+
+    # Step 2: coal must-run minimum (25% of capacity).
+    for p in coal:
+        cap = TILE_CATALOG[p.type].capacity_kw
+        outputs[p.id] = cap * COAL_MIN_RUN
+        supply += outputs[p.id]
+
+    remaining = max(0.0, demand_kw - supply)
+
+    # Step 3: ramp coal upward by cost (already sorted). Bound by ramp_room
+    # measured from the previous hour's output, capped at capacity.
+    for p in coal:
+        if remaining <= 0:
+            break
+        cap = TILE_CATALOG[p.type].capacity_kw
+        ramp_room = cap * COAL_RAMP_PER_HOUR
+        # Newly-built coal: assume it warm-starts at must-run, no prior hour.
+        prev_out = prev_outputs.get(p.id, cap * COAL_MIN_RUN)
+        upper = min(cap, prev_out + ramp_room)
+        headroom = upper - outputs[p.id]
+        if headroom <= 0:
+            continue
+        inc = min(headroom, remaining)
+        outputs[p.id] += inc
+        supply += inc
+        remaining -= inc
+
+    # Step 4: gas peakers ramp by cost.
+    for p in gas:
+        if remaining <= 0:
+            outputs[p.id] = 0.0
+            continue
+        cap = TILE_CATALOG[p.type].capacity_kw
+        ramp_room = cap * GAS_RAMP_PER_HOUR
+        prev_out = prev_outputs.get(p.id, 0.0)
+        max_out = min(cap, prev_out + ramp_room)
+        delivered = min(max_out, remaining)
+        outputs[p.id] = delivered
+        supply += delivered
+        remaining -= delivered
+
+    by_source = {
+        "solar": sum(outputs[p.id] for p in solar),
+        "wind": sum(outputs[p.id] for p in wind),
+        "coal": sum(outputs[p.id] for p in coal),
+        "gas": sum(outputs[p.id] for p in gas),
+    }
+    return outputs, supply, by_source
+
+
+# -- Balance state -----------------------------------------------------------
+
+
+def compute_balance_state(supply_kw: float, demand_kw: float) -> tuple[str, float, float, float]:
+    """Map (supply, demand) onto the four balance states.
+
+    Returns (state, served_kw, excess_kw, R). When demand is zero the grid
+    is treated as balanced with served=excess=0 (no loads to serve, no
+    export market either).
+    """
+    if demand_kw <= 0:
+        return "balanced", 0.0, 0.0, 0.0
+    R = supply_kw / max(demand_kw, 1.0)
+    if R >= R_CURTAILMENT:
+        return "curtailment", demand_kw, max(0.0, supply_kw - demand_kw), R
+    if R >= R_BALANCED:
+        return "balanced", demand_kw, 0.0, R
+    if R >= R_BROWNOUT:
+        return "brownout", supply_kw, 0.0, R
+    return "blackout", supply_kw, 0.0, R

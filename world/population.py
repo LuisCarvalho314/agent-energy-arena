@@ -34,11 +34,15 @@ def update_population(world: World) -> None:
     capacity = sum(t.housing_capacity for t in state.tiles)
     jobs = sum(t.jobs for t in state.tiles)
     park_count = sum(1 for t in state.tiles if t.type == "park")
-    house_count = sum(1 for t in state.tiles if t.type == "house")
+    houses = [t for t in state.tiles if t.type == "house"]
+    house_count = len(houses)
 
-    # Coal-proximity term is a placeholder: coal plants don't exist until
-    # slice 05, so the count of houses-within-3-of-a-coal-plant is always 0.
-    coal_houses_within_3 = 0
+    # Coal-proximity term: chebyshev distance ≤ 3 between any house and any
+    # operational coal plant. PRD §"Subsurface" pins chebyshev as the metric.
+    coal_plants = [t for t in state.tiles if t.type == "coal_plant" and t.operational]
+    coal_houses_within_3 = sum(
+        1 for h in houses if any(max(abs(h.x - c.x), abs(h.y - c.y)) <= 3 for c in coal_plants)
+    )
 
     happiness = 1.0
     happiness += 0.05 * max(0, park_count - 1)

@@ -67,9 +67,15 @@ class WorldState:
             "demand_kw": 0.0,
             "supply_kw": 0.0,
             "balance_state": "balanced",
-            "by_source_kw": {},
+            "by_source_kw": {"solar": 0.0, "wind": 0.0, "coal": 0.0, "gas": 0.0},
         }
     )
+    # 24-element trace of the most recently completed day's hourly dispatch,
+    # for the UI power tab. Empty until the first /step finishes.
+    last_day_supply_kw_by_hour: list[float] = field(default_factory=list)
+    last_day_demand_kw_by_hour: list[float] = field(default_factory=list)
+    last_day_balance_state_by_hour: list[str] = field(default_factory=list)
+
     today_summary_so_far: dict[str, float] = field(
         default_factory=lambda: {
             "tax_revenue": 0.0,
@@ -79,6 +85,7 @@ class WorldState:
             "fuel_cost": 0.0,
             "carbon_cost": 0.0,
             "blackout_hours": 0.0,
+            "blackout_penalty": 0.0,
             "renewable_share": 0.0,
         }
     )

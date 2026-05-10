@@ -21,7 +21,14 @@ from world.catalog import TILE_CATALOG, is_buildable
 from world.config import Config, load_config
 from world.grid import has_road_adjacency, in_bounds
 from world.population import update_population
-from world.power import total_demand_kw
+from world.power import (
+    BLACKOUT_HAPPINESS_PENALTY,
+    BROWNOUT_HAPPINESS_COEF,
+    PLANT_TYPES,
+    compute_balance_state,
+    dispatch,
+    total_demand_kw,
+)
 from world.state import Tile, WorldState
 from world.weather import (
     INITIAL_CLOUD_FACTOR,
@@ -44,6 +51,7 @@ def _tile_to_dict(t: Tile) -> dict[str, Any]:
         "opex_per_day": t.opex_per_day,
         "housing_capacity": t.housing_capacity,
         "jobs": t.jobs,
+        "current_output_kw": t.current_output_kw,
     }
 
 
@@ -64,6 +72,9 @@ class World:
         self.forecast_rng: np.random.Generator
         self.wind_phi_seed: float = 0.0
         self._tile_seq: int = 0
+        # Previous hour's per-plant outputs, persisted across hours and days.
+        # Keyed by plant id. Used by `dispatch` to enforce ramp limits.
+        self._prev_plant_outputs: dict[str, float] = {}
         self.reset(seed=self.config.world_seed)
 
     # -- Convenience accessors --------------------------------------------
@@ -101,6 +112,7 @@ class World:
         self.state.weather_now["wind_direction_deg"] = INITIAL_WIND_DIRECTION_DEG
         self.state.weather_now["solar_irradiance"] = 0.0
         self._tile_seq = 0
+        self._prev_plant_outputs = {}
         self._place_town_hall()
 
     def _place_town_hall(self) -> None:
@@ -233,19 +245,105 @@ class World:
         for k in self.state.today_summary_so_far:
             self.state.today_summary_so_far[k] = 0.0
 
+        # Per-hour traces for the most-recently-completed day. Reset here and
+        # pinned to last_day_* fields once the day finishes.
+        supply_trace: list[float] = []
+        demand_trace: list[float] = []
+        balance_trace: list[str] = []
+
+        # Running served-kWh by source for the day (renewable share + per-source
+        # totals available downstream).
+        coal_kwh = 0.0
+        gas_kwh = 0.0
+
         for hour in range(self.config.ticks_per_day):
             self.state.hour = hour
             # Each hour: 3 sim_rng draws (cloud, wind speed, wind dir) then
-            # the deterministic demand calculation. These per-hour draws are
-            # what now anchors the slice-01 step-size determinism contract.
+            # the deterministic demand + dispatch calculation. RNG draws are
+            # confined to step_weather_one_hour to anchor the slice-01
+            # step-size determinism contract.
             step_weather_one_hour(self)
-            self.state.power_now["demand_kw"] = total_demand_kw(self.state, hour)
+            demand_kw = total_demand_kw(self.state, hour)
+
+            plants = [t for t in self.state.tiles if t.type in PLANT_TYPES]
+            outputs, supply_kw, by_source = dispatch(
+                plants,
+                demand_kw,
+                self._prev_plant_outputs,
+                self.state.weather_now,
+                self.state.day,
+                hour,
+            )
+
+            balance, served_kw, excess_kw, _R = compute_balance_state(supply_kw, demand_kw)
+
+            # Apply hourly happiness penalties (brief §4.4).
+            if balance == "blackout":
+                self.state.happiness = max(
+                    0.0, min(1.5, self.state.happiness - BLACKOUT_HAPPINESS_PENALTY)
+                )
+                self.state.treasury -= self.config.blackout_penalty_hour
+                self.state.today_summary_so_far["blackout_hours"] += 1.0
+                self.state.today_summary_so_far["blackout_penalty"] += (
+                    self.config.blackout_penalty_hour
+                )
+            elif balance == "brownout":
+                penalty = BROWNOUT_HAPPINESS_COEF * (1.0 - _R)
+                self.state.happiness = max(0.0, min(1.5, self.state.happiness - penalty))
+
+            # Power revenue: served kWh × retail + excess kWh × export.
+            self.state.today_summary_so_far["power_revenue"] += (
+                served_kw * self.config.grid_price_retail
+            )
+            if balance == "curtailment" and excess_kw > 0:
+                self.state.today_summary_so_far["power_revenue"] += (
+                    excess_kw * self.config.grid_price_export
+                )
+
+            coal_kwh += by_source["coal"]
+            gas_kwh += by_source["gas"]
+
+            # Persist per-plant outputs for ramp-limit accounting next hour.
+            for p in plants:
+                p.current_output_kw = outputs.get(p.id, 0.0)
+            self._prev_plant_outputs = dict(outputs)
+
+            # Snapshot power_now for /state consumers + traces for the UI chart.
+            self.state.power_now["demand_kw"] = demand_kw
+            self.state.power_now["supply_kw"] = supply_kw
+            self.state.power_now["balance_state"] = balance
+            self.state.power_now["by_source_kw"] = dict(by_source)
+            supply_trace.append(supply_kw)
+            demand_trace.append(demand_kw)
+            balance_trace.append(balance)
 
         # End-of-day OPEX accrual: every standing tile pays its daily OPEX.
         opex_total = sum(t.opex_per_day for t in self.state.tiles)
         if opex_total:
             self.state.treasury -= opex_total
             self.state.today_summary_so_far["opex"] = opex_total
+
+        # Fuel cost (kWh / 1000 = MWh) × $/MWh. Coal+gas only.
+        if coal_kwh or gas_kwh:
+            coal_cost_per_mwh = TILE_CATALOG["coal_plant"].fuel_cost_per_mwh
+            gas_cost_per_mwh = TILE_CATALOG["gas_peaker"].fuel_cost_per_mwh
+            fuel_total = (coal_kwh / 1000.0) * coal_cost_per_mwh + (
+                gas_kwh / 1000.0
+            ) * gas_cost_per_mwh
+            self.state.treasury -= fuel_total
+            self.state.today_summary_so_far["fuel_cost"] = fuel_total
+
+        # Apply power revenue to treasury (the running tally was just adding
+        # to today_summary_so_far; treasury credit happens once at day end).
+        self.state.treasury += self.state.today_summary_so_far["power_revenue"]
+
+        # Carry today's blackout-hour count into tomorrow's population update.
+        self.state.yesterday_blackout_hours = self.state.today_summary_so_far["blackout_hours"]
+
+        # Pin per-hour traces for the UI's "yesterday" chart.
+        self.state.last_day_supply_kw_by_hour = supply_trace
+        self.state.last_day_demand_kw_by_hour = demand_trace
+        self.state.last_day_balance_state_by_hour = balance_trace
 
         # Population dynamics + tax revenue (brief §4.8). Deterministic; no
         # RNG draws, so the sim_rng contract is unaffected.
@@ -301,5 +399,8 @@ class World:
             "active_events": [],
             "weather_now": s.weather_now,
             "power_now": s.power_now,
+            "last_day_supply_kw_by_hour": list(s.last_day_supply_kw_by_hour),
+            "last_day_demand_kw_by_hour": list(s.last_day_demand_kw_by_hour),
+            "last_day_balance_state_by_hour": list(s.last_day_balance_state_by_hour),
             "today_summary_so_far": s.today_summary_so_far,
         }

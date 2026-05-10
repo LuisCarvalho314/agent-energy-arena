@@ -11,18 +11,36 @@
     <div class="metric"><span class="label">Treasury</span>$<span id="treasury">—</span></div>
     <div class="metric"><span class="label">Population</span><span id="population">—</span></div>
     <div class="metric"><span class="label">Happiness</span><span id="happiness">—</span></div>
-    <div class="metric"><span class="label">Balance</span><span id="balance">—</span></div>
+    <div class="metric"><span class="label">Balance</span><span id="balance" class="balance-badge">—</span></div>
     <button id="next-day">Next Day</button>
   </header>
+  <nav id="tabs">
+    <button class="tab active" data-tab="map">Map</button>
+    <button class="tab" data-tab="power">Power</button>
+  </nav>
   <main>
-    <aside id="buildmenu">
-      <h2>Build</h2>
-      <ul id="buildlist"></ul>
-      <p id="buildhint">Click a tile type, then click the grid. Right-click a tile to demolish.</p>
-    </aside>
-    <section id="canvasrow">
-      <canvas id="grid" width="640" height="640"></canvas>
-      <div id="toast" class="toast"></div>
+    <section id="tab-map" class="tabpanel active">
+      <aside id="buildmenu">
+        <h2>Build</h2>
+        <ul id="buildlist"></ul>
+        <p id="buildhint">Click a tile type, then click the grid. Right-click a tile to demolish.</p>
+      </aside>
+      <div id="canvasrow">
+        <canvas id="grid" width="640" height="640"></canvas>
+        <div id="toast" class="toast"></div>
+      </div>
+    </section>
+    <section id="tab-power" class="tabpanel">
+      <div id="powerwrap">
+        <h2>Yesterday — supply vs demand</h2>
+        <svg id="powerchart" viewBox="0 0 480 200" preserveAspectRatio="none"></svg>
+        <div id="powerlegend">
+          <span class="legend-item"><span class="legend-swatch" style="background:#4ea3ff"></span>Supply</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#ff7a59"></span>Demand</span>
+        </div>
+        <h2>Plants — current output</h2>
+        <ul id="plantlist"></ul>
+      </div>
     </section>
   </main>
   <script src="/ui/app.js"></script>

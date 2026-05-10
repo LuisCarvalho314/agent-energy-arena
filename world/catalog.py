@@ -24,6 +24,15 @@ class TileSpec:
     # hourly factor (full 8-20h, 20% otherwise); industrial draws this value
     # continuously. See world.power.total_demand_kw.
     demand_kw: float = 0.0
+    # Generation capacity for plants. Solar/wind use weather-modulated output
+    # capped at this value; coal/gas dispatch up to this with ramp limits.
+    capacity_kw: float = 0.0
+    # Fuel cost in $/MWh for fossil plants (used as merit-order key and for
+    # daily fuel-cost accrual). Renewables are 0.
+    fuel_cost_per_mwh: float = 0.0
+    # CO2 intensity in tonnes/MWh (used by slice 10 carbon accounting; defined
+    # here so the catalog has the full plant spec).
+    co2_t_per_mwh: float = 0.0
     buildable: bool = True  # False = not placeable via /build (town_hall, wells)
 
 
@@ -75,6 +84,42 @@ TILE_CATALOG: dict[str, TileSpec] = {
         requires_road=False,
         description="Aesthetic / connectivity tile (v1: no transport cost).",
     ),
+    "solar_farm": TileSpec(
+        tile_type="solar_farm",
+        capex=25_000,
+        opex_per_day=50,
+        requires_road=False,
+        description="Up to 150 kW (sun-dependent). No road requirement.",
+        capacity_kw=150,
+    ),
+    "wind_turbine": TileSpec(
+        tile_type="wind_turbine",
+        capex=40_000,
+        opex_per_day=80,
+        requires_road=False,
+        description="Up to 200 kW (wind-dependent). No road requirement.",
+        capacity_kw=200,
+    ),
+    "gas_peaker": TileSpec(
+        tile_type="gas_peaker",
+        capex=80_000,
+        opex_per_day=150,
+        requires_road=False,
+        description="0-500 kW. Ramp 50%/h. Fuel $30/MWh.",
+        capacity_kw=500,
+        fuel_cost_per_mwh=30.0,
+        co2_t_per_mwh=0.4,
+    ),
+    "coal_plant": TileSpec(
+        tile_type="coal_plant",
+        capex=200_000,
+        opex_per_day=400,
+        requires_road=False,
+        description="200-800 kW. Min run 25%, ramp 10%/h. Fuel $20/MWh.",
+        capacity_kw=800,
+        fuel_cost_per_mwh=20.0,
+        co2_t_per_mwh=0.9,
+    ),
     "town_hall": TileSpec(
         tile_type="town_hall",
         capex=0,
@@ -101,6 +146,9 @@ def build_catalog() -> dict[str, Any]:
                 "housing_capacity": spec.housing_capacity,
                 "jobs": spec.jobs,
                 "demand_kw": spec.demand_kw,
+                "capacity_kw": spec.capacity_kw,
+                "fuel_cost_per_mwh": spec.fuel_cost_per_mwh,
+                "co2_t_per_mwh": spec.co2_t_per_mwh,
                 "buildable": spec.buildable,
             }
         )

@@ -103,3 +103,56 @@ main {
 .toast.show { opacity: 1; }
 .toast.error { border-color: #ff5050; color: #ffb0b0; }
 .toast.ok { border-color: #3fbf7f; color: #b0e8c8; }
+
+.balance-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  text-transform: capitalize;
+  background: #2a2d34;
+  color: #e6e7ea;
+}
+.balance-badge.balanced { background: #1d3a25; color: #b0e8c8; }
+.balance-badge.curtailment { background: #1d2f3a; color: #a8d8ff; }
+.balance-badge.brownout { background: #3a3119; color: #f0d28e; }
+.balance-badge.blackout { background: #3a1d1d; color: #ffb0b0; }
+
+#tabs { display: flex; gap: 0.25rem; padding: 0 1rem; background: #16181d; border-bottom: 1px solid #2a2d34; }
+.tab {
+  background: transparent;
+  color: #8b8f9a;
+  border: 1px solid transparent;
+  border-bottom: none;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  border-radius: 4px 4px 0 0;
+}
+.tab.active { background: #1f2229; color: #e6e7ea; border-color: #2a2d34; }
+.tabpanel { display: none; }
+.tabpanel.active { display: flex; padding: 1rem; gap: 1rem; }
+#tab-map.active { align-items: flex-start; justify-content: center; }
+#tab-power.active { padding: 1rem 1.5rem; }
+#powerwrap { width: 720px; max-width: 100%; }
+#powerwrap h2 { font-size: 0.85rem; color: #8b8f9a; text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 0.5rem; }
+#powerchart {
+  width: 100%;
+  height: 240px;
+  background: #1a1c22;
+  border: 1px solid #2a2d34;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+}
+#powerlegend { font-size: 0.8rem; color: #8b8f9a; display: flex; gap: 1rem; margin-bottom: 1rem; }
+.legend-item { display: inline-flex; gap: 0.4rem; align-items: center; }
+.legend-swatch { width: 12px; height: 4px; display: inline-block; border-radius: 2px; }
+#plantlist { list-style: none; padding: 0; margin: 0.5rem 0 0; display: grid; gap: 0.4rem; }
+.plantrow { display: grid; grid-template-columns: 130px 1fr 80px; gap: 0.5rem; align-items: center; font-size: 0.8rem; }
+.plantrow .pl-name { color: #c9cad0; font-variant-numeric: tabular-nums; }
+.plantrow .pl-bar { background: #2a2d34; border-radius: 2px; height: 8px; overflow: hidden; }
+.plantrow .pl-bar-fill { height: 100%; background: #4ea3ff; }
+.plantrow.solar_farm .pl-bar-fill { background: #f5d76e; }
+.plantrow.wind_turbine .pl-bar-fill { background: #6dd5ed; }
+.plantrow.coal_plant .pl-bar-fill { background: #c97676; }
+.plantrow.gas_peaker .pl-bar-fill { background: #d09bff; }
+.plantrow .pl-val { text-align: right; color: #8b8f9a; font-variant-numeric: tabular-nums; }

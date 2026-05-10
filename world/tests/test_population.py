@@ -146,11 +146,17 @@ def test_happiness_decline_when_below_threshold():
 
 
 def test_tax_revenue_accrues_to_treasury_and_summary():
+    """Tax = $4 × end-of-day population, accrued to treasury + summary.
+
+    Calls update_population directly so the assertion stays focused on the
+    population module's contract (slice 03). Going through step would now
+    mix in dispatch-driven blackout penalties from slice 05.
+    """
     w = _fresh_world()
     treasury_before = w.state.treasury
-    w.step(days=1)
-    # Day 1: pop went from 100 → 99 (job-decline). Tax = $4 * 99 = $396.
-    # No OPEX (only town_hall on the board).
+    update_population(w)
+    # pop went 100 → 99 (job-decline branch).
+    assert w.state.population == 99
     assert w.state.today_summary_so_far["tax_revenue"] == pytest.approx(99 * 4.0)
     assert w.state.treasury == pytest.approx(treasury_before + 99 * 4.0)
 
