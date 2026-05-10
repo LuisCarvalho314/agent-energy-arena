@@ -64,6 +64,11 @@ class WorldState:
     # power-dispatch slice (05) starts populating it.
     yesterday_blackout_hours: float = 0.0
 
+    # Mutable carbon price ($/ton). Initialised to CARBON_PRICE_USD_PER_TON on
+    # /reset; slice 11's regulatory-tightening events bump it (capped at 3
+    # cumulative occurrences per game).
+    carbon_price: float = 25.0
+
     weather_now: dict[str, float] = field(
         default_factory=lambda: {
             "solar_irradiance": 0.0,
@@ -96,6 +101,10 @@ class WorldState:
             "opex": 0.0,
             "fuel_cost": 0.0,
             "carbon_cost": 0.0,
+            "co2_emitted_t": 0.0,
+            "coal_kwh": 0.0,
+            "gas_kwh": 0.0,
+            "refined_bbl": 0.0,
             "blackout_hours": 0.0,
             "blackout_penalty": 0.0,
             "renewable_share": 0.0,

@@ -1,4 +1,4 @@
-"""Refinery economics: refining yield + crude routing.
+"""Refinery economics: refining yield + crude routing + daily carbon emissions.
 
 Implements §4.6 of the brief: each refinery refines up to its setpoint
 (capped at REFINERY_MAX_BBL_DAY and at the available crude). Refined
@@ -11,6 +11,15 @@ high-throughput refinery over a low one without surprises. Process load
 (actual × REFINERY_KWH_PER_BBL / 24) is unbilled to the agent — it
 counts toward dispatch demand and toward fuel-burn / carbon emissions
 on whichever plants serve it, but no retail revenue is paid.
+
+Carbon (slice 10, PRD §4.7): `daily_emissions_t(world)` reads the day's
+running coal/gas/refined totals from `today_summary_so_far` plus the
+operational-industrial tile count. The PRD revises the brief by removing
+the per-MWh-consumed industrial term — industrial tiles emit a flat
+INDUSTRIAL_PROCESS_CO2_T_PER_DAY regardless of grid load, and the kWh
+they consume is already counted via the coal/gas plants serving them.
+Carbon cost = emissions × `state.carbon_price` (mutable, initialised to
+CARBON_PRICE_USD_PER_TON on /reset; slice 11 events tighten it).
 """
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from world.sim import World
     from world.state import Tile
 
 REFINERY_MAX_BBL_DAY: float = 500.0
@@ -27,6 +37,12 @@ REFINERY_CO2_PER_BBL: float = 0.30
 REFINERY_SETPOINT_MIN: float = 0.0
 REFINERY_SETPOINT_MAX: float = REFINERY_MAX_BBL_DAY
 REFINED_PRICE_USD_PER_BBL: float = 90.0
+
+# Carbon (PRD §4.7).
+COAL_CO2_T_PER_MWH: float = 0.90
+GAS_CO2_T_PER_MWH: float = 0.40
+INDUSTRIAL_PROCESS_CO2_T_PER_DAY: float = 2.0
+CARBON_PRICE_USD_PER_TON: float = 25.0
 
 
 def refine_one(setpoint_rate_bbl_day: float, available_crude_bbl: float) -> tuple[float, float]:
@@ -68,3 +84,25 @@ def route_crude(refineries: list[Tile], total_crude_bbl: float) -> dict[str, flo
 def refinery_process_kw(throughput_bbl_day: float) -> float:
     """Refinery hourly process power load: actual × KWH_PER_BBL / 24."""
     return float(throughput_bbl_day) * REFINERY_KWH_PER_BBL / 24.0
+
+
+def daily_emissions_t(world: World) -> float:
+    """Total CO2 emitted today, summed across the four PRD-revised sources.
+
+    Reads coal_kwh / gas_kwh / refined_bbl from `state.today_summary_so_far`
+    (populated in the daily loop before this is called), and counts
+    operational industrial tiles directly. The brief's per-MWh-consumed
+    industrial term is intentionally absent — industrial kWh already shows
+    up in the coal/gas plant emissions serving those tiles.
+    """
+    s = world.state
+    coal_mwh = s.today_summary_so_far.get("coal_kwh", 0.0) / 1000.0
+    gas_mwh = s.today_summary_so_far.get("gas_kwh", 0.0) / 1000.0
+    refined_bbl = s.today_summary_so_far.get("refined_bbl", 0.0)
+    n_industrial = sum(1 for t in s.tiles if t.type == "industrial" and t.operational)
+    return (
+        coal_mwh * COAL_CO2_T_PER_MWH
+        + gas_mwh * GAS_CO2_T_PER_MWH
+        + n_industrial * INDUSTRIAL_PROCESS_CO2_T_PER_DAY
+        + refined_bbl * REFINERY_CO2_PER_BBL
+    )

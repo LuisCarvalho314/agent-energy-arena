@@ -20,10 +20,12 @@ import numpy as np
 from world.catalog import TILE_CATALOG, is_buildable
 from world.config import Config, load_config
 from world.economy import (
+    CARBON_PRICE_USD_PER_TON,
     REFINED_PRICE_USD_PER_BBL,
     REFINERY_SETPOINT_MAX,
     REFINERY_SETPOINT_MIN,
     REFINERY_YIELD,
+    daily_emissions_t,
     refinery_process_kw,
     route_crude,
 )
@@ -153,6 +155,7 @@ class World:
             treasury=float(self.config.starting_cash),
             population=int(self.config.starting_pop),
             happiness=1.0,
+            carbon_price=CARBON_PRICE_USD_PER_TON,
         )
         # Seed the AR(1) carry-overs at their long-run means so the first
         # hour's update is well-conditioned (no transient from a 0 init).
@@ -647,6 +650,21 @@ class World:
             self.state.today_summary_so_far["crude_revenue"] = crude_revenue
             self.state.today_summary_so_far["refined_revenue"] = refined_revenue
             self.state.treasury += oil_revenue
+
+        # Carbon emissions + cost (PRD §4.7 / slice 10). Pin the day's running
+        # totals (consumed by daily_emissions_t) onto today_summary_so_far so
+        # the read-models surface them and the helper has a single source of
+        # truth. The order matters: refining is done above, so refined_bbl is
+        # final; the hourly loop accumulated coal_kwh and gas_kwh.
+        self.state.today_summary_so_far["coal_kwh"] = coal_kwh
+        self.state.today_summary_so_far["gas_kwh"] = gas_kwh
+        self.state.today_summary_so_far["refined_bbl"] = total_refined_input
+        co2_t = daily_emissions_t(self)
+        carbon_cost = co2_t * self.state.carbon_price
+        self.state.today_summary_so_far["co2_emitted_t"] = co2_t
+        self.state.today_summary_so_far["carbon_cost"] = carbon_cost
+        if carbon_cost:
+            self.state.treasury -= carbon_cost
 
         # Carry today's blackout-hour count into tomorrow's population update.
         self.state.yesterday_blackout_hours = self.state.today_summary_so_far["blackout_hours"]

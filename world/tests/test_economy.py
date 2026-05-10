@@ -15,10 +15,16 @@ from fastapi.testclient import TestClient
 from world.api import create_app
 from world.catalog import build_catalog
 from world.economy import (
+    CARBON_PRICE_USD_PER_TON,
+    COAL_CO2_T_PER_MWH,
+    GAS_CO2_T_PER_MWH,
+    INDUSTRIAL_PROCESS_CO2_T_PER_DAY,
     REFINED_PRICE_USD_PER_BBL,
+    REFINERY_CO2_PER_BBL,
     REFINERY_KWH_PER_BBL,
     REFINERY_MAX_BBL_DAY,
     REFINERY_YIELD,
+    daily_emissions_t,
     refine_one,
     refinery_process_kw,
     route_crude,
@@ -470,6 +476,203 @@ def test_state_tiles_refinery_exposes_setpoint_and_throughput():
 
 
 # -- Determinism -----------------------------------------------------------
+
+
+# -- Carbon emissions (slice 10, PRD §4.7) --------------------------------
+
+
+def test_carbon_constants_have_prd_values():
+    assert COAL_CO2_T_PER_MWH == 0.90
+    assert GAS_CO2_T_PER_MWH == 0.40
+    assert INDUSTRIAL_PROCESS_CO2_T_PER_DAY == 2.0
+    assert REFINERY_CO2_PER_BBL == 0.30
+    assert CARBON_PRICE_USD_PER_TON == 25.0
+
+
+def test_carbon_price_initialized_on_reset_at_25():
+    w = World()
+    w.reset(seed=42)
+    assert w.state.carbon_price == 25.0
+
+
+def test_carbon_price_resets_back_to_25_after_mutation():
+    """Slice 11's regulatory tightening will mutate state.carbon_price; /reset
+    must restore it to the constant."""
+    w = World()
+    w.reset(seed=42)
+    w.state.carbon_price = 75.0
+    w.reset(seed=42)
+    assert w.state.carbon_price == 25.0
+
+
+def test_daily_emissions_t_zero_with_no_sources():
+    w = World()
+    w.reset(seed=42)
+    # Fresh world: no plants ran, no industrial, no refinery.
+    assert daily_emissions_t(w) == 0.0
+
+
+def test_daily_emissions_t_industrial_flat_per_tile():
+    """Per-tile-day flat 2 t/day regardless of electricity input — no per-MWh
+    industrial term."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("industrial", th.x + 1, th.y)
+    w.build("industrial", th.x - 1, th.y)
+    # Bypass the daily loop: industrial counter alone should yield 4 t/day.
+    assert daily_emissions_t(w) == pytest.approx(2 * INDUSTRIAL_PROCESS_CO2_T_PER_DAY)
+
+
+def test_daily_emissions_t_no_double_count_industrial_consumed_kwh():
+    """Industrial must NOT pay for kWh consumed by industrial (which already
+    bills via the coal/gas plant emitting on its behalf). Adding more
+    industrial-served kWh — without changing the industrial tile count or the
+    coal/gas dispatch — must not increase emissions."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("industrial", th.x + 1, th.y)
+    base = daily_emissions_t(w)
+    # Stuff a fake "industrial kWh consumed" key on today_summary_so_far.
+    # If the formula were per-MWh-on-industrial, this would change emissions.
+    w.state.today_summary_so_far["industrial_kwh_consumed"] = 999_000.0
+    assert daily_emissions_t(w) == pytest.approx(base)
+
+
+def test_daily_emissions_t_coal_emissions():
+    """1 MWh coal → 0.90 t CO2."""
+    w = World()
+    w.reset(seed=42)
+    w.state.today_summary_so_far["coal_kwh"] = 1000.0
+    assert daily_emissions_t(w) == pytest.approx(COAL_CO2_T_PER_MWH)
+
+
+def test_daily_emissions_t_gas_emissions():
+    """1 MWh gas → 0.40 t CO2."""
+    w = World()
+    w.reset(seed=42)
+    w.state.today_summary_so_far["gas_kwh"] = 1000.0
+    assert daily_emissions_t(w) == pytest.approx(GAS_CO2_T_PER_MWH)
+
+
+def test_daily_emissions_t_refinery_scales_with_refined_bbl():
+    """Refinery CO2 scales linearly with input bbl — 100 bbl → 30 t CO2."""
+    w = World()
+    w.reset(seed=42)
+    w.state.today_summary_so_far["refined_bbl"] = 100.0
+    assert daily_emissions_t(w) == pytest.approx(100.0 * REFINERY_CO2_PER_BBL)
+
+
+def test_daily_emissions_t_sums_all_sources():
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("industrial", th.x + 1, th.y)
+    w.state.today_summary_so_far["coal_kwh"] = 2000.0  # 2 MWh × 0.90 = 1.80 t
+    w.state.today_summary_so_far["gas_kwh"] = 500.0  # 0.5 MWh × 0.40 = 0.20 t
+    w.state.today_summary_so_far["refined_bbl"] = 50.0  # 50 × 0.30 = 15.0 t
+    expected = 1.80 + 0.20 + 2.0 + 15.0  # +2.0 t industrial
+    assert daily_emissions_t(w) == pytest.approx(expected)
+
+
+def test_carbon_cost_deducted_from_treasury_during_step():
+    """End-to-end: a coal plant + civilian load runs for one day, emissions
+    accrue, and treasury is decremented by daily_emissions_t × carbon_price."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("coal_plant", th.x + 1, th.y)
+    w.step(days=1)
+    co2 = w.state.today_summary_so_far["co2_emitted_t"]
+    carbon_cost = w.state.today_summary_so_far["carbon_cost"]
+    assert co2 > 0
+    assert carbon_cost == pytest.approx(co2 * w.state.carbon_price)
+    # Isolate the carbon delta: same setup with carbon_price=0 should leave
+    # treasury exactly carbon_cost higher.
+    w2 = World()
+    w2.reset(seed=42)
+    w2.state.carbon_price = 0.0
+    w2.build("coal_plant", th.x + 1, th.y)
+    w2.step(days=1)
+    delta = w2.state.treasury - w.state.treasury
+    assert delta == pytest.approx(carbon_cost)
+
+
+def test_carbon_cost_uses_current_carbon_price():
+    """Mutating state.carbon_price (slice 11 regulatory tightening) is
+    reflected immediately in the next day's carbon-cost accrual."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("coal_plant", th.x + 1, th.y)
+    w.state.carbon_price = 100.0  # 4× the default
+    w.step(days=1)
+    co2 = w.state.today_summary_so_far["co2_emitted_t"]
+    assert w.state.today_summary_so_far["carbon_cost"] == pytest.approx(co2 * 100.0)
+
+
+def test_co2_emitted_t_in_today_summary_so_far():
+    w = World()
+    w.reset(seed=42)
+    assert "co2_emitted_t" in w.state.today_summary_so_far
+    assert w.state.today_summary_so_far["co2_emitted_t"] == 0.0
+
+
+def test_industrial_pays_flat_co2_even_when_no_grid():
+    """A standalone industrial tile (no plants serving it) still emits 2 t/day
+    flat — the term is independent of dispatch."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("industrial", th.x + 1, th.y)
+    w.state.population = 0
+    w.step(days=1)
+    # No plants → no coal/gas kWh. Refinery=0. Only industrial × 2 t/day.
+    assert w.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(
+        INDUSTRIAL_PROCESS_CO2_T_PER_DAY
+    )
+    assert w.state.today_summary_so_far["carbon_cost"] == pytest.approx(
+        INDUSTRIAL_PROCESS_CO2_T_PER_DAY * w.state.carbon_price
+    )
+
+
+def test_refinery_emissions_scale_with_refined_throughput():
+    """End-to-end: a refinery refining N bbl emits N × 0.30 t/day."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("refinery", th.x + 1, th.y)
+    rid = next(t.id for t in w.state.tiles if t.type == "refinery")
+    w.control_refinery(rid, REFINERY_MAX_BBL_DAY)
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    w.step(days=1)
+    refinery = next(t for t in w.state.tiles if t.type == "refinery")
+    refined_bbl = refinery.current_throughput_bbl_day
+    co2 = w.state.today_summary_so_far["co2_emitted_t"]
+    # Baseline: no plants here either, no industrial, so co2 == refinery term.
+    assert co2 == pytest.approx(refined_bbl * REFINERY_CO2_PER_BBL)
+
+
+def test_step_size_invariance_with_carbon():
+    """Carbon accrual is RNG-free; step(7) ≡ step(1)×7."""
+    a = World()
+    b = World()
+    a.reset(seed=42)
+    b.reset(seed=42)
+    for w in (a, b):
+        th = next(t for t in w.state.tiles if t.type == "town_hall")
+        w.build("coal_plant", th.x + 1, th.y)
+        w.build("industrial", th.x, th.y + 1)
+    a.step(days=7)
+    for _ in range(7):
+        b.step(days=1)
+    assert a.state.treasury == pytest.approx(b.state.treasury)
+    assert a.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(
+        b.state.today_summary_so_far["co2_emitted_t"]
+    )
 
 
 def test_step_size_invariance_with_refinery():
