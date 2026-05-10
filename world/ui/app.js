@@ -493,6 +493,9 @@
       for (const w of wells) {
         const tr = document.createElement("tr");
         const setpoint = w.setpoint_rate_bbl_day || 0;
+        const cum = w.type === "injection"
+          ? (w.cumulative_injected_bbl || 0)
+          : (w.cumulative_produced_bbl || 0);
         tr.innerHTML = `
           <td>${w.id}</td>
           <td>${w.type}</td>
@@ -502,7 +505,7 @@
             <span class="setpoint-val">${Math.round(setpoint)}</span>
           </td>
           <td class="actual">${(w.current_rate_bbl_day || 0).toFixed(1)}</td>
-          <td class="cumulative">${Math.round(w.cumulative_produced_bbl || 0).toLocaleString()}</td>
+          <td class="cumulative">${Math.round(cum).toLocaleString()}</td>
         `;
         wellsTableBody.appendChild(tr);
         const slider = tr.querySelector("input[type=range]");
@@ -516,9 +519,13 @@
       }
     }
     if (wellsStatsEl) {
-      const totalCum = wells.reduce((acc, w) => acc + (w.cumulative_produced_bbl || 0), 0);
-      const totalRate = wells.reduce((acc, w) => acc + (w.current_rate_bbl_day || 0), 0);
-      wellsStatsEl.textContent = `${wells.length} wells · ${totalRate.toFixed(1)} bbl/day actual · ${Math.round(totalCum).toLocaleString()} bbl cumulative`;
+      const prodWells = wells.filter((w) => w.type === "production");
+      const injWells = wells.filter((w) => w.type === "injection");
+      const totalProd = prodWells.reduce((a, w) => a + (w.cumulative_produced_bbl || 0), 0);
+      const totalInj = injWells.reduce((a, w) => a + (w.cumulative_injected_bbl || 0), 0);
+      const prodRate = prodWells.reduce((a, w) => a + (w.current_rate_bbl_day || 0), 0);
+      const injRate = injWells.reduce((a, w) => a + (w.current_rate_bbl_day || 0), 0);
+      wellsStatsEl.textContent = `${prodWells.length} prod · ${prodRate.toFixed(1)} bbl/d · ${Math.round(totalProd).toLocaleString()} cum bbl  ·  ${injWells.length} inj · ${injRate.toFixed(1)} bbl/d · ${Math.round(totalInj).toLocaleString()} cum bbl`;
     }
   }
 

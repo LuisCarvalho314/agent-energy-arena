@@ -91,5 +91,6 @@ class WorldState:
             "blackout_hours": 0.0,
             "blackout_penalty": 0.0,
             "renewable_share": 0.0,
+            "injection_kw": 0.0,
         }
     )

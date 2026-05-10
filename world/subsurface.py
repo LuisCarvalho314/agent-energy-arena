@@ -48,6 +48,10 @@ CRUDE_PRICE_USD_PER_BBL: float = 40.0
 WELL_SETPOINT_MIN: float = 0.0
 WELL_SETPOINT_MAX: float = Q_MAX_WELL_BBL_DAY
 
+# Injection wells (brief §4.5 + PRD DR mechanic).
+INJECTION_KWH_PER_BBL: float = 50.0
+PRESSURE_BOOST_MAX: float = 0.5
+
 
 @dataclass
 class Voxel:
@@ -276,19 +280,29 @@ def voxels_in_3x3x3(grid: SubsurfaceGrid, x: int, y: int, target_z: int) -> tupl
     return pool, n_positions
 
 
+def pools_intersect(ax: int, ay: int, az: int, bx: int, by: int, bz: int) -> bool:
+    """Two 3×3×3 pools intersect iff their centers differ by at most 2 on each axis."""
+    return abs(ax - bx) <= 2 and abs(ay - by) <= 2 and abs(az - bz) <= 2
+
+
 def well_production_bbl_day(
     grid: SubsurfaceGrid,
     x: int,
     y: int,
     target_z: int,
     setpoint_rate_bbl_day: float,
+    *,
+    inj_total_bbl: float = 0.0,
 ) -> float:
     """Run the brief §4.5 production formula for one day. Mutates
     `oil_remaining_bbl` on the pool's HC voxels by perm × remaining
     weights, and returns `q_actual` (bbl produced today).
 
-    Slice 07 leaves `effective_fraction = fraction` (no injection
-    pressure boost yet — slice 08 wires that in).
+    `inj_total_bbl` is the sum of `cumulative_injected_bbl` across all
+    injection wells whose 3×3×3 pools intersect this production well's
+    pool (caller computes this). It maps to `pressure_boost = min(0.5,
+    inj_total / V_init)`; `effective_fraction = min(1.0, fraction +
+    pressure_boost)`. Slice 08 lights up this term.
     """
     pool, n_positions = voxels_in_3x3x3(grid, x, y, target_z)
     if n_positions == 0:
@@ -299,7 +313,8 @@ def well_production_bbl_day(
     V_remain = sum(v.oil_remaining_bbl for v in pool)
     fraction = V_remain / V_init
     k_eff = sum(v.permeability for v in pool) / n_positions / PERM_NORMALIZATION_MD
-    effective_fraction = min(1.0, fraction)
+    pressure_boost = min(PRESSURE_BOOST_MAX, inj_total_bbl / V_init)
+    effective_fraction = min(1.0, fraction + pressure_boost)
     q_potential = Q_MAX_WELL_BBL_DAY * k_eff * effective_fraction
     q_actual = max(0.0, min(float(setpoint_rate_bbl_day), q_potential))
 

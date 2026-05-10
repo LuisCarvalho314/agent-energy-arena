@@ -32,11 +32,14 @@ from world.power import (
 from world.state import Tile, Well, WorldState
 from world.subsurface import (
     CRUDE_PRICE_USD_PER_BBL,
+    INJECTION_KWH_PER_BBL,
+    Q_MAX_WELL_BBL_DAY,
     WELL_SETPOINT_MAX,
     WELL_SETPOINT_MIN,
     SubsurfaceGrid,
     generate_subsurface,
     is_size_valid,
+    pools_intersect,
     reservoirs_summary,
     revealed_voxels,
     survey_cost,
@@ -409,6 +412,14 @@ class World:
         coal_kwh = 0.0
         gas_kwh = 0.0
 
+        # Per-injection-well daily accumulators. The DR mechanic splits each
+        # day into 24 hours of variable bbl/hr; we sum them to the well's
+        # current_rate_bbl_day and bump cumulative_injected_bbl below.
+        inj_bbl_today: dict[str, float] = {
+            w.id: 0.0 for w in self.state.wells if w.type == "injection"
+        }
+        inj_kwh_today = 0.0  # sum of hourly kW values; kWh delivered to injection.
+
         for hour in range(self.config.ticks_per_day):
             self.state.hour = hour
             # Each hour: 3 sim_rng draws (cloud, wind speed, wind dir) then
@@ -416,7 +427,33 @@ class World:
             # confined to step_weather_one_hour to anchor the slice-01
             # step-size determinism contract.
             step_weather_one_hour(self)
-            demand_kw = total_demand_kw(self.state, hour)
+            civilian_demand_kw = total_demand_kw(self.state, hour)
+
+            # DR-on-injection (PRD §"Demand-response on injection wells").
+            # Each injection well's power for THIS hour is set by the PREVIOUS
+            # hour's balance state, breaking the otherwise-circular dependency
+            # between injection load and dispatch. Fresh-world hour 0 reads
+            # state.power_now["balance_state"], which defaults to "balanced".
+            prev_balance = self.state.power_now.get("balance_state", "balanced")
+            inj_total_kw = 0.0
+            inj_hour_assignments: dict[str, tuple[float, float]] = {}
+            for iw in self.state.wells:
+                if iw.type != "injection":
+                    continue
+                baseline_kw = iw.setpoint_rate_bbl_day * INJECTION_KWH_PER_BBL / 24.0
+                cap_kw = Q_MAX_WELL_BBL_DAY * INJECTION_KWH_PER_BBL / 24.0
+                if prev_balance in ("brownout", "blackout"):
+                    power_kw = 0.0
+                elif prev_balance == "curtailment":
+                    power_kw = min(2.0 * baseline_kw, cap_kw)
+                else:  # balanced (or any unexpected value falls through to baseline)
+                    power_kw = baseline_kw
+                bbl_this_hour = power_kw / INJECTION_KWH_PER_BBL
+                inj_hour_assignments[iw.id] = (power_kw, bbl_this_hour)
+                inj_total_kw += power_kw
+            inj_kwh_today += inj_total_kw
+
+            demand_kw = civilian_demand_kw + inj_total_kw
 
             plants = [t for t in self.state.tiles if t.type in PLANT_TYPES]
             outputs, supply_kw, by_source = dispatch(
@@ -444,14 +481,26 @@ class World:
                 penalty = BROWNOUT_HAPPINESS_COEF * (1.0 - _R)
                 self.state.happiness = max(0.0, min(1.5, self.state.happiness - penalty))
 
-            # Power revenue: served kWh × retail + excess kWh × export.
+            # Power revenue: civilian served kWh × retail. Process loads
+            # (injection wells, refinery) are unbilled per PRD §"Power
+            # economics". Curtailment exports the post-injection surplus only.
+            billable_served_kw = min(supply_kw, civilian_demand_kw)
             self.state.today_summary_so_far["power_revenue"] += (
-                served_kw * self.config.grid_price_retail
+                billable_served_kw * self.config.grid_price_retail
             )
             if balance == "curtailment" and excess_kw > 0:
                 self.state.today_summary_so_far["power_revenue"] += (
                     excess_kw * self.config.grid_price_export
                 )
+
+            # DR injection commits: only count bbl actually delivered. If
+            # supply collapsed and the grid went brownout/blackout this hour,
+            # injection wells STILL contributed their pre-set baseline to
+            # demand (they shed *next* hour, when prev_balance reflects the
+            # bad state). The bbl delivered this hour reflects the power
+            # they *attempted* to draw — DR is a 1-hour-lagged mechanism.
+            for iw_id, (_power_kw, bbl_this_hour) in inj_hour_assignments.items():
+                inj_bbl_today[iw_id] += bbl_this_hour
 
             coal_kwh += by_source["coal"]
             gas_kwh += by_source["gas"]
@@ -493,20 +542,41 @@ class World:
         # to today_summary_so_far; treasury credit happens once at day end).
         self.state.treasury += self.state.today_summary_so_far["power_revenue"]
 
+        # Pin per-well injection totals from the hourly DR pass before the
+        # production loop runs — production reads `cumulative_injected_bbl`
+        # for its pressure_boost term, so injection bookkeeping has to land
+        # first.
+        for w in self.state.wells:
+            if w.type != "injection":
+                continue
+            bbl = inj_bbl_today.get(w.id, 0.0)
+            w.current_rate_bbl_day = bbl
+            w.cumulative_injected_bbl += bbl
+        if inj_kwh_today:
+            self.state.today_summary_so_far["injection_kw"] = inj_kwh_today
+
         # Production-well daily output (brief §4.5). Iterates wells in
         # creation order — `state.wells` is appended-to on /drill — which
         # is the deterministic ordering required for shared-pool resolution.
+        # `pressure_boost = min(0.5, inj_total / V_init)` from injection
+        # wells whose 3×3×3 pools intersect this production well's pool.
         oil_revenue = 0.0
         for well in self.state.wells:
             if well.type != "production":
-                well.current_rate_bbl_day = 0.0
                 continue
+            inj_total = sum(
+                iw.cumulative_injected_bbl
+                for iw in self.state.wells
+                if iw.type == "injection"
+                and pools_intersect(well.x, well.y, well.target_z, iw.x, iw.y, iw.target_z)
+            )
             q = well_production_bbl_day(
                 self.subsurface,
                 well.x,
                 well.y,
                 well.target_z,
                 well.setpoint_rate_bbl_day,
+                inj_total_bbl=inj_total,
             )
             well.current_rate_bbl_day = q
             well.cumulative_produced_bbl += q
