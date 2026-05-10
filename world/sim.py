@@ -19,6 +19,14 @@ import numpy as np
 
 from world.catalog import TILE_CATALOG, is_buildable
 from world.config import Config, load_config
+from world.economy import (
+    REFINED_PRICE_USD_PER_BBL,
+    REFINERY_SETPOINT_MAX,
+    REFINERY_SETPOINT_MIN,
+    REFINERY_YIELD,
+    refinery_process_kw,
+    route_crude,
+)
 from world.grid import has_road_adjacency, in_bounds
 from world.population import update_population
 from world.power import (
@@ -68,6 +76,8 @@ def _tile_to_dict(t: Tile) -> dict[str, Any]:
         "housing_capacity": t.housing_capacity,
         "jobs": t.jobs,
         "current_output_kw": t.current_output_kw,
+        "setpoint_rate_bbl_day": t.setpoint_rate_bbl_day,
+        "current_throughput_bbl_day": t.current_throughput_bbl_day,
     }
 
 
@@ -350,6 +360,24 @@ class World:
             },
         }
 
+    def control_refinery(self, refinery_id: str, rate_bbl_day: float) -> dict[str, Any]:
+        tile = next(
+            (t for t in self.state.tiles if t.id == refinery_id and t.type == "refinery"),
+            None,
+        )
+        if tile is None:
+            return self._build_error("unknown_refinery")
+        clamped = max(REFINERY_SETPOINT_MIN, min(REFINERY_SETPOINT_MAX, float(rate_bbl_day)))
+        tile.setpoint_rate_bbl_day = clamped
+        return {
+            "ok": True,
+            "treasury_after": self.state.treasury,
+            "result": {
+                "refinery_id": tile.id,
+                "setpoint_rate_bbl_day": clamped,
+            },
+        }
+
     def _well_at(self, x: int, y: int) -> Well | None:
         for w in self.state.wells:
             if w.x == x and w.y == y:
@@ -453,7 +481,19 @@ class World:
                 inj_total_kw += power_kw
             inj_kwh_today += inj_total_kw
 
-            demand_kw = civilian_demand_kw + inj_total_kw
+            # Refinery process load (slice 09): hourly kW = yesterday's actual
+            # throughput × KWH_PER_BBL / 24. The 1-day lag mirrors DR injection
+            # — actual throughput for day D is only known AFTER the production
+            # loop runs at end of day, so the hourly demand must read the
+            # previous day's pinned value. Day 0 sees 0 since no crude has
+            # been produced yet.
+            refinery_process_load_kw = sum(
+                refinery_process_kw(t.current_throughput_bbl_day)
+                for t in self.state.tiles
+                if t.type == "refinery" and t.operational
+            )
+
+            demand_kw = civilian_demand_kw + inj_total_kw + refinery_process_load_kw
 
             plants = [t for t in self.state.tiles if t.type in PLANT_TYPES]
             outputs, supply_kw, by_source = dispatch(
@@ -560,7 +600,7 @@ class World:
         # is the deterministic ordering required for shared-pool resolution.
         # `pressure_boost = min(0.5, inj_total / V_init)` from injection
         # wells whose 3×3×3 pools intersect this production well's pool.
-        oil_revenue = 0.0
+        total_crude_bbl = 0.0
         for well in self.state.wells:
             if well.type != "production":
                 continue
@@ -580,9 +620,32 @@ class World:
             )
             well.current_rate_bbl_day = q
             well.cumulative_produced_bbl += q
-            oil_revenue += q * CRUDE_PRICE_USD_PER_BBL
+            total_crude_bbl += q
+
+        # Refinery routing (brief §4.6). Crude flows to operational refineries
+        # by descending setpoint, id-ascending tiebreak; surplus sells raw.
+        # Process loads are unbilled (no retail revenue) — they only show up
+        # in dispatch demand and on plant fuel-burn / carbon ledgers.
+        refineries = [t for t in self.state.tiles if t.type == "refinery" and t.operational]
+        per_refinery_actual = route_crude(refineries, total_crude_bbl)
+        total_refined_input = sum(per_refinery_actual.values())
+        for r in refineries:
+            r.current_throughput_bbl_day = per_refinery_actual.get(r.id, 0.0)
+        # Inoperable refineries reset to 0 so their next-day power load is 0.
+        for t in self.state.tiles:
+            if t.type == "refinery" and not t.operational:
+                t.current_throughput_bbl_day = 0.0
+
+        crude_direct_bbl = max(0.0, total_crude_bbl - total_refined_input)
+        crude_revenue = crude_direct_bbl * CRUDE_PRICE_USD_PER_BBL
+        # Yield is applied here (not in route_crude) so the routing remains
+        # purely about input allocation; one place owns the 0.85 constant.
+        refined_revenue = total_refined_input * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
+        oil_revenue = crude_revenue + refined_revenue
         if oil_revenue:
             self.state.today_summary_so_far["oil_revenue"] = oil_revenue
+            self.state.today_summary_so_far["crude_revenue"] = crude_revenue
+            self.state.today_summary_so_far["refined_revenue"] = refined_revenue
             self.state.treasury += oil_revenue
 
         # Carry today's blackout-hour count into tomorrow's population update.

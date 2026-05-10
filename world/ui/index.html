@@ -86,6 +86,22 @@
           reservoirs (Subsurface tab) show the best targets. Setpoint slider
           calls <code>POST /control/well</code>.
         </p>
+        <h2>Refineries</h2>
+        <div id="refineries-stats" class="wells-stats">—</div>
+        <table id="refineriestable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>(x, y)</th>
+              <th>Setpoint (bbl/day)</th>
+              <th>Throughput (yesterday)</th>
+              <th>Refined (yesterday)</th>
+            </tr>
+          </thead>
+          <tbody id="refineriestable-body"></tbody>
+        </table>
+        <h2>Finance — yesterday</h2>
+        <ul id="financelist" class="finance-list"></ul>
       </div>
     </section>
     <section id="tab-power" class="tabpanel">

@@ -58,6 +58,11 @@ class WellControlBody(BaseModel):
     rate_bbl_day: float
 
 
+class RefineryControlBody(BaseModel):
+    refinery_id: str
+    rate_bbl_day: float
+
+
 def create_app(world: World | None = None, action_log: ActionLog | None = None) -> FastAPI:
     app = FastAPI(title="Energy-AI Nexus", version="0.1.0")
 
@@ -174,6 +179,19 @@ def create_app(world: World | None = None, action_log: ActionLog | None = None) 
         result = app.state.world.control_well(body.well_id, body.rate_bbl_day)
         app.state.action_log.append(
             "/control/well",
+            params,
+            ok=result["ok"],
+            error=result.get("error"),
+            result=result.get("result"),
+        )
+        return result
+
+    @app.post("/control/refinery")
+    def post_control_refinery(body: RefineryControlBody) -> dict[str, Any]:
+        params = body.model_dump()
+        result = app.state.world.control_refinery(body.refinery_id, body.rate_bbl_day)
+        app.state.action_log.append(
+            "/control/refinery",
             params,
             ok=result["ok"],
             error=result.get("error"),

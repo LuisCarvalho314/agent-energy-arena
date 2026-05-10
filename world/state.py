@@ -21,6 +21,12 @@ class Tile:
     opex_per_day: float = 0.0
     housing_capacity: int = 0
     jobs: int = 0
+    # Refinery-specific (slice 09): setpoint and yesterday's actual throughput.
+    # Hourly demand reads `current_throughput_bbl_day` (1-day lag) so the
+    # process-load contribution to dispatch is well-defined; end-of-day
+    # routing pins it after the production loop runs.
+    setpoint_rate_bbl_day: float = 0.0
+    current_throughput_bbl_day: float = 0.0
 
 
 @dataclass
@@ -85,6 +91,8 @@ class WorldState:
             "tax_revenue": 0.0,
             "power_revenue": 0.0,
             "oil_revenue": 0.0,
+            "crude_revenue": 0.0,
+            "refined_revenue": 0.0,
             "opex": 0.0,
             "fuel_cost": 0.0,
             "carbon_cost": 0.0,

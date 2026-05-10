@@ -102,8 +102,10 @@ def _commercial_peak_kw(state: WorldState) -> float:
 
 
 def _process_loads_kw(state: WorldState) -> float:
-    # Refineries (slice 09) and injection wells (slice 08) will contribute here.
-    # The slice-04 world has neither, so this is always 0.0.
+    # Process loads (injection wells, refineries) are added directly by the
+    # sim loop alongside civilian demand — they need to be split out so power
+    # revenue bills only the civilian portion. This stub stays at 0.0 so
+    # `total_demand_kw` returns the civilian-only figure.
     return 0.0
 
 

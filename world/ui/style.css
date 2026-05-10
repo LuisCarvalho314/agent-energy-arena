@@ -232,3 +232,51 @@ main {
 #wellstable input[type="range"] { width: 120px; vertical-align: middle; }
 #wellstable .setpoint-val { color: #c9cad0; margin-left: 0.4rem; display: inline-block; min-width: 36px; }
 .wells-hint { font-size: 0.75rem; color: #8b8f9a; line-height: 1.4; margin: 0.75rem 0 0; }
+
+#wellswrap h2 {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.9rem;
+  color: #c9cad0;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+#refineriestable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+#refineriestable th,
+#refineriestable td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #2a2d34;
+  font-variant-numeric: tabular-nums;
+}
+#refineriestable th {
+  color: #8b8f9a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+}
+#refineriestable td.actual { color: #f5d76e; }
+#refineriestable td.cumulative { color: #a8d8ff; }
+#refineriestable input[type="range"] { width: 120px; vertical-align: middle; }
+#refineriestable .setpoint-val { color: #c9cad0; margin-left: 0.4rem; display: inline-block; min-width: 36px; }
+
+.finance-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.finance-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid #2a2d34;
+}
+.finance-row.positive .finance-value { color: #3fbf7f; }
+.finance-row.negative .finance-value { color: #ff7a59; }
+.finance-row.neutral .finance-value { color: #8b8f9a; }
+.finance-label { color: #c9cad0; }

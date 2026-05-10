@@ -25,6 +25,7 @@
     wind_turbine: "#6dd5ed",
     coal_plant: "#c97676",
     gas_peaker: "#d09bff",
+    refinery: "#e07a4d",
   };
 
   const PLANT_TYPES = ["solar_farm", "wind_turbine", "coal_plant", "gas_peaker"];
@@ -33,10 +34,14 @@
   let rows = 32;
   let tiles = [];
   let wells = [];
+  let summary = {};
   let treasury = 0;
   let catalog = null;
   let selectedType = null;
   let hoverCell = null;
+
+  const REFINERY_YIELD = 0.85;
+  const REFINERY_MAX_BBL_DAY = 500;
 
   function showToast(msg, kind = "error") {
     toastEl.textContent = msg;
@@ -162,6 +167,7 @@
       "industrial",
       "park",
       "pipeline",
+      "refinery",
       "solar_farm",
       "wind_turbine",
       "gas_peaker",
@@ -462,6 +468,92 @@
   // Wells tab rendering ----------------------------------------------------
   const wellsTableBody = document.getElementById("wellstable-body");
   const wellsStatsEl = document.getElementById("wells-stats");
+  const refineriesTableBody = document.getElementById("refineriestable-body");
+  const refineriesStatsEl = document.getElementById("refineries-stats");
+  const financeListEl = document.getElementById("financelist");
+
+  async function setRefineryRate(refineryId, rate) {
+    try {
+      await fetch("/control/refinery", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refinery_id: refineryId, rate_bbl_day: rate }),
+      });
+      tick();
+    } catch (err) {
+      showToast(`network error: ${err}`, "error");
+    }
+  }
+
+  function renderRefineries() {
+    if (!refineriesTableBody) return;
+    refineriesTableBody.innerHTML = "";
+    const refineries = tiles.filter((t) => t.type === "refinery");
+    if (refineries.length === 0) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.style.color = "#5a5d65";
+      td.style.fontSize = "0.8rem";
+      td.style.textAlign = "center";
+      td.textContent = "no refineries built — POST /build { tile_type: 'refinery' }";
+      tr.appendChild(td);
+      refineriesTableBody.appendChild(tr);
+    } else {
+      for (const r of refineries) {
+        const setpoint = r.setpoint_rate_bbl_day || 0;
+        const throughput = r.current_throughput_bbl_day || 0;
+        const refined = throughput * REFINERY_YIELD;
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${r.id}</td>
+          <td>(${r.x}, ${r.y})</td>
+          <td>
+            <input type="range" min="0" max="${REFINERY_MAX_BBL_DAY}" step="10" value="${setpoint}" data-id="${r.id}" />
+            <span class="setpoint-val">${Math.round(setpoint)}</span>
+          </td>
+          <td class="actual">${throughput.toFixed(1)}</td>
+          <td class="cumulative">${refined.toFixed(1)}</td>
+        `;
+        refineriesTableBody.appendChild(tr);
+        const slider = tr.querySelector("input[type=range]");
+        const valEl = tr.querySelector(".setpoint-val");
+        slider.addEventListener("input", () => {
+          valEl.textContent = String(slider.value);
+        });
+        slider.addEventListener("change", () => {
+          setRefineryRate(r.id, parseFloat(slider.value));
+        });
+      }
+    }
+    if (refineriesStatsEl) {
+      const totalSetpoint = refineries.reduce((a, r) => a + (r.setpoint_rate_bbl_day || 0), 0);
+      const totalThroughput = refineries.reduce((a, r) => a + (r.current_throughput_bbl_day || 0), 0);
+      refineriesStatsEl.textContent = `${refineries.length} refineries · ${totalSetpoint.toFixed(0)} bbl/d setpoint · ${totalThroughput.toFixed(1)} bbl/d throughput`;
+    }
+  }
+
+  function renderFinance() {
+    if (!financeListEl) return;
+    financeListEl.innerHTML = "";
+    const rows = [
+      ["Tax revenue", summary.tax_revenue || 0, "+"],
+      ["Power revenue", summary.power_revenue || 0, "+"],
+      ["Crude (direct sale)", summary.crude_revenue || 0, "+"],
+      ["Refined oil", summary.refined_revenue || 0, "+"],
+      ["OPEX", -(summary.opex || 0), "-"],
+      ["Fuel cost", -(summary.fuel_cost || 0), "-"],
+      ["Carbon cost", -(summary.carbon_cost || 0), "-"],
+      ["Blackout penalty", -(summary.blackout_penalty || 0), "-"],
+    ];
+    for (const [label, value, sign] of rows) {
+      const li = document.createElement("li");
+      const cls = value > 0 ? "positive" : value < 0 ? "negative" : "neutral";
+      li.className = `finance-row ${cls}`;
+      li.innerHTML = `<span class="finance-label">${label}</span><span class="finance-value">${sign === "-" ? "-" : ""}$${Math.abs(Math.round(value)).toLocaleString()}</span>`;
+      financeListEl.appendChild(li);
+    }
+  }
 
   async function setWellRate(wellId, rate) {
     try {
@@ -543,6 +635,7 @@
       }
       tiles = s.tiles || [];
       wells = s.wells || [];
+      summary = s.today_summary_so_far || {};
       treasury = s.treasury;
       els.day.textContent = s.day;
       els.treasury.textContent = Math.round(s.treasury).toLocaleString();
@@ -554,6 +647,8 @@
       renderPowerChart(s.last_day_supply_kw_by_hour, s.last_day_demand_kw_by_hour);
       renderPlantList(tiles);
       renderWells();
+      renderRefineries();
+      renderFinance();
       drawGrid();
       // Refresh revealed voxels lazily when the subsurface tab is visible.
       const subPanel = document.getElementById("tab-subsurface");
