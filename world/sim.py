@@ -559,6 +559,17 @@ class World:
                     excess_kw * self.config.grid_price_export
                 )
 
+            # Renewable-share accumulator (PRD §"Scoring"). served_kw is the
+            # kWh actually delivered to loads this hour (curtailed export
+            # excluded by construction — compute_balance_state caps served at
+            # demand). renewable_served caps the renewable supply at served
+            # so any renewable kWh that fell into curtailment is dropped from
+            # both numerator and denominator.
+            renewable_supply_kw = by_source.get("solar", 0.0) + by_source.get("wind", 0.0)
+            renewable_served_kw = min(renewable_supply_kw, served_kw)
+            self.state.cumulative_total_served_kwh += served_kw
+            self.state.cumulative_renewable_served_kwh += renewable_served_kw
+
             # DR injection commits: only count bbl actually delivered. If
             # supply collapsed and the grid went brownout/blackout this hour,
             # injection wells STILL contributed their pre-set baseline to
@@ -752,4 +763,6 @@ class World:
             "last_day_demand_kw_by_hour": list(s.last_day_demand_kw_by_hour),
             "last_day_balance_state_by_hour": list(s.last_day_balance_state_by_hour),
             "today_summary_so_far": s.today_summary_so_far,
+            "cumulative_renewable_served_kwh": s.cumulative_renewable_served_kwh,
+            "cumulative_total_served_kwh": s.cumulative_total_served_kwh,
         }

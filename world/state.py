@@ -74,6 +74,13 @@ class WorldState:
     # cumulative occurrences per game).
     carbon_price: float = 25.0
 
+    # Lifetime served-kWh accumulators for the renewable share term in the
+    # scoring formula (PRD §"Scoring"). Both are reset on /reset and updated
+    # at the end of each hour; curtailed kWh (the post-demand surplus exported
+    # to the external grid) is excluded from BOTH numerator and denominator.
+    cumulative_renewable_served_kwh: float = 0.0
+    cumulative_total_served_kwh: float = 0.0
+
     weather_now: dict[str, float] = field(
         default_factory=lambda: {
             "solar_irradiance": 0.0,
