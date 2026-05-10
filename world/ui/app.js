@@ -32,6 +32,7 @@
   let cols = 32;
   let rows = 32;
   let tiles = [];
+  let wells = [];
   let treasury = 0;
   let catalog = null;
   let selectedType = null;
@@ -458,6 +459,69 @@
   if (subAxisEl) subAxisEl.addEventListener("change", renderSubsurface);
   if (subSliceEl) subSliceEl.addEventListener("input", renderSubsurface);
 
+  // Wells tab rendering ----------------------------------------------------
+  const wellsTableBody = document.getElementById("wellstable-body");
+  const wellsStatsEl = document.getElementById("wells-stats");
+
+  async function setWellRate(wellId, rate) {
+    try {
+      await fetch("/control/well", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ well_id: wellId, rate_bbl_day: rate }),
+      });
+      tick();
+    } catch (err) {
+      showToast(`network error: ${err}`, "error");
+    }
+  }
+
+  function renderWells() {
+    if (!wellsTableBody) return;
+    wellsTableBody.innerHTML = "";
+    if (wells.length === 0) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.style.color = "#5a5d65";
+      td.style.fontSize = "0.8rem";
+      td.style.textAlign = "center";
+      td.textContent = "no wells drilled — POST /drill { x, y, target_z, well_type }";
+      tr.appendChild(td);
+      wellsTableBody.appendChild(tr);
+    } else {
+      for (const w of wells) {
+        const tr = document.createElement("tr");
+        const setpoint = w.setpoint_rate_bbl_day || 0;
+        tr.innerHTML = `
+          <td>${w.id}</td>
+          <td>${w.type}</td>
+          <td>(${w.x}, ${w.y}, ${w.target_z})</td>
+          <td>
+            <input type="range" min="0" max="200" step="5" value="${setpoint}" data-id="${w.id}" />
+            <span class="setpoint-val">${Math.round(setpoint)}</span>
+          </td>
+          <td class="actual">${(w.current_rate_bbl_day || 0).toFixed(1)}</td>
+          <td class="cumulative">${Math.round(w.cumulative_produced_bbl || 0).toLocaleString()}</td>
+        `;
+        wellsTableBody.appendChild(tr);
+        const slider = tr.querySelector("input[type=range]");
+        const valEl = tr.querySelector(".setpoint-val");
+        slider.addEventListener("input", () => {
+          valEl.textContent = String(slider.value);
+        });
+        slider.addEventListener("change", () => {
+          setWellRate(w.id, parseFloat(slider.value));
+        });
+      }
+    }
+    if (wellsStatsEl) {
+      const totalCum = wells.reduce((acc, w) => acc + (w.cumulative_produced_bbl || 0), 0);
+      const totalRate = wells.reduce((acc, w) => acc + (w.current_rate_bbl_day || 0), 0);
+      wellsStatsEl.textContent = `${wells.length} wells · ${totalRate.toFixed(1)} bbl/day actual · ${Math.round(totalCum).toLocaleString()} bbl cumulative`;
+    }
+  }
+
   async function tick() {
     try {
       const res = await fetch("/state");
@@ -471,6 +535,7 @@
         subSliceEl.dataset.bounded = "1";
       }
       tiles = s.tiles || [];
+      wells = s.wells || [];
       treasury = s.treasury;
       els.day.textContent = s.day;
       els.treasury.textContent = Math.round(s.treasury).toLocaleString();
@@ -481,6 +546,7 @@
       els.balance.className = `balance-badge ${balanceState}`;
       renderPowerChart(s.last_day_supply_kw_by_hour, s.last_day_demand_kw_by_hour);
       renderPlantList(tiles);
+      renderWells();
       drawGrid();
       // Refresh revealed voxels lazily when the subsurface tab is visible.
       const subPanel = document.getElementById("tab-subsurface");

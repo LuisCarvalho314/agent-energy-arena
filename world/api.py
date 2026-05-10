@@ -46,6 +46,18 @@ class SurveyBody(BaseModel):
     size: int = Field(default=8)
 
 
+class DrillBody(BaseModel):
+    x: int
+    y: int
+    target_z: int
+    well_type: str = Field(default="production")
+
+
+class WellControlBody(BaseModel):
+    well_id: str
+    rate_bbl_day: float
+
+
 def create_app(world: World | None = None, action_log: ActionLog | None = None) -> FastAPI:
     app = FastAPI(title="Energy-AI Nexus", version="0.1.0")
 
@@ -142,6 +154,32 @@ def create_app(world: World | None = None, action_log: ActionLog | None = None) 
         if top_k < 1 or top_k > 4096:
             raise HTTPException(status_code=400, detail="top_k must be in [1, 4096]")
         return app.state.world.reservoirs(min_oil=min_oil, top_k=top_k)
+
+    @app.post("/drill")
+    def post_drill(body: DrillBody) -> dict[str, Any]:
+        params = body.model_dump()
+        result = app.state.world.drill(body.x, body.y, body.target_z, body.well_type)
+        app.state.action_log.append(
+            "/drill",
+            params,
+            ok=result["ok"],
+            error=result.get("error"),
+            result=result.get("result"),
+        )
+        return result
+
+    @app.post("/control/well")
+    def post_control_well(body: WellControlBody) -> dict[str, Any]:
+        params = body.model_dump()
+        result = app.state.world.control_well(body.well_id, body.rate_bbl_day)
+        app.state.action_log.append(
+            "/control/well",
+            params,
+            ok=result["ok"],
+            error=result.get("error"),
+            result=result.get("result"),
+        )
+        return result
 
     @app.post("/demolish")
     def post_demolish(body: DemolishBody) -> dict[str, Any]:

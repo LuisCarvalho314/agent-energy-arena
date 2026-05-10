@@ -34,6 +34,11 @@ class Well:
     setpoint_rate_bbl_day: float = 0.0
     current_rate_bbl_day: float = 0.0
     cumulative_produced_bbl: float = 0.0
+    cumulative_injected_bbl: float = 0.0
+    # Catalog snapshot at drill time (kept on the well so the daily OPEX
+    # accrual is independent of catalog retunes between sessions).
+    capex_paid: float = 0.0
+    opex_per_day: float = 0.0
 
 
 @dataclass

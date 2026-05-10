@@ -200,3 +200,35 @@ main {
   border-radius: 2px;
 }
 .sub-hint { font-size: 0.75rem; color: #8b8f9a; line-height: 1.4; margin: 0.5rem 0 0; }
+
+#tab-wells.active { padding: 1rem 1.5rem; }
+#wellswrap { width: 720px; max-width: 100%; }
+.wells-stats {
+  font-size: 0.85rem;
+  color: #8b8f9a;
+  margin-bottom: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+#wellstable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+#wellstable th,
+#wellstable td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid #2a2d34;
+  font-variant-numeric: tabular-nums;
+}
+#wellstable th {
+  color: #8b8f9a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+}
+#wellstable td.actual { color: #f5d76e; }
+#wellstable td.cumulative { color: #a8d8ff; }
+#wellstable input[type="range"] { width: 120px; vertical-align: middle; }
+#wellstable .setpoint-val { color: #c9cad0; margin-left: 0.4rem; display: inline-block; min-width: 36px; }
+.wells-hint { font-size: 0.75rem; color: #8b8f9a; line-height: 1.4; margin: 0.75rem 0 0; }

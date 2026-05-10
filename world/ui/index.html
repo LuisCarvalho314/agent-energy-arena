@@ -18,6 +18,7 @@
     <button class="tab active" data-tab="map">Map</button>
     <button class="tab" data-tab="power">Power</button>
     <button class="tab" data-tab="subsurface">Subsurface</button>
+    <button class="tab" data-tab="wells">Wells</button>
   </nav>
   <main>
     <section id="tab-map" class="tabpanel active">
@@ -61,6 +62,29 @@
         <p class="sub-hint">
           Survey columns from <code>POST /survey</code> to reveal voxels at
           all depths. Resurveys add independent noise samples.
+        </p>
+      </div>
+    </section>
+    <section id="tab-wells" class="tabpanel">
+      <div id="wellswrap">
+        <div id="wells-stats" class="wells-stats">—</div>
+        <table id="wellstable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>(x, y, z)</th>
+              <th>Setpoint (bbl/day)</th>
+              <th>Actual</th>
+              <th>Cumulative</th>
+            </tr>
+          </thead>
+          <tbody id="wellstable-body"></tbody>
+        </table>
+        <p class="wells-hint">
+          Drill production wells via <code>POST /drill</code>; surveyed
+          reservoirs (Subsurface tab) show the best targets. Setpoint slider
+          calls <code>POST /control/well</code>.
         </p>
       </div>
     </section>

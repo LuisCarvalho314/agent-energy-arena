@@ -41,6 +41,13 @@ POROSITY_MIN, POROSITY_MAX = 0.10, 0.30
 PERM_LOG_MIN, PERM_LOG_MAX = 10.0, 1000.0
 OIL_SAT_MIN, OIL_SAT_MAX = 0.55, 0.80
 
+# Well production (brief §4.5).
+Q_MAX_WELL_BBL_DAY: float = 200.0
+PERM_NORMALIZATION_MD: float = 500.0  # divides mean(perm) so k_eff is dimensionless
+CRUDE_PRICE_USD_PER_BBL: float = 40.0
+WELL_SETPOINT_MIN: float = 0.0
+WELL_SETPOINT_MAX: float = Q_MAX_WELL_BBL_DAY
+
 
 @dataclass
 class Voxel:
@@ -242,6 +249,66 @@ def revealed_voxels(
     if top_k is not None:
         rows = rows[: max(0, top_k)]
     return rows
+
+
+def voxels_in_3x3x3(grid: SubsurfaceGrid, x: int, y: int, target_z: int) -> tuple[list[Voxel], int]:
+    """Return (hc_voxels, n_positions) for the 3×3×3 pool centered on
+    (x, y, target_z), clipped to grid bounds (no padding).
+
+    `n_positions` is the count of in-grid cells in the pool — including
+    non-HC ones, which contribute oil_in_place=0 and permeability=0
+    implicitly. The mean-of-perm in §4.5 divides by `n_positions`, not by
+    the number of HC voxels, so non-HC cells dilute k_eff as the brief
+    requires.
+    """
+    pool: list[Voxel] = []
+    n_positions = 0
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                vx, vy, vz = x + dx, y + dy, target_z + dz
+                if not (0 <= vx < grid.width and 0 <= vy < grid.height and 0 <= vz < grid.depth):
+                    continue
+                n_positions += 1
+                v = grid.get(vx, vy, vz)
+                if v is not None:
+                    pool.append(v)
+    return pool, n_positions
+
+
+def well_production_bbl_day(
+    grid: SubsurfaceGrid,
+    x: int,
+    y: int,
+    target_z: int,
+    setpoint_rate_bbl_day: float,
+) -> float:
+    """Run the brief §4.5 production formula for one day. Mutates
+    `oil_remaining_bbl` on the pool's HC voxels by perm × remaining
+    weights, and returns `q_actual` (bbl produced today).
+
+    Slice 07 leaves `effective_fraction = fraction` (no injection
+    pressure boost yet — slice 08 wires that in).
+    """
+    pool, n_positions = voxels_in_3x3x3(grid, x, y, target_z)
+    if n_positions == 0:
+        return 0.0
+    V_init = sum(v.oil_in_place_bbl for v in pool)
+    if V_init <= 0.0:
+        return 0.0
+    V_remain = sum(v.oil_remaining_bbl for v in pool)
+    fraction = V_remain / V_init
+    k_eff = sum(v.permeability for v in pool) / n_positions / PERM_NORMALIZATION_MD
+    effective_fraction = min(1.0, fraction)
+    q_potential = Q_MAX_WELL_BBL_DAY * k_eff * effective_fraction
+    q_actual = max(0.0, min(float(setpoint_rate_bbl_day), q_potential))
+
+    weights = [v.permeability * v.oil_remaining_bbl for v in pool]
+    W = sum(weights)
+    if W > 0.0 and q_actual > 0.0:
+        for v, w in zip(pool, weights, strict=False):
+            v.oil_remaining_bbl = max(0.0, v.oil_remaining_bbl - q_actual * w / W)
+    return q_actual
 
 
 def reservoirs_summary(grid: SubsurfaceGrid, *, top_k: int = 10) -> dict[str, Any]:

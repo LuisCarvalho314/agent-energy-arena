@@ -120,6 +120,22 @@ TILE_CATALOG: dict[str, TileSpec] = {
         fuel_cost_per_mwh=20.0,
         co2_t_per_mwh=0.9,
     ),
+    "oil_well": TileSpec(
+        tile_type="oil_well",
+        capex=50_000,
+        opex_per_day=100,
+        requires_road=False,
+        description="Production well. Setpoint 0-200 bbl/day. Drilled via /drill.",
+        buildable=False,
+    ),
+    "injection_well": TileSpec(
+        tile_type="injection_well",
+        capex=30_000,
+        opex_per_day=50,
+        requires_road=False,
+        description="Injection well. Setpoint 0-200 bbl/day. 50 kWh/bbl. Drilled via /drill.",
+        buildable=False,
+    ),
     "town_hall": TileSpec(
         tile_type="town_hall",
         capex=0,
@@ -133,26 +149,36 @@ TILE_CATALOG: dict[str, TileSpec] = {
 }
 
 
+WELL_TYPES: frozenset[str] = frozenset({"oil_well", "injection_well"})
+
+
+def _spec_to_dict(spec: TileSpec) -> dict[str, Any]:
+    return {
+        "tile_type": spec.tile_type,
+        "capex": spec.capex,
+        "opex_per_day": spec.opex_per_day,
+        "requires_road": spec.requires_road,
+        "description": spec.description,
+        "housing_capacity": spec.housing_capacity,
+        "jobs": spec.jobs,
+        "demand_kw": spec.demand_kw,
+        "capacity_kw": spec.capacity_kw,
+        "fuel_cost_per_mwh": spec.fuel_cost_per_mwh,
+        "co2_t_per_mwh": spec.co2_t_per_mwh,
+        "buildable": spec.buildable,
+    }
+
+
 def build_catalog() -> dict[str, Any]:
-    tiles = []
+    tiles: list[dict[str, Any]] = []
+    wells: list[dict[str, Any]] = []
     for spec in TILE_CATALOG.values():
-        tiles.append(
-            {
-                "tile_type": spec.tile_type,
-                "capex": spec.capex,
-                "opex_per_day": spec.opex_per_day,
-                "requires_road": spec.requires_road,
-                "description": spec.description,
-                "housing_capacity": spec.housing_capacity,
-                "jobs": spec.jobs,
-                "demand_kw": spec.demand_kw,
-                "capacity_kw": spec.capacity_kw,
-                "fuel_cost_per_mwh": spec.fuel_cost_per_mwh,
-                "co2_t_per_mwh": spec.co2_t_per_mwh,
-                "buildable": spec.buildable,
-            }
-        )
-    return {"tiles": tiles, "wells": []}
+        entry = _spec_to_dict(spec)
+        if spec.tile_type in WELL_TYPES:
+            wells.append(entry)
+        else:
+            tiles.append(entry)
+    return {"tiles": tiles, "wells": wells}
 
 
 def is_buildable(tile_type: str) -> bool:

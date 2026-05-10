@@ -29,14 +29,18 @@ from world.power import (
     dispatch,
     total_demand_kw,
 )
-from world.state import Tile, WorldState
+from world.state import Tile, Well, WorldState
 from world.subsurface import (
+    CRUDE_PRICE_USD_PER_BBL,
+    WELL_SETPOINT_MAX,
+    WELL_SETPOINT_MIN,
     SubsurfaceGrid,
     generate_subsurface,
     is_size_valid,
     reservoirs_summary,
     revealed_voxels,
     survey_cost,
+    well_production_bbl_day,
 )
 from world.subsurface import survey as run_survey
 from world.weather import (
@@ -64,6 +68,23 @@ def _tile_to_dict(t: Tile) -> dict[str, Any]:
     }
 
 
+def _well_to_dict(w: Well) -> dict[str, Any]:
+    return {
+        "id": w.id,
+        "type": w.type,
+        "x": w.x,
+        "y": w.y,
+        "target_z": w.target_z,
+        "drilled_day": w.drilled_day,
+        "setpoint_rate_bbl_day": w.setpoint_rate_bbl_day,
+        "current_rate_bbl_day": w.current_rate_bbl_day,
+        "cumulative_produced_bbl": w.cumulative_produced_bbl,
+        "cumulative_injected_bbl": w.cumulative_injected_bbl,
+        "capex_paid": w.capex_paid,
+        "opex_per_day": w.opex_per_day,
+    }
+
+
 @dataclass
 class StepSummary:
     ok: bool
@@ -81,6 +102,7 @@ class World:
         self.forecast_rng: np.random.Generator
         self.wind_phi_seed: float = 0.0
         self._tile_seq: int = 0
+        self._well_seq: int = 0
         # Previous hour's per-plant outputs, persisted across hours and days.
         # Keyed by plant id. Used by `dispatch` to enforce ramp limits.
         self._prev_plant_outputs: dict[str, float] = {}
@@ -126,6 +148,7 @@ class World:
         self.state.weather_now["wind_direction_deg"] = INITIAL_WIND_DIRECTION_DEG
         self.state.weather_now["solar_irradiance"] = 0.0
         self._tile_seq = 0
+        self._well_seq = 0
         self._prev_plant_outputs = {}
         # Subsurface generation consumes sim_rng draws BEFORE any /step is
         # called. Same-seed reset is therefore byte-reproducible (§3.5
@@ -268,6 +291,72 @@ class World:
             },
         }
 
+    # -- Wells (drill + control) ------------------------------------------
+
+    def drill(self, x: int, y: int, target_z: int, well_type: str) -> dict[str, Any]:
+        if well_type not in ("production", "injection"):
+            return self._build_error("invalid_well_type")
+        if not in_bounds(x, y, self.config.world_w, self.config.world_h):
+            return self._build_error("out_of_bounds")
+        if not (0 <= target_z < self.config.world_d):
+            return self._build_error("voxel_out_of_bounds")
+        # Brief §4.12: two wells cannot share the same (x, y) — even if
+        # they target different z. The `tile_occupied` error name matches
+        # the build-side rejection for consistency with the issue AC.
+        if self._well_at(x, y) is not None:
+            return self._build_error("tile_occupied")
+
+        spec_type = "oil_well" if well_type == "production" else "injection_well"
+        spec = TILE_CATALOG[spec_type]
+        if self.state.treasury < spec.capex:
+            return self._build_error("insufficient_funds")
+
+        self.state.treasury -= spec.capex
+        well = Well(
+            id=self._next_well_id(well_type),
+            type=well_type,
+            x=x,
+            y=y,
+            target_z=target_z,
+            drilled_day=self.state.day,
+            capex_paid=spec.capex,
+            opex_per_day=spec.opex_per_day,
+        )
+        self.state.wells.append(well)
+        return {
+            "ok": True,
+            "treasury_after": self.state.treasury,
+            "result": _well_to_dict(well),
+        }
+
+    def control_well(self, well_id: str, rate_bbl_day: float) -> dict[str, Any]:
+        well = next((w for w in self.state.wells if w.id == well_id), None)
+        if well is None:
+            return self._build_error("unknown_well")
+        # Setpoint is clamped to the hardware bounds [0, 200] bbl/day. Out
+        # of band requests succeed with the clamped value rather than fail,
+        # so an over-eager agent can't brick a control loop on a typo.
+        clamped = max(WELL_SETPOINT_MIN, min(WELL_SETPOINT_MAX, float(rate_bbl_day)))
+        well.setpoint_rate_bbl_day = clamped
+        return {
+            "ok": True,
+            "treasury_after": self.state.treasury,
+            "result": {
+                "well_id": well.id,
+                "setpoint_rate_bbl_day": clamped,
+            },
+        }
+
+    def _well_at(self, x: int, y: int) -> Well | None:
+        for w in self.state.wells:
+            if w.x == x and w.y == y:
+                return w
+        return None
+
+    def _next_well_id(self, well_type: str) -> str:
+        self._well_seq += 1
+        return f"{well_type}-{self._well_seq}"
+
     def reservoirs(self, *, min_oil: float = 0.0, top_k: int = 100) -> dict[str, Any]:
         rows = revealed_voxels(self.subsurface, min_oil=min_oil, top_k=top_k)
         return {
@@ -381,8 +470,11 @@ class World:
             demand_trace.append(demand_kw)
             balance_trace.append(balance)
 
-        # End-of-day OPEX accrual: every standing tile pays its daily OPEX.
-        opex_total = sum(t.opex_per_day for t in self.state.tiles)
+        # End-of-day OPEX accrual: every standing tile and drilled well
+        # pays its daily OPEX.
+        opex_total = sum(t.opex_per_day for t in self.state.tiles) + sum(
+            w.opex_per_day for w in self.state.wells
+        )
         if opex_total:
             self.state.treasury -= opex_total
             self.state.today_summary_so_far["opex"] = opex_total
@@ -400,6 +492,28 @@ class World:
         # Apply power revenue to treasury (the running tally was just adding
         # to today_summary_so_far; treasury credit happens once at day end).
         self.state.treasury += self.state.today_summary_so_far["power_revenue"]
+
+        # Production-well daily output (brief §4.5). Iterates wells in
+        # creation order — `state.wells` is appended-to on /drill — which
+        # is the deterministic ordering required for shared-pool resolution.
+        oil_revenue = 0.0
+        for well in self.state.wells:
+            if well.type != "production":
+                well.current_rate_bbl_day = 0.0
+                continue
+            q = well_production_bbl_day(
+                self.subsurface,
+                well.x,
+                well.y,
+                well.target_z,
+                well.setpoint_rate_bbl_day,
+            )
+            well.current_rate_bbl_day = q
+            well.cumulative_produced_bbl += q
+            oil_revenue += q * CRUDE_PRICE_USD_PER_BBL
+        if oil_revenue:
+            self.state.today_summary_so_far["oil_revenue"] = oil_revenue
+            self.state.treasury += oil_revenue
 
         # Carry today's blackout-hour count into tomorrow's population update.
         self.state.yesterday_blackout_hours = self.state.today_summary_so_far["blackout_hours"]
@@ -458,7 +572,7 @@ class World:
                 ),
             },
             "tiles": [_tile_to_dict(t) for t in s.tiles],
-            "wells": [],
+            "wells": [_well_to_dict(w) for w in s.wells],
             "reservoirs_revealed": reservoirs_summary(self.subsurface, top_k=10),
             "active_events": [],
             "weather_now": s.weather_now,
