@@ -17,8 +17,25 @@ from typing import Any
 
 import numpy as np
 
+from world.catalog import TILE_CATALOG, is_buildable
 from world.config import Config, load_config
-from world.state import WorldState
+from world.grid import has_road_adjacency, in_bounds
+from world.state import Tile, WorldState
+
+
+def _tile_to_dict(t: Tile) -> dict[str, Any]:
+    return {
+        "id": t.id,
+        "type": t.type,
+        "x": t.x,
+        "y": t.y,
+        "built_day": t.built_day,
+        "operational": t.operational,
+        "capex_paid": t.capex_paid,
+        "opex_per_day": t.opex_per_day,
+        "housing_capacity": t.housing_capacity,
+        "jobs": t.jobs,
+    }
 
 
 @dataclass
@@ -36,6 +53,7 @@ class World:
         self.state: WorldState = WorldState(seed=self.config.world_seed)
         self.sim_rng: np.random.Generator
         self.forecast_rng: np.random.Generator
+        self._tile_seq: int = 0
         self.reset(seed=self.config.world_seed)
 
     # -- Convenience accessors --------------------------------------------
@@ -65,6 +83,105 @@ class World:
             population=int(self.config.starting_pop),
             happiness=1.0,
         )
+        self._tile_seq = 0
+        self._place_town_hall()
+
+    def _place_town_hall(self) -> None:
+        spec = TILE_CATALOG["town_hall"]
+        self.state.tiles.append(
+            Tile(
+                id=self._next_tile_id("town_hall"),
+                type="town_hall",
+                x=self.config.world_w // 2,
+                y=self.config.world_h // 2,
+                built_day=0,
+                operational=True,
+                capex_paid=0.0,
+                opex_per_day=spec.opex_per_day,
+                housing_capacity=spec.housing_capacity,
+                jobs=spec.jobs,
+            )
+        )
+
+    def _next_tile_id(self, tile_type: str) -> str:
+        self._tile_seq += 1
+        return f"{tile_type}-{self._tile_seq}"
+
+    # -- Build / demolish --------------------------------------------------
+
+    def build(self, tile_type: str, x: int, y: int) -> dict[str, Any]:
+        if not is_buildable(tile_type):
+            return self._build_error("unknown_tile_type")
+        if not in_bounds(x, y, self.config.world_w, self.config.world_h):
+            return self._build_error("out_of_bounds")
+        if self._tile_at(x, y) is not None:
+            return self._build_error("tile_occupied")
+
+        spec = TILE_CATALOG[tile_type]
+        if spec.requires_road and not has_road_adjacency(
+            x, y, self.state.tiles, self.config.world_w, self.config.world_h
+        ):
+            return self._build_error("no_road_adjacency")
+        if self.state.treasury < spec.capex:
+            return self._build_error("insufficient_funds")
+
+        self.state.treasury -= spec.capex
+        tile = Tile(
+            id=self._next_tile_id(tile_type),
+            type=tile_type,
+            x=x,
+            y=y,
+            built_day=self.state.day,
+            operational=True,
+            capex_paid=spec.capex,
+            opex_per_day=spec.opex_per_day,
+            housing_capacity=spec.housing_capacity,
+            jobs=spec.jobs,
+        )
+        self.state.tiles.append(tile)
+        return {
+            "ok": True,
+            "treasury_after": self.state.treasury,
+            "result": _tile_to_dict(tile),
+        }
+
+    def demolish(self, x: int, y: int) -> dict[str, Any]:
+        if not in_bounds(x, y, self.config.world_w, self.config.world_h):
+            return self._build_error("out_of_bounds")
+        tile = self._tile_at(x, y)
+        if tile is None:
+            return self._build_error("no_tile")
+        if tile.type == "town_hall":
+            return self._build_error("cannot_demolish_townhall")
+
+        refund = 0.25 * tile.capex_paid
+        self.state.treasury += refund
+        self.state.tiles.remove(tile)
+        return {
+            "ok": True,
+            "treasury_after": self.state.treasury,
+            "result": {
+                "demolished_id": tile.id,
+                "type": tile.type,
+                "x": tile.x,
+                "y": tile.y,
+                "refund": refund,
+            },
+        }
+
+    def _tile_at(self, x: int, y: int) -> Tile | None:
+        for t in self.state.tiles:
+            if t.x == x and t.y == y:
+                return t
+        return None
+
+    def _build_error(self, code: str) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": code,
+            "treasury_after": self.state.treasury,
+            "result": None,
+        }
 
     # -- Time advance ------------------------------------------------------
 
@@ -94,12 +211,21 @@ class World:
         )
 
     def _advance_one_day(self) -> None:
-        # The world is empty in the skeleton slice — but the hourly loop and
-        # the per-day RNG draw are wired so that adding dynamics later does
-        # not change the determinism shape.
+        # Reset today's running summary at the start of each simulated day so
+        # callers can read per-day P&L from `state.today_summary_so_far`.
+        for k in self.state.today_summary_so_far:
+            self.state.today_summary_so_far[k] = 0.0
+
         for hour in range(self.config.ticks_per_day):
             self.state.hour = hour
             # placeholder for hourly dynamics; intentionally empty.
+
+        # End-of-day OPEX accrual: every standing tile pays its daily OPEX.
+        opex_total = sum(t.opex_per_day for t in self.state.tiles)
+        if opex_total:
+            self.state.treasury -= opex_total
+            self.state.today_summary_so_far["opex"] = opex_total
+
         # One mandatory daily draw locks in the "RNG advances per simulated
         # day" contract — even an empty world advances the stream.
         _ = self.sim_rng.standard_normal()
@@ -147,7 +273,7 @@ class World:
                     c.manual_game_days if self.session == "manual" else c.game_days
                 ),
             },
-            "tiles": [],
+            "tiles": [_tile_to_dict(t) for t in s.tiles],
             "wells": [],
             "reservoirs_revealed": [],
             "active_events": [],

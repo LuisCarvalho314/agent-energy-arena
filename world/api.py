@@ -1,7 +1,7 @@
-"""FastAPI surface for the simulation skeleton.
+"""FastAPI surface for the simulation.
 
-Only the endpoints required by issue 01 are wired:
-  /state, /step, /reset, /seed, /catalog, /forecast.
+Endpoints wired through slice 02:
+  /state, /step, /reset, /seed, /catalog, /forecast, /build, /demolish.
 All mutating calls (success or failure) are appended to
 runs/{run_id}/actions.jsonl.
 """
@@ -27,6 +27,17 @@ class ResetBody(BaseModel):
 
 class StepBody(BaseModel):
     days: int = Field(default=7, ge=1, le=7)
+
+
+class BuildBody(BaseModel):
+    tile_type: str
+    x: int
+    y: int
+
+
+class DemolishBody(BaseModel):
+    x: int
+    y: int
 
 
 def create_app(world: World | None = None, action_log: ActionLog | None = None) -> FastAPI:
@@ -87,6 +98,32 @@ def create_app(world: World | None = None, action_log: ActionLog | None = None) 
         except ValueError as exc:
             app.state.action_log.append("/step", params, ok=False, error=str(exc))
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/build")
+    def post_build(body: BuildBody) -> dict[str, Any]:
+        params = body.model_dump()
+        result = app.state.world.build(body.tile_type, body.x, body.y)
+        app.state.action_log.append(
+            "/build",
+            params,
+            ok=result["ok"],
+            error=result.get("error"),
+            result=result.get("result"),
+        )
+        return result
+
+    @app.post("/demolish")
+    def post_demolish(body: DemolishBody) -> dict[str, Any]:
+        params = body.model_dump()
+        result = app.state.world.demolish(body.x, body.y)
+        app.state.action_log.append(
+            "/demolish",
+            params,
+            ok=result["ok"],
+            error=result.get("error"),
+            result=result.get("result"),
+        )
+        return result
 
     # Static UI -----------------------------------------------------------
     ui_dir = Path(__file__).parent / "ui"

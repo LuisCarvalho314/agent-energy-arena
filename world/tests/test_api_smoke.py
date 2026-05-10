@@ -35,7 +35,8 @@ def test_smoke_reset_step_state_reset(tmp_path: Path) -> None:
     assert s["day"] == 0
     assert s["treasury"] == 500_000
     assert s["population"] == 100
-    assert s["tiles"] == []
+    # Town hall (slice 02) is auto-placed at the world center on /reset.
+    assert [t["type"] for t in s["tiles"]] == ["town_hall"]
     assert s["wells"] == []
     assert s["config"]["world_w"] == 32
     assert s["config"]["world_h"] == 32

@@ -12,10 +12,18 @@
     <div class="metric"><span class="label">Population</span><span id="population">—</span></div>
     <div class="metric"><span class="label">Happiness</span><span id="happiness">—</span></div>
     <div class="metric"><span class="label">Balance</span><span id="balance">—</span></div>
-    <button id="next-day" disabled>Next Day</button>
+    <button id="next-day">Next Day</button>
   </header>
   <main>
-    <canvas id="grid" width="640" height="640"></canvas>
+    <aside id="buildmenu">
+      <h2>Build</h2>
+      <ul id="buildlist"></ul>
+      <p id="buildhint">Click a tile type, then click the grid. Right-click a tile to demolish.</p>
+    </aside>
+    <section id="canvasrow">
+      <canvas id="grid" width="640" height="640"></canvas>
+      <div id="toast" class="toast"></div>
+    </section>
   </main>
   <script src="/ui/app.js"></script>
 </body>

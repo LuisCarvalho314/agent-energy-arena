@@ -15,6 +15,12 @@ class Tile:
     built_day: int
     operational: bool = True
     current_output_kw: float = 0.0
+    # Catalog snapshot at build time (kept on the tile so demolition refunds
+    # the originally paid CAPEX even if the catalog is later retuned).
+    capex_paid: float = 0.0
+    opex_per_day: float = 0.0
+    housing_capacity: int = 0
+    jobs: int = 0
 
 
 @dataclass
