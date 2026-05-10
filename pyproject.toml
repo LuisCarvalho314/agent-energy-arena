@@ -24,10 +24,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["world*", "agents*"]
-exclude = ["world.tests*"]
+exclude = ["world.tests*", "agents.tests*"]
 
 [tool.pytest.ini_options]
-testpaths = ["world/tests"]
+testpaths = ["world/tests", "agents/tests"]
 addopts = "-q"
 
 [tool.ruff]
@@ -53,7 +53,7 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.11"
-files = ["world"]
+files = ["world", "agents"]
 strict_optional = true
 warn_unused_ignores = true
 warn_redundant_casts = true
