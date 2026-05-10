@@ -24,10 +24,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["world*", "agents*"]
-exclude = ["world.tests*", "agents.tests*"]
+exclude = ["world.tests*", "agents.tests*", "tests*", "submit*"]
 
 [tool.pytest.ini_options]
-testpaths = ["world/tests", "agents/tests"]
+testpaths = ["world/tests", "agents/tests", "tests"]
 addopts = "-q"
 
 [tool.ruff]

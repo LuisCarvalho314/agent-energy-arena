@@ -11,7 +11,7 @@ PYTHON ?= $(shell \
 	elif [ -x ".venv/bin/python" ]; then echo ".venv/bin/python"; \
 	else echo python3; fi)
 
-.PHONY: help venv install test typecheck lint format format-check check play clean
+.PHONY: help venv install test typecheck lint format format-check check serve play eval score clean
 
 help:
 	@echo "Targets:"
@@ -23,7 +23,10 @@ help:
 	@echo "  format        Apply ruff format in-place"
 	@echo "  format-check  Verify ruff format without writing"
 	@echo "  check         lint + format-check + typecheck + test (commit gate)"
-	@echo "  play          Run uvicorn at :8000 against the world"
+	@echo "  serve         Run uvicorn locally at :8000 (no docker)"
+	@echo "  play          docker compose up — world + UI at :8000"
+	@echo "  eval          docker compose --profile eval run agent — score submit/agent.py"
+	@echo "  score         Run the scripted agent on seed 42 and print the score line"
 
 venv:
 	@test -d .venv || python3 -m venv .venv
@@ -49,8 +52,18 @@ format-check:
 
 check: lint format-check typecheck test
 
-play:
+serve:
 	$(PYTHON) -m uvicorn world.api:app --reload --host 0.0.0.0 --port 8000
+
+# The three commands every participant must remember (brief §11.2).
+play:
+	docker compose up
+
+eval:
+	docker compose --profile eval run --rm agent
+
+score:
+	$(PYTHON) evaluate.py --agent submit.agent --seed 42
 
 clean:
 	rm -rf .mypy_cache .ruff_cache .pytest_cache

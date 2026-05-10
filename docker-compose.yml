@@ -7,5 +7,25 @@ services:
       WORLD_SEED: "${WORLD_SEED:-42}"
       GAME_DAYS: "${GAME_DAYS:-3650}"
       MANUAL_GAME_DAYS: "${MANUAL_GAME_DAYS:-365}"
+      WORLD_W: "${WORLD_W:-32}"
+      WORLD_H: "${WORLD_H:-32}"
+      WORLD_D: "${WORLD_D:-16}"
     volumes:
       - ./runs:/app/runs
+
+  # Opt-in evaluator: `docker compose --profile eval run agent`.
+  # Mounts the participant's submit/ read-only and runs evaluate.py
+  # against the world service over HTTP.
+  agent:
+    build: .
+    depends_on: [world]
+    profiles: ["eval"]
+    environment:
+      WORLD_API_URL: "http://world:8000"
+      LLM_BASE_URL: "${LLM_BASE_URL:-}"
+      LLM_API_KEY: "${LLM_API_KEY:-}"
+      LLM_MODEL: "${LLM_MODEL:-}"
+    volumes:
+      - ./submit:/app/submit:ro
+      - ./runs:/app/runs
+    command: python evaluate.py --agent submit.agent --seed ${WORLD_SEED:-42}
