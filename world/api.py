@@ -91,7 +91,7 @@ def create_app(world: World | None = None, action_log: ActionLog | None = None) 
         }
 
     @app.get("/forecast")
-    def get_forecast(hours: int = 24) -> dict[str, Any]:
+    def get_forecast(hours: int = 24) -> list[dict[str, Any]]:
         if hours < 1 or hours > 168:
             raise HTTPException(status_code=400, detail="hours must be in [1, 168]")
         return app.state.world.forecast(hours=hours)

@@ -52,10 +52,15 @@ def test_smoke_reset_step_state_reset(tmp_path: Path) -> None:
     r = client.post("/step", json={"days": 8})
     assert r.status_code == 422
 
-    # /forecast returns a payload of the requested length.
+    # /forecast returns a list of records of the requested length.
     r = client.get("/forecast", params={"hours": 24})
     assert r.status_code == 200
-    assert len(r.json()["noise"]) == 24
+    payload = r.json()
+    assert isinstance(payload, list) and len(payload) == 24
+    assert payload[0]["hour_offset"] == 0
+    assert {"solar_irradiance", "wind_speed_mps", "demand_factor", "sigma"} <= set(
+        payload[0].keys()
+    )
 
     # /catalog is wired (empty in this slice).
     r = client.get("/catalog")

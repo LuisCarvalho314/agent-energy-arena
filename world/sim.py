@@ -706,19 +706,12 @@ class World:
         self.state.day += 1
         self.state.hour = 0
 
-    # -- Forecast (placeholder; uses forecast_rng) -------------------------
+    # -- Forecast (uses forecast_rng; never perturbs sim state) ------------
 
-    def forecast(self, hours: int = 24) -> dict[str, Any]:
-        # Skeleton: emit zero-mean noise from forecast_rng so we can prove
-        # this stream is independent from sim_rng.
-        noise = self.forecast_rng.standard_normal(int(hours)).tolist()
-        return {
-            "hours": int(hours),
-            "solar_irradiance": [0.0] * int(hours),
-            "wind_speed_mps": [0.0] * int(hours),
-            "demand_kw": [0.0] * int(hours),
-            "noise": noise,
-        }
+    def forecast(self, hours: int = 24) -> list[dict[str, Any]]:
+        from world.forecast import forecast_records
+
+        return forecast_records(self, int(hours))
 
     # -- Read-models -------------------------------------------------------
 
