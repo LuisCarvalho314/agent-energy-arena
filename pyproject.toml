@@ -21,6 +21,9 @@ dev = [
     "mypy>=1.10",
     "types-requests",
 ]
+llm = [
+    "langgraph>=1.0",
+]
 
 [tool.setuptools.packages.find]
 include = ["world*", "agents*"]
@@ -66,4 +69,8 @@ exclude = ["runs/", "\\.venv/"]
 # Third-party libraries without bundled stubs.
 [[tool.mypy.overrides]]
 module = ["numpy", "numpy.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["langgraph", "langgraph.*"]
 ignore_missing_imports = true
