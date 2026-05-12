@@ -148,6 +148,55 @@ def test_route_crude_caps_per_refinery_at_max():
     assert actual["ref-1"] == REFINERY_MAX_BBL_DAY
 
 
+# -- route_crude × workforce efficiency (slice 06) ------------------------
+
+
+def _half_staffed_refinery(rid: str, setpoint: float) -> Tile:
+    """Refinery at staffed_jobs=12 (jobs=25 → efficiency=0.48)."""
+    r = _refinery_tile(rid, setpoint=setpoint)
+    r.staffed_jobs = 12
+    return r
+
+
+def _idle_refinery(rid: str, setpoint: float) -> Tile:
+    r = _refinery_tile(rid, setpoint=setpoint)
+    r.staffed_jobs = 0
+    return r
+
+
+def test_route_crude_half_staffed_caps_at_efficiency_scaled_max():
+    """staffed_jobs=12 / jobs=25 → eff=0.48, cap = 500 × 0.48 = 240."""
+    r = _half_staffed_refinery("ref-1", setpoint=999)
+    actual = route_crude([r], total_crude_bbl=1000)
+    assert actual["ref-1"] == pytest.approx(REFINERY_MAX_BBL_DAY * (12 / 25))
+
+
+def test_route_crude_idle_refinery_takes_zero():
+    """staffed_jobs=0 → cap=0 → 0 bbl routed. Crude stays unallocated."""
+    r = _idle_refinery("ref-1", setpoint=500)
+    actual = route_crude([r], total_crude_bbl=1000)
+    assert actual["ref-1"] == 0.0
+
+
+def test_route_crude_full_then_half_staffed_with_constrained_crude():
+    """Two refineries with the same setpoint, ordered by id ascending.
+    A (full, cap=500) gets first crack; B (half, cap=240) absorbs the rest."""
+    a = _refinery_tile("ref-1", setpoint=500)  # staffed full by helper
+    b = _half_staffed_refinery("ref-2", setpoint=500)
+    actual = route_crude([b, a], total_crude_bbl=600)
+    assert actual["ref-1"] == 500
+    assert actual["ref-2"] == 100  # 600 - 500 = 100, well under B's 240 cap
+
+
+def test_route_crude_half_staffed_cap_overrides_setpoint():
+    """Setpoint=500 but staffed_jobs=12 (cap=240): actual is the cap, not
+    the setpoint. The player-set setpoint stays at 500 (not auto-clamped)."""
+    r = _half_staffed_refinery("ref-1", setpoint=500)
+    actual = route_crude([r], total_crude_bbl=1000)
+    assert actual["ref-1"] == pytest.approx(240.0)
+    assert r.setpoint_rate_bbl_day == 500.0  # unchanged by routing
+
+
 # -- refinery_process_kw (hourly load) -------------------------------------
 
 
@@ -425,6 +474,120 @@ def test_two_refineries_higher_throughput_takes_more_crude():
     else:
         assert high_after.current_throughput_bbl_day == pytest.approx(400)
         assert low_after.current_throughput_bbl_day == pytest.approx(min(100.0, rate - 400))
+
+
+# -- Workforce efficiency end-to-end (slice 06) ---------------------------
+
+
+def test_idle_refinery_refines_zero_with_available_crude():
+    """End-to-end: idle refinery (staffed=0) routes 0 even when crude flows."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("refinery", th.x + 1, th.y)
+    rid = next(t.id for t in w.state.tiles if t.type == "refinery")
+    w.control_refinery(rid, REFINERY_MAX_BBL_DAY)
+
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+
+    # Drop staffing AFTER all build/drill hooks have run — those hooks call
+    # hire_to_fill, which would otherwise immediately re-staff the refinery
+    # from the unemployed pool.
+    ref = next(t for t in w.state.tiles if t.type == "refinery")
+    ref.staffed_jobs = 0
+
+    w.step(days=1)
+    ref_after = next(t for t in w.state.tiles if t.type == "refinery")
+    assert ref_after.current_throughput_bbl_day == 0.0
+    # Refined revenue is 0; all crude sells direct.
+    assert w.state.today_summary_so_far["refined_revenue"] == 0.0
+    rate = w.state.wells[0].current_rate_bbl_day
+    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(
+        rate * CRUDE_PRICE_USD_PER_BBL
+    )
+
+
+def test_idle_refinery_draws_zero_process_load():
+    """Pin a refinery's prior-day throughput to 0 via idle staffing; day 2's
+    hourly demand never picks up a refinery process-load contribution."""
+    w = World()
+    w.reset(seed=42)
+    w.state.population = 0  # zero out civilian load entirely
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("refinery", th.x + 1, th.y)
+    ref = next(t for t in w.state.tiles if t.type == "refinery")
+    ref.staffed_jobs = 0
+    rid = ref.id
+    w.control_refinery(rid, REFINERY_MAX_BBL_DAY)
+
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+
+    w.step(days=2)
+    # Idle refinery routed 0 crude → 0 throughput → 0 process load.
+    ref_after = next(t for t in w.state.tiles if t.type == "refinery")
+    assert ref_after.current_throughput_bbl_day == 0.0
+    for d in w.state.last_day_demand_kw_by_hour:
+        assert d == pytest.approx(0.0)
+
+
+def test_half_staffed_refinery_process_load_tracks_throughput():
+    """A half-staffed refinery refining at its 240-bbl cap draws exactly
+    half the process kW a fully-staffed refinery at 500 bbl/day would."""
+    half_kw = refinery_process_kw(240.0)
+    full_kw = refinery_process_kw(500.0)
+    assert half_kw == pytest.approx(240.0 * REFINERY_KWH_PER_BBL / 24.0)
+    assert half_kw == pytest.approx(full_kw * 0.48)
+
+
+def test_idle_refinery_emits_zero_refinery_co2():
+    """End-to-end: idle refinery contributes 0 t/day refinery CO2."""
+    w = World()
+    w.reset(seed=42)
+    w.state.population = 0  # silence industrial+civilian contributions
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("refinery", th.x + 1, th.y)
+    ref = next(t for t in w.state.tiles if t.type == "refinery")
+    ref.staffed_jobs = 0
+    w.control_refinery(ref.id, REFINERY_MAX_BBL_DAY)
+
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    w.step(days=1)
+    assert w.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(0.0)
+
+
+def test_setpoint_not_auto_clamped_when_staffing_drops():
+    """The player-facing setpoint stays at the value the player set even when
+    staffing drops below the level that could deliver it. Only the actual
+    throughput respects the efficiency-scaled cap."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("refinery", th.x + 1, th.y)
+    ref = next(t for t in w.state.tiles if t.type == "refinery")
+    w.control_refinery(ref.id, REFINERY_MAX_BBL_DAY)
+
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+
+    # Drop staffing AFTER all hire_to_fill hooks have run — they would
+    # otherwise re-staff the refinery from the unemployed pool.
+    ref.staffed_jobs = 12  # eff = 0.48 → cap = 240
+
+    w.step(days=1)
+    s = w.state_dict()
+    ref_state = next(t for t in s["tiles"] if t["type"] == "refinery")
+    assert ref_state["setpoint_rate_bbl_day"] == REFINERY_MAX_BBL_DAY  # unchanged
+    # Throughput is capped at min(setpoint=500, eff_cap=240, available_crude).
+    rate = w.state.wells[0].current_rate_bbl_day
+    expected = min(REFINERY_MAX_BBL_DAY * (12 / 25), rate)
+    assert ref_state["current_throughput_bbl_day"] == pytest.approx(expected)
 
 
 # -- API smoke ------------------------------------------------------------

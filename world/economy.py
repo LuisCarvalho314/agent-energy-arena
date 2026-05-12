@@ -47,16 +47,21 @@ INDUSTRIAL_PROCESS_CO2_T_PER_DAY: float = 2.0
 CARBON_PRICE_USD_PER_TON: float = 25.0
 
 
-def refine_one(setpoint_rate_bbl_day: float, available_crude_bbl: float) -> tuple[float, float]:
+def refine_one(
+    setpoint_rate_bbl_day: float,
+    available_crude_bbl: float,
+    max_bbl_day: float = REFINERY_MAX_BBL_DAY,
+) -> tuple[float, float]:
     """Run one refinery's daily refining step.
 
     Returns (actual_input_bbl, refined_bbl). actual is bounded by setpoint,
-    available crude, and REFINERY_MAX_BBL_DAY (and floored at 0).
+    available crude, and ``max_bbl_day`` (the per-refinery effective cap,
+    which `route_crude` scales by workforce efficiency). Floored at 0.
     """
     actual = min(
         float(setpoint_rate_bbl_day),
         float(available_crude_bbl),
-        REFINERY_MAX_BBL_DAY,
+        max(0.0, float(max_bbl_day)),
     )
     actual = max(0.0, actual)
     return actual, actual * REFINERY_YIELD
@@ -69,6 +74,11 @@ def route_crude(refineries: list[Tile], total_crude_bbl: float) -> dict[str, flo
     key sends crude to the highest-throughput refinery first; id ascending
     is the deterministic tiebreak when two refineries share a setpoint.
 
+    Per-refinery cap = ``REFINERY_MAX_BBL_DAY × workforce.efficiency(r)``,
+    so a half-staffed refinery routes at most 250 bbl/day and an idle one
+    routes 0. The player-facing ``setpoint_rate_bbl_day`` itself is not
+    re-clamped here — only the actual throughput respects the cap.
+
     Returns {refinery_id: actual_input_bbl}. Refineries that get no crude
     (either because the queue ran dry or their setpoint was 0) appear with
     actual=0.0 so the caller can pin current_throughput uniformly.
@@ -77,7 +87,8 @@ def route_crude(refineries: list[Tile], total_crude_bbl: float) -> dict[str, flo
     available = max(0.0, float(total_crude_bbl))
     per_refinery: dict[str, float] = {}
     for r in sorted_refs:
-        actual, _ = refine_one(r.setpoint_rate_bbl_day, available)
+        effective_max = REFINERY_MAX_BBL_DAY * workforce.efficiency(r)
+        actual, _ = refine_one(r.setpoint_rate_bbl_day, available, effective_max)
         per_refinery[r.id] = actual
         available -= actual
     return per_refinery
