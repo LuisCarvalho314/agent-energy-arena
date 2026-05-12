@@ -105,6 +105,18 @@ def is_size_valid(size: int) -> bool:
     return SEISMIC_MIN_SIZE <= size <= SEISMIC_MAX_SIZE
 
 
+def drill_capex(base_capex: float, target_z: int, world_d: int) -> float:
+    """Quadratic-in-depth drilling cost: `base * (1 + (target_z / world_d)**2)`.
+
+    Applies uniformly to production and injection wells (the caller passes
+    the per-well-type base). At `target_z = 0` returns `base`; at deeper z
+    the cost grows quadratically so deeper drainage targets cost more. The
+    formula string is mirrored in `/catalog.subsurface.drill.{production,
+    injection}.cost_formula` so UI / agent clients can replicate it.
+    """
+    return base_capex * (1.0 + (target_z / world_d) ** 2)
+
+
 def _neighbors_26(
     x: int, y: int, z: int, width: int, height: int, depth: int
 ) -> list[tuple[int, int, int]]:

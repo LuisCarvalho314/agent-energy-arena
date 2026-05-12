@@ -9,6 +9,7 @@
   const subDrillBtn = document.getElementById("mode-drill");
   const surveySizeInput = document.getElementById("survey-size");
   const surveyCostEl = document.getElementById("survey-cost-preview");
+  const drillCostEl = document.getElementById("drill-cost-preview");
   const modal = document.getElementById("modal");
   const modalBody = document.getElementById("modal-body");
   const modalCancel = document.getElementById("modal-cancel");
@@ -365,6 +366,7 @@
       }
       renderBuildMenu();
       updateSurveyCostPreview();
+      updateDrillCostPreview();
     } catch (err) {
       console.error("catalog load failed", err);
     }
@@ -390,9 +392,13 @@
     return s.base_cost * Math.pow(size / s.base_size, 2);
   }
 
-  function drillCapex(wellType) {
+  function drillCapex(wellType, targetZ) {
     if (!catalogRaw || !catalogRaw.subsurface) return 0;
-    return catalogRaw.subsurface.drill[wellType].capex;
+    const d = catalogRaw.subsurface.drill[wellType];
+    const base = d.capex;
+    const worldD = d.world_depth;
+    if (typeof targetZ !== "number" || !worldD) return base;
+    return base * (1 + Math.pow(targetZ / worldD, 2));
   }
 
   function clampSurveySize(raw) {
@@ -408,6 +414,21 @@
     if (!surveyCostEl) return;
     const c = surveyCost(surveySize);
     surveyCostEl.textContent = c == null ? "—" : `$${Math.round(c).toLocaleString()}`;
+  }
+
+  function updateDrillCostPreview() {
+    if (!drillCostEl) return;
+    if (!catalogRaw || !catalogRaw.subsurface) {
+      drillCostEl.textContent = "—";
+      return;
+    }
+    if (!drillAnchor) {
+      const base = drillCapex(drillWellType, 0);
+      drillCostEl.textContent = `from $${Math.round(base).toLocaleString()} · pick voxel`;
+      return;
+    }
+    const c = drillCapex(drillWellType, drillAnchor.target_z);
+    drillCostEl.textContent = `$${Math.round(c).toLocaleString()} @ z=${drillAnchor.target_z}`;
   }
 
   // Set of "x,y" keys for columns that have at least one revealed voxel.
@@ -441,6 +462,7 @@
     if (next !== "drill") {
       drillAnchor = null;
     }
+    updateDrillCostPreview();
     if (subSurveyBtn) subSurveyBtn.classList.toggle("selected", next === "survey");
     if (subDrillBtn) subDrillBtn.classList.toggle("selected", next === "drill");
     canvas.classList.toggle("crosshair", next === "survey" || next === "drill");
@@ -555,6 +577,7 @@
   for (const radio of drillTypeRadios()) {
     radio.addEventListener("change", () => {
       drillWellType = radio.value;
+      updateDrillCostPreview();
       drawGrid();
     });
   }
@@ -934,7 +957,7 @@
     }
     const fire = () => fireDrill(ax, ay);
     if (!poolHasHc(ax, ay, az)) {
-      const capex = drillCapex(drillWellType);
+      const capex = drillCapex(drillWellType, az);
       showModal(
         `No surveyed HC voxels in the 3×3×3 drainage pool around (${ax}, ${ay}, ${az}). The well may produce 0 bbl/day — $${capex.toLocaleString()} CAPEX at risk.`,
         fire,
@@ -964,6 +987,7 @@
           "ok",
         );
         drillAnchor = null;
+        updateDrillCostPreview();
         renderSubsurface();
         refreshBuildHint();
       } else {
@@ -1201,6 +1225,7 @@
         r.classList.add("drill-pickable");
         r.addEventListener("click", () => {
           drillAnchor = { x: v.x, y: v.y, target_z: v.z };
+          updateDrillCostPreview();
           if (subTargetEl) {
             subTargetEl.classList.remove("hidden");
             subTargetEl.textContent = `selected target: (${v.x}, ${v.y}, ${v.z}) — click surface on the Map tab to drill`;

@@ -155,14 +155,18 @@ def test_pressure_boost_zero_when_qualifying_inj_rate_zero():
 
 
 def test_drill_injection_well_deducts_capex():
+    from world.subsurface import drill_capex
+
     w = World()
     w.reset(seed=42)
     treasury_before = w.state.treasury
     res = w.drill(10, 10, 8, "injection")
     assert res["ok"] is True
-    assert w.state.treasury == treasury_before - 30_000
+    expected_capex = drill_capex(30_000.0, 8, w.config.world_d)
+    assert w.state.treasury == treasury_before - expected_capex
     assert len(w.state.wells) == 1
     assert w.state.wells[0].type == "injection"
+    assert w.state.wells[0].capex_paid == expected_capex
 
 
 def test_control_well_clamps_injection_setpoint():
@@ -825,6 +829,8 @@ def test_half_staffed_injection_pool_intersection_still_recovers_pressure_propor
 
 
 def test_api_drill_injection_well():
+    from world.subsurface import drill_capex
+
     w = World()
     w.reset(seed=42)
     client = TestClient(create_app(world=w))
@@ -834,7 +840,8 @@ def test_api_drill_injection_well():
     ).json()
     assert res["ok"] is True
     assert res["result"]["type"] == "injection"
-    assert w.state.treasury == 500_000.0 - 30_000.0
+    expected = drill_capex(30_000.0, 8, w.config.world_d)
+    assert w.state.treasury == 500_000.0 - expected
 
 
 def test_api_control_injection_well():

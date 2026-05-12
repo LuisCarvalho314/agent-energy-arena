@@ -223,6 +223,7 @@ def build_catalog() -> dict[str, Any]:
             tiles.append(entry)
     oil_well = TILE_CATALOG["oil_well"]
     injection_well = TILE_CATALOG["injection_well"]
+    cfg = load_config()
     subsurface = {
         "survey": {
             "base_cost": SEISMIC_BASE_COST,
@@ -238,16 +239,19 @@ def build_catalog() -> dict[str, Any]:
                 "opex_per_day": oil_well.opex_per_day,
                 "max_rate_bbl_day": Q_MAX_WELL_BBL_DAY,
                 "crude_price_usd_per_bbl": CRUDE_PRICE_USD_PER_BBL,
+                "cost_formula": "base * (1 + (target_z / world_depth)**2)",
+                "world_depth": cfg.world_d,
             },
             "injection": {
                 "capex": injection_well.capex,
                 "opex_per_day": injection_well.opex_per_day,
                 "max_rate_bbl_day": Q_MAX_WELL_BBL_DAY,
                 "kwh_per_bbl": INJECTION_KWH_PER_BBL,
+                "cost_formula": "base * (1 + (target_z / world_depth)**2)",
+                "world_depth": cfg.world_d,
             },
         },
     }
-    cfg = load_config()
     economics = {
         "industrial_revenue_per_day": INDUSTRIAL_REVENUE_PER_DAY,
         "commercial_revenue_per_resident_per_day": COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,

@@ -52,6 +52,7 @@ from world.subsurface import (
     WELL_SETPOINT_MAX,
     WELL_SETPOINT_MIN,
     SubsurfaceGrid,
+    drill_capex,
     generate_subsurface,
     is_size_valid,
     reservoirs_summary,
@@ -450,10 +451,11 @@ class World:
 
         spec_type = "oil_well" if well_type == "production" else "injection_well"
         spec = TILE_CATALOG[spec_type]
-        if self.state.treasury < spec.capex:
+        capex = drill_capex(float(spec.capex), target_z, self.config.world_d)
+        if self.state.treasury < capex:
             return self._build_error("insufficient_funds")
 
-        self.state.treasury -= spec.capex
+        self.state.treasury -= capex
         well = Well(
             id=self._next_well_id(well_type),
             type=well_type,
@@ -461,7 +463,7 @@ class World:
             y=y,
             target_z=target_z,
             drilled_day=self.state.day,
-            capex_paid=spec.capex,
+            capex_paid=capex,
             opex_per_day=spec.opex_per_day,
             reservoir_id=well_reservoir_id(self.subsurface, x, y, target_z),
         )

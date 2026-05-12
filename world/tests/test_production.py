@@ -149,17 +149,21 @@ def test_fraction_decays_as_pool_depletes():
 
 
 def test_drill_deducts_capex_and_creates_well():
+    from world.subsurface import drill_capex
+
     w = World()
     w.reset(seed=42)
     treasury_before = w.state.treasury
     res = w.drill(10, 10, 8, "production")
     assert res["ok"] is True
-    assert w.state.treasury == treasury_before - 50_000
+    expected_capex = drill_capex(50_000.0, 8, w.config.world_d)
+    assert w.state.treasury == treasury_before - expected_capex
     assert len(w.state.wells) == 1
     well = w.state.wells[0]
     assert well.type == "production"
     assert (well.x, well.y, well.target_z) == (10, 10, 8)
     assert well.drilled_day == w.state.day
+    assert well.capex_paid == expected_capex
 
 
 def test_drill_rejects_tile_occupied_same_xy_different_z():
@@ -387,6 +391,8 @@ def test_state_wells_exposes_required_fields():
 
 
 def test_api_drill_endpoint_logs_and_deducts():
+    from world.subsurface import drill_capex
+
     w = World()
     w.reset(seed=42)
     client = TestClient(create_app(world=w))
@@ -396,7 +402,8 @@ def test_api_drill_endpoint_logs_and_deducts():
         json={"x": 10, "y": 10, "target_z": 8, "well_type": "production"},
     ).json()
     assert res["ok"] is True
-    assert w.state.treasury == treasury_before - 50_000
+    expected = drill_capex(50_000.0, 8, w.config.world_d)
+    assert w.state.treasury == treasury_before - expected
 
 
 def test_api_drill_invalid_target_z_returns_ok_false():
