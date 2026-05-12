@@ -192,7 +192,12 @@ def _spec_to_dict(spec: TileSpec) -> dict[str, Any]:
 
 def build_catalog() -> dict[str, Any]:
     from world.config import load_config
-    from world.economy import CARBON_PRICE_USD_PER_TON
+    from world.economy import (
+        CARBON_PRICE_USD_PER_TON,
+        REFINED_PRICE_USD_PER_BBL,
+        REFINERY_CO2_PER_BBL,
+        REFINERY_YIELD,
+    )
     from world.pricing import (
         COMMERCIAL_RADIUS,
         COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
@@ -250,6 +255,9 @@ def build_catalog() -> dict[str, Any]:
         "carbon_price": CARBON_PRICE_USD_PER_TON,
         "grid_price_retail": cfg.grid_price_retail,
         "grid_price_export": cfg.grid_price_export,
+        "refined_price_usd_per_bbl": REFINED_PRICE_USD_PER_BBL,
+        "refinery_yield": REFINERY_YIELD,
+        "refinery_co2_t_per_bbl": REFINERY_CO2_PER_BBL,
     }
     return {
         "tiles": tiles,

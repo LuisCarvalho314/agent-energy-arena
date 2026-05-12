@@ -16,7 +16,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from world import workforce
-from world.economy import INDUSTRIAL_PROCESS_CO2_T_PER_DAY
+from world.economy import (
+    INDUSTRIAL_PROCESS_CO2_T_PER_DAY,
+    REFINED_PRICE_USD_PER_BBL,
+    REFINERY_CO2_PER_BBL,
+    REFINERY_YIELD,
+)
 from world.power import PLANT_TYPES
 
 if TYPE_CHECKING:
@@ -157,6 +162,40 @@ def plant_carbon_cost_for_tile(state: WorldState, tile: Tile, spec: TileSpec) ->
     events flow through into the Net row the same day they fire.
     """
     return plant_co2_for_tile(tile, spec) * state.carbon_price
+
+
+def refinery_revenue_for_tile(tile: Tile) -> float:
+    """Daily revenue estimate for one refinery tile at its current throughput.
+
+    Returns ``current_throughput_bbl_day × REFINERY_YIELD ×
+    REFINED_PRICE_USD_PER_BBL``. Non-refinery and non-operational tiles
+    return 0. The throughput pinned on the tile is the previous day's actual
+    refining input (set by ``_advance_one_day`` via ``route_crude``), so the
+    popup row reflects yesterday's accounting window.
+    """
+    if tile.type != "refinery" or not tile.operational:
+        return 0.0
+    return tile.current_throughput_bbl_day * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
+
+
+def refinery_co2_for_tile(tile: Tile) -> float:
+    """Daily CO2 in tonnes for one refinery tile.
+
+    Returns ``current_throughput_bbl_day × REFINERY_CO2_PER_BBL`` (0.30
+    t/bbl). Non-refinery / non-operational tiles return 0.
+    """
+    if tile.type != "refinery" or not tile.operational:
+        return 0.0
+    return tile.current_throughput_bbl_day * REFINERY_CO2_PER_BBL
+
+
+def refinery_carbon_cost_for_tile(state: WorldState, tile: Tile) -> float:
+    """Daily carbon cost in $ for one refinery tile.
+
+    Reads ``state.carbon_price`` at compute time so regulatory-tightening
+    events flow through into the Net row the same day they fire.
+    """
+    return refinery_co2_for_tile(tile) * state.carbon_price
 
 
 def _commercial_residents_in_radius(state: WorldState, tile: Tile) -> float:

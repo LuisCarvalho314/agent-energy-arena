@@ -84,6 +84,9 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         plant_co2_for_tile,
         plant_fuel_cost_for_tile,
         plant_revenue_for_tile,
+        refinery_carbon_cost_for_tile,
+        refinery_co2_for_tile,
+        refinery_revenue_for_tile,
     )
 
     # Slice 01 surfaced industrial economics; slice 02 adds commercial; slice
@@ -110,6 +113,11 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         fuel_cost = plant_fuel_cost_for_tile(t, spec)
         carbon_cost = plant_carbon_cost_for_tile(world.state, t, spec)
         net = revenue - t.opex_per_day - fuel_cost - carbon_cost
+    elif t.type == "refinery":
+        revenue = refinery_revenue_for_tile(t)
+        co2_t = refinery_co2_for_tile(t)
+        carbon_cost = refinery_carbon_cost_for_tile(world.state, t)
+        net = revenue - t.opex_per_day - carbon_cost
     else:
         revenue = 0.0
         co2_t = 0.0

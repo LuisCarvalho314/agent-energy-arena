@@ -1011,3 +1011,191 @@ def test_state_tile_dict_non_plant_has_zero_fuel_cost_field() -> None:
         assert "estimated_fuel_cost_per_day" in tile_dict
         if tile_dict["type"] not in {"coal_plant", "gas_peaker"}:
             assert tile_dict["estimated_fuel_cost_per_day"] == 0.0
+
+
+# =========================================================================
+# Slice 05 — refinery revenue + carbon cost popup rows
+# =========================================================================
+
+
+def _refinery_tile(
+    rid: str = "ref_1",
+    throughput: float = 0.0,
+    x: int = 0,
+    y: int = 0,
+    staffed: int | None = None,
+) -> Tile:
+    spec = TILE_CATALOG["refinery"]
+    staffed_jobs = spec.jobs if staffed is None else staffed
+    return Tile(
+        id=rid,
+        type="refinery",
+        x=x,
+        y=y,
+        built_day=0,
+        operational=True,
+        capex_paid=spec.capex,
+        opex_per_day=spec.opex_per_day,
+        jobs=spec.jobs,
+        staffed_jobs=staffed_jobs,
+        current_throughput_bbl_day=throughput,
+    )
+
+
+# -- refinery_revenue_for_tile unit ----------------------------------------
+
+
+def test_refinery_revenue_zero_when_throughput_zero() -> None:
+    from world.pricing import refinery_revenue_for_tile
+
+    assert refinery_revenue_for_tile(_refinery_tile(throughput=0.0)) == 0.0
+
+
+def test_refinery_revenue_scales_with_throughput() -> None:
+    from world.economy import REFINED_PRICE_USD_PER_BBL, REFINERY_YIELD
+    from world.pricing import refinery_revenue_for_tile
+
+    t = _refinery_tile(throughput=400.0)
+    expected = 400.0 * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
+    assert refinery_revenue_for_tile(t) == pytest.approx(expected)
+
+
+def test_refinery_revenue_linear_in_throughput() -> None:
+    from world.pricing import refinery_revenue_for_tile
+
+    one = refinery_revenue_for_tile(_refinery_tile(throughput=100.0))
+    two = refinery_revenue_for_tile(_refinery_tile(throughput=200.0))
+    assert two == pytest.approx(2.0 * one)
+
+
+def test_refinery_revenue_zero_for_non_refinery() -> None:
+    from world.pricing import refinery_revenue_for_tile
+
+    t = _industrial_tile()
+    t.current_throughput_bbl_day = 400.0  # spurious — ignored
+    assert refinery_revenue_for_tile(t) == 0.0
+
+
+def test_refinery_revenue_zero_when_not_operational() -> None:
+    from world.pricing import refinery_revenue_for_tile
+
+    t = _refinery_tile(throughput=400.0)
+    t.operational = False
+    assert refinery_revenue_for_tile(t) == 0.0
+
+
+# -- refinery_carbon_cost_for_tile unit ------------------------------------
+
+
+def test_refinery_carbon_cost_zero_when_throughput_zero() -> None:
+    from world.pricing import refinery_carbon_cost_for_tile
+
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    assert refinery_carbon_cost_for_tile(state, _refinery_tile(throughput=0.0)) == 0.0
+
+
+def test_refinery_carbon_cost_scales_with_throughput_and_price() -> None:
+    from world.economy import REFINERY_CO2_PER_BBL
+    from world.pricing import refinery_carbon_cost_for_tile
+
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    t = _refinery_tile(throughput=400.0)
+    expected = 400.0 * REFINERY_CO2_PER_BBL * CARBON_PRICE_USD_PER_TON
+    assert refinery_carbon_cost_for_tile(state, t) == pytest.approx(expected)
+
+
+def test_refinery_carbon_cost_tracks_state_carbon_price() -> None:
+    """A regulatory-tightening event that raises ``state.carbon_price`` must
+    flow into the refinery carbon cost the same day it fires."""
+    from world.pricing import refinery_carbon_cost_for_tile
+
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    t = _refinery_tile(throughput=400.0)
+    baseline = refinery_carbon_cost_for_tile(state, t)
+    state.carbon_price = CARBON_PRICE_USD_PER_TON * 2.0
+    assert refinery_carbon_cost_for_tile(state, t) == pytest.approx(baseline * 2.0)
+
+
+def test_refinery_carbon_cost_zero_for_non_refinery() -> None:
+    from world.pricing import refinery_carbon_cost_for_tile
+
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    t = _industrial_tile()
+    t.current_throughput_bbl_day = 400.0
+    assert refinery_carbon_cost_for_tile(state, t) == 0.0
+
+
+# -- /state per-tile economics fields for refineries -----------------------
+
+
+def test_state_tile_dict_refinery_emits_revenue_co2_carbon_and_net() -> None:
+    """Integration AC: build a refinery + supplying production well, step one
+    day, assert the refinery tile dict's revenue matches the formula and Net
+    reconciles with the component rows."""
+    from world.economy import REFINED_PRICE_USD_PER_BBL, REFINERY_YIELD
+    from world.tests.test_economy import _build_road_link
+
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _build_road_link(w, th.x + 2, th.y)
+    w.build("refinery", th.x + 2, th.y)
+    rid = next(t.id for t in w.state.tiles if t.type == "refinery")
+    w.control_refinery(rid, 400.0)
+
+    # Drill a production well at a high-confidence voxel and set max rate so
+    # crude actually flows to the refinery.
+    from world.tests.test_economy import _hc_voxel
+
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    well_id = w.state.wells[0].id
+    from world.subsurface import Q_MAX_WELL_BBL_DAY
+
+    w.control_well(well_id, Q_MAX_WELL_BBL_DAY)
+    w.step(days=1)
+
+    ref = next(t for t in w.state.tiles if t.type == "refinery")
+    assert ref.current_throughput_bbl_day > 0.0
+
+    s = w.state_dict()
+    ref_dict = next(t for t in s["tiles"] if t["type"] == "refinery")
+    expected_revenue = ref.current_throughput_bbl_day * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
+    assert ref_dict["estimated_revenue_per_day"] == pytest.approx(expected_revenue)
+    expected_co2 = ref.current_throughput_bbl_day * 0.30
+    assert ref_dict["estimated_co2_per_day"] == pytest.approx(expected_co2)
+    expected_carbon_cost = expected_co2 * w.state.carbon_price
+    assert ref_dict["estimated_carbon_cost_per_day"] == pytest.approx(expected_carbon_cost)
+    expected_net = expected_revenue - ref_dict["opex_per_day"] - expected_carbon_cost
+    assert ref_dict["estimated_net_per_day"] == pytest.approx(expected_net)
+
+
+def test_state_tile_dict_freshly_built_refinery_has_zero_revenue_and_carbon() -> None:
+    """Day-0 throughput is 0, so all estimated_* economic fields are 0 (modulo
+    OPEX in Net)."""
+    from world.tests.test_economy import _build_road_link
+
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _build_road_link(w, th.x + 2, th.y)
+    w.build("refinery", th.x + 2, th.y)
+    s = w.state_dict()
+    ref_dict = next(t for t in s["tiles"] if t["type"] == "refinery")
+    assert ref_dict["estimated_revenue_per_day"] == 0.0
+    assert ref_dict["estimated_co2_per_day"] == 0.0
+    assert ref_dict["estimated_carbon_cost_per_day"] == 0.0
+    assert ref_dict["estimated_net_per_day"] == pytest.approx(-ref_dict["opex_per_day"])
+
+
+# -- /catalog economics block: refinery constants --------------------------
+
+
+def test_catalog_economics_exposes_refinery_constants() -> None:
+    from world.economy import REFINED_PRICE_USD_PER_BBL, REFINERY_CO2_PER_BBL, REFINERY_YIELD
+
+    cat = build_catalog()
+    eco = cat["economics"]
+    assert eco["refined_price_usd_per_bbl"] == pytest.approx(REFINED_PRICE_USD_PER_BBL)
+    assert eco["refinery_yield"] == pytest.approx(REFINERY_YIELD)
+    assert eco["refinery_co2_t_per_bbl"] == pytest.approx(REFINERY_CO2_PER_BBL)

@@ -662,18 +662,26 @@
       rows.push(row("Revenue / day (est.)", fmtMoney(revenue), "pos"));
       rows.push(row("Net / day", fmtMoney(net), net >= 0 ? "pos" : "neg"));
     }
-    // Refinery process-load + product economics.
+    // Refinery process-load + product economics. Slice-05 of the
+    // facility-economics-popup PRD: CO2 / Carbon cost / Revenue / Net rows
+    // are server-stamped from /state so the client never re-derives them.
     if (t.type === "refinery") {
       const throughput = t.current_throughput_bbl_day || 0;
       const setpoint = t.setpoint_rate_bbl_day || 0;
       const procKw = (throughput * REFINERY_KWH_PER_BBL) / 24;
       const refined = throughput * REFINERY_YIELD;
-      const co2 = throughput * REFINERY_CO2_T_PER_BBL;
+      const co2 = t.estimated_co2_per_day || 0;
+      const carbonCost = t.estimated_carbon_cost_per_day || 0;
+      const revenue = t.estimated_revenue_per_day || 0;
+      const net = t.estimated_net_per_day || 0;
       rows.push(row("Setpoint", `${fmtNum(setpoint)} bbl/d`));
       rows.push(row("Throughput (yest.)", `${fmtNum(throughput, 1)} bbl/d`, "pos"));
       rows.push(row("Refined yield", `${fmtNum(refined, 1)} bbl (85%)`, "pos"));
       rows.push(row("Process load", `${fmtNum(procKw, 1)} kW avg`, "warn"));
-      rows.push(row("CO₂", `${fmtNum(co2, 2)} t/day`, "neg"));
+      rows.push(row("CO₂ / day", `${fmtNum(co2, 2)} t`, "neg"));
+      rows.push(row("Carbon cost / day", fmtMoney(-carbonCost), "neg"));
+      rows.push(row("Revenue / day", fmtMoney(revenue), "pos"));
+      rows.push(row("Net / day", fmtMoney(net), net >= 0 ? "pos" : "neg"));
     }
     // Industrial economics (slice 01 of facility-economics-popup PRD). All
     // four rows come from server-stamped /state fields; the Net row is
