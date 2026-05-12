@@ -62,7 +62,7 @@ def _inject_tile(
 
 
 def test_grow_branch_applies_base_rate_capped_by_headroom():
-    """jobs >= pop AND capacity > pop AND happiness >= 0.5 → grow."""
+    """jobs >= pop AND capacity > pop AND happiness >= 0.3 → grow."""
     w = _fresh_world()
     # Town hall already gives capacity=100, jobs=30. Inject a synthetic block
     # with abundant headroom so the cap on growth is the base rate, not
@@ -73,21 +73,22 @@ def test_grow_branch_applies_base_rate_capped_by_headroom():
     update_population(w)
 
     # happiness = 1.0 (no parks, no blackouts, no coal).
-    # growth = min(0.012 * 500 * 1.0 = 6.0, cap-pop=600, jobs-pop=530) = 6.0.
-    assert w.state.population == 506
+    # growth_multiplier = (1.0 - 0.3) / 1.2 ≈ 0.5833.
+    # growth = min(0.012 * 500 * 0.5833 ≈ 3.5, cap-pop=600, jobs-pop=530) ≈ 3.5.
+    assert w.state.population == 503
     assert w.state.happiness == pytest.approx(1.0)
 
 
 def test_grow_branch_capped_by_jobs_headroom():
     w = _fresh_world()
-    # capacity = 100 + 1000 = 1100; jobs = 30 + (1000) tied at +1 above pop.
-    _inject_tile(w, type="commercial", x=5, y=5, jobs=71, housing_capacity=1000)
-    # pop=100, jobs=101. jobs - pop = 1, far below 0.012*100=1.2.
-    w.state.population = 100
+    # capacity = 100 + 1000 = 1100; jobs tied at +1 above pop.
+    _inject_tile(w, type="commercial", x=5, y=5, jobs=471, housing_capacity=1000)
+    # pop=500, jobs=501. jobs - pop = 1, far below 0.012*500*0.5833 ≈ 3.5.
+    w.state.population = 500
 
     update_population(w)
-    # growth = min(1.2, 1100-100=1000, 101-100=1) = 1. New pop = 101.
-    assert w.state.population == 101
+    # growth = min(3.5, 1100-500=600, 501-500=1) = 1. New pop = 501.
+    assert w.state.population == 501
 
 
 # -- Branch 2: housing exodus ------------------------------------------------
@@ -181,29 +182,28 @@ def test_full_day_blackout_drops_happiness_below_threshold():
     assert w.state.population == 99
 
 
-def test_eleven_hour_blackout_crosses_decline_threshold():
-    """The threshold is exactly `< 0.5`; with coef 0.05/h, 10h leaves happiness
-    at 0.5 (no decline) and 11h drops it below 0.5 (decline fires)."""
+def test_thirteen_vs_fifteen_hour_blackout_crosses_decline_threshold():
+    """Decline threshold is now `< 0.3` (PRD §3.3 smooth-growth rewrite).
+    With coef 0.05/h, 13h leaves happiness at 0.35 (no decline; growth
+    multiplier tiny but positive) and 15h drops it below 0.3 (decline fires).
+    14h is avoided because 1.0 - 0.05*14 floats to 0.2999...9 < 0.3."""
     w = _fresh_world()
     _inject_tile(w, type="commercial", x=5, y=5, jobs=1000, housing_capacity=1000)
     w.state.population = 100
-    w.state.yesterday_blackout_hours = 10.0
+    w.state.yesterday_blackout_hours = 13.0
 
     update_population(w)
-    # 1.0 - 0.5 = 0.5 → not less-than-0.5 → no decline branch.
-    assert w.state.happiness == pytest.approx(0.5)
-    # First three branches are also satisfied for growth; check that
-    # neither growth nor decline overshoots: pop should be unchanged or
-    # grow modestly (jobs-pop=900, capacity-pop=900).
-    assert w.state.population >= 100
+    # 1.0 - 0.05 * 13 = 0.35 → growth branch fires (mult≈0.042 → +0).
+    assert w.state.happiness == pytest.approx(0.35)
+    assert w.state.population == 100
 
-    # Re-run with 11h: should decline.
+    # Re-run with 15h: decline fires.
     w2 = _fresh_world()
     _inject_tile(w2, type="commercial", x=5, y=5, jobs=1000, housing_capacity=1000)
     w2.state.population = 100
-    w2.state.yesterday_blackout_hours = 11.0
+    w2.state.yesterday_blackout_hours = 15.0
     update_population(w2)
-    assert w2.state.happiness < 0.5
+    assert w2.state.happiness < 0.3
     assert w2.state.population == 99
 
 
@@ -224,12 +224,15 @@ def test_zero_blackout_no_pop_decline():
     """No blackout, jobs/capacity sufficient → pop grows; happiness stays at 1.0."""
     w = _fresh_world()
     _inject_tile(w, type="commercial", x=5, y=5, jobs=1000, housing_capacity=1000)
-    w.state.population = 100
+    # PRD §3.3 smooth gate: at h=1.0 the multiplier is 0.583, so pop must be
+    # large enough that base_growth_rate × pop × 0.583 ≥ 1 to see an integer
+    # increment (pop ≥ ~143). Use 300 to leave clear headroom.
+    w.state.population = 300
     # Default: yesterday_blackout_hours = yesterday_brownout_hours = 0.
 
     update_population(w)
     assert w.state.happiness == pytest.approx(1.0)
-    assert w.state.population > 100  # growth branch fires
+    assert w.state.population > 300  # growth branch fires
 
 
 # -- Tax revenue -------------------------------------------------------------
@@ -259,26 +262,131 @@ def test_tax_revenue_constant_per_capita():
 # -- Happiness composition ---------------------------------------------------
 
 
-def test_park_count_bonus_kicks_in_after_first_park():
-    """Happiness gains 0.05 per park beyond the first."""
+def test_first_park_within_chebyshev_2_of_house_contributes():
+    """PRD §3.3: first park within chebyshev-2 of a house adds 0.10 happiness.
+
+    The old `0.05 * max(0, park_count - 1)` off-by-one is gone — a single
+    park near a single house is worth the full 0.10 floor.
+    """
     w = _fresh_world()
-    _inject_tile(w, type="park", x=1, y=1)
-    _inject_tile(w, type="park", x=2, y=2)
-    _inject_tile(w, type="park", x=3, y=3)
+    _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    _inject_tile(w, type="park", x=1, y=1)  # chebyshev=1 ≤ 2
 
     update_population(w)
-    # park_count=3 → bonus = 0.05 * (3-1) = 0.10. happiness = 1.10.
+    # bonus_per_house = min(0.30, 0.10 * 1) = 0.10. park_benefit = 0.10.
     assert w.state.happiness == pytest.approx(1.10)
 
 
-def test_happiness_clipped_above_at_1_5():
+def test_park_outside_chebyshev_2_contributes_zero():
+    """Park beyond chebyshev-2 of every house contributes nothing."""
     w = _fresh_world()
-    # Stuff in 50 parks → bonus = 0.05*49 = 2.45 → clipped at 1.5.
+    _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    _inject_tile(w, type="park", x=5, y=5)  # chebyshev=5 > 2
+
+    update_population(w)
+    assert w.state.happiness == pytest.approx(1.0)
+
+
+def test_park_benefit_caps_at_0_30_per_house():
+    """min(0.30, 0.10 * nearby_parks) — 4+ parks near one house cap at 0.30."""
+    w = _fresh_world()
+    _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    # All four parks within chebyshev-2 of the house.
+    _inject_tile(w, type="park", x=1, y=1)
+    _inject_tile(w, type="park", x=2, y=2)
+    _inject_tile(w, type="park", x=-1, y=-1)
+    _inject_tile(w, type="park", x=-2, y=-2)
+
+    update_population(w)
+    # bonus_per_house = min(0.30, 0.40) = 0.30.
+    assert w.state.happiness == pytest.approx(1.30)
+
+
+def test_park_benefit_zero_when_no_houses():
+    """No house tiles → park_benefit=0 regardless of park count."""
+    w = _fresh_world()
     for i in range(50):
         _inject_tile(w, type="park", x=i, y=0)
 
     update_population(w)
-    assert w.state.happiness == pytest.approx(1.5)
+    # No houses → mean over zero houses is 0 by the PRD's fallback clause.
+    assert w.state.happiness == pytest.approx(1.0)
+
+
+def test_industrial_adjacent_to_house_drops_happiness():
+    """Industrial within chebyshev-2 of a house contributes -0.03 noise."""
+    w = _fresh_world()
+    _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    _inject_tile(w, type="industrial", x=1, y=1, jobs=5)  # chebyshev=1 ≤ 2
+
+    update_population(w)
+    # noise_penalty = 0.03 (no shielding park). happiness = 1.0 - 0.03 = 0.97.
+    assert w.state.happiness == pytest.approx(0.97)
+
+
+def test_park_between_industrial_and_house_halves_penalty():
+    """Park within chebyshev-2 of both house and source halves noise to -0.015."""
+    w = _fresh_world()
+    _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    _inject_tile(w, type="industrial", x=2, y=2, jobs=5)  # cheb=2 to house
+    _inject_tile(w, type="park", x=1, y=1)  # cheb=1 to both → shields
+
+    update_population(w)
+    # park_benefit = 0.10 (1 park near house). noise = -0.015 (shielded).
+    # happiness = 1.0 + 0.10 - 0.015 = 1.085.
+    assert w.state.happiness == pytest.approx(1.085)
+
+
+def test_refinery_also_drops_happiness():
+    """Refinery counts as a noise source like industrial."""
+    w = _fresh_world()
+    _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    _inject_tile(w, type="refinery", x=2, y=0, jobs=25)  # cheb=2
+
+    update_population(w)
+    assert w.state.happiness == pytest.approx(0.97)
+
+
+def test_noise_averaged_over_multiple_houses():
+    """Noise penalty is averaged over all houses, not summed."""
+    w = _fresh_world()
+    _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    _inject_tile(w, type="house", x=10, y=10, housing_capacity=10)  # far away
+    _inject_tile(w, type="industrial", x=1, y=1, jobs=5)  # near house 1 only
+
+    update_population(w)
+    # House 1: -0.03; House 2: 0. Mean = -0.015. happiness = 0.985.
+    assert w.state.happiness == pytest.approx(0.985)
+
+
+def test_smooth_growth_at_happiness_0_6():
+    """PRD §3.3 smooth gate: at happiness=0.6, multiplier = (0.6-0.3)/1.2 = 0.25."""
+    w = _fresh_world()
+    _inject_tile(w, type="commercial", x=5, y=5, jobs=1000, housing_capacity=1000)
+    # Drive happiness to exactly 0.6 via 8h blackout (1.0 - 0.05*8 = 0.6).
+    w.state.yesterday_blackout_hours = 8.0
+    w.state.population = 400
+
+    update_population(w)
+
+    assert w.state.happiness == pytest.approx(0.6)
+    # growth = 0.012 × 400 × 0.25 = 1.2 → +1 → 401.
+    assert w.state.population == 401
+
+
+def test_growth_zero_at_happiness_below_0_3():
+    """At happiness < 0.3 the decline branch fires (no growth)."""
+    w = _fresh_world()
+    _inject_tile(w, type="commercial", x=5, y=5, jobs=1000, housing_capacity=1000)
+    # 16h blackout → happiness = 1.0 - 0.05*16 = 0.2 < 0.3.
+    w.state.yesterday_blackout_hours = 16.0
+    w.state.population = 400
+
+    update_population(w)
+
+    assert w.state.happiness < 0.3
+    # decline branch: pop = 400 * 0.99 = 396.
+    assert w.state.population == 396
 
 
 def test_happiness_clipped_below_at_0_0():
@@ -363,23 +471,40 @@ def _find_tile(w: World, type: str) -> Tile:
 def test_growth_branch_hires_into_open_vacancies_oldest_first():
     """Growth branch → ``hire_to_fill`` auto-fills the unemployed pool."""
     w = _fresh_world()
-    # Town hall (day 0) is already 30/30. Older industrial fully staffed,
-    # younger industrial with 30 open vacancies. Plenty of capacity + jobs.
+    # Pop=200 needed for an integer +1 growth at the new smooth gate
+    # (0.012 × 200 × 0.5833 ≈ 1.4 → +1). The injected commercial tile
+    # inflates the jobs total so the growth gate (jobs >= pop) passes, but
+    # has zero hireable vacancies (catalog spec for commercial caps at 12,
+    # so `_spec_jobs - staffed` is negative and hire_to_fill skips it).
     _inject_tile(w, type="industrial", x=2, y=2, jobs=30, built_day=1)
     _inject_tile(w, type="industrial", x=3, y=3, jobs=30, staffed_jobs=0, built_day=2)
-    _inject_tile(w, type="house", x=4, y=4, housing_capacity=200)
-    w.state.population = 84  # employed = 30+30 = 60, unemployed = 24
+    # Commercial is the "inflated jobs" tile: tile.jobs=500 pushes the
+    # population growth gate (jobs >= pop) over the line, while staffed_jobs
+    # is pinned to its catalog spec (12) so employment math stays sane and
+    # hire_to_fill sees no vacancy on this tile.
+    _inject_tile(
+        w,
+        type="commercial",
+        x=5,
+        y=5,
+        jobs=500,
+        staffed_jobs=12,
+        housing_capacity=300,
+        built_day=0,
+    )
+    w.state.population = 200  # employed = 30 + 30 + 12 = 72, unemployed = 128
 
     update_population(w)
 
-    # growth = 0.012 * 84 * 1.0 = 1.008 → +1. New pop = 85.
-    assert w.state.population == 85
-    # Unemployed post-growth = 85 - 60 = 25. The younger industrial (day 2)
-    # absorbs all 25 since the older industrial (day 1) is already full.
+    # growth = 0.012 × 200 × 0.5833 = 1.4 → +1 → 201.
+    assert w.state.population == 201
     older = w.state.tiles[1]
     younger = w.state.tiles[2]
+    # Younger (day 2) is the only tile with a hireable vacancy under the
+    # catalog spec (30 jobs - 0 staffed). All 30 slots filled, older
+    # untouched.
     assert older.staffed_jobs == 30  # day 1, untouched
-    assert younger.staffed_jobs == 25  # day 2, filled oldest-first
+    assert younger.staffed_jobs == 30  # day 2, filled oldest-first
 
 
 def test_exodus_branch_fires_newest_when_unemployed_is_zero():
@@ -434,16 +559,16 @@ def test_job_decline_branch_drains_unemployed_silently():
 
 
 def test_happiness_decline_branch_fires_newest_when_unemployed_zero():
-    """happiness < 0.5 → drain via ``drain_n``; newest producer loses staff."""
+    """happiness < 0.3 → drain via ``drain_n``; newest producer loses staff."""
     w = _fresh_world()
     _inject_tile(w, type="industrial", x=2, y=2, jobs=30, built_day=1)
     w.state.population = 60  # employed = 60, unemployed = 0
-    # 12h blackout → happiness = 1 - 0.05*12 = 0.4 < 0.5
-    w.state.yesterday_blackout_hours = 12.0
+    # 16h blackout → happiness = 1 - 0.05*16 = 0.2 < 0.3
+    w.state.yesterday_blackout_hours = 16.0
 
     update_population(w)
 
-    assert w.state.happiness < 0.5
+    assert w.state.happiness < 0.3
     # 60 * 0.99 = 59.4 → 59. delta=1. Newest = industrial.
     assert w.state.population == 59
     industrial = w.state.tiles[1]
@@ -525,7 +650,7 @@ def test_failed_plant_still_drained_by_workforce():
     _inject_tile(w, type="coal_plant", x=2, y=2, jobs=8, built_day=1, operational=False)
     # employed = 30+8 = 38, unemployed = 0
     w.state.population = 38
-    w.state.yesterday_blackout_hours = 12.0  # happiness 0.4 < 0.5
+    w.state.yesterday_blackout_hours = 16.0  # happiness 0.2 < 0.3
 
     update_population(w)
 

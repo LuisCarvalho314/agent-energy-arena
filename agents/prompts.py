@@ -47,8 +47,13 @@ Key mechanics:
   squares orthogonally adjacent to a road (or the town hall).
 - Power plants and wells need no road. Renewables (solar/wind) are zero
   at the evening peak — only gas/coal cover the dispatchable margin.
-- Population grows when jobs ≥ pop, capacity > pop, happiness ≥ 0.5.
-  Coal plants nearby drop happiness (chebyshev radius 3).
+- Population grows when jobs ≥ pop, capacity > pop, happiness ≥ 0.3.
+  Growth multiplier = max(0, (happiness - 0.3) / 1.2): h=1.0 → 58%,
+  h=1.5 → 100%. Place parks within chebyshev-2 of houses to lift
+  happiness (+0.10 per nearby park, capped 0.30/house, averaged).
+  Industrial + refinery within chebyshev-2 of houses cost -0.03 each
+  (halved to -0.015 by a park within radius-2 of both). Coal plants
+  nearby drop happiness (chebyshev radius 3).
 
 Subsurface & oilfield (oilfield-v2):
 - HC voxels are tagged with `reservoir_id` (1-indexed). All voxels
