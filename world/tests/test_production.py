@@ -166,13 +166,46 @@ def test_drill_deducts_capex_and_creates_well():
     assert well.capex_paid == expected_capex
 
 
-def test_drill_rejects_tile_occupied_same_xy_different_z():
+def test_drill_rejects_completion_overlap_same_xy_dz_below_three():
+    """Stacked completions at the same (x, y) are rejected when their two
+    3×3×3 drainage cubes would overlap on the z-axis (|Δtarget_z| < 3)."""
     w = World()
     w.reset(seed=42)
     w.drill(10, 10, 8, "production")
-    res = w.drill(10, 10, 5, "production")
+    res = w.drill(10, 10, 6, "production")
     assert res["ok"] is False
-    assert res["error"] == "tile_occupied"
+    assert res["error"] == "completion_overlap"
+
+
+def test_drill_allows_stacked_completion_same_xy_dz_at_least_three():
+    """A second well at the same (x, y) is legal when |Δtarget_z| ≥ 3."""
+    w = World()
+    w.reset(seed=42)
+    w.state.treasury = 1_000_000
+    w.drill(10, 10, 8, "production")
+    res = w.drill(10, 10, 5, "production")
+    assert res["ok"] is True
+    assert len(w.state.wells) == 2
+
+
+def test_drill_stacked_completion_capex_prices_second_target_z():
+    """The deeper second completion's capex is computed against its own
+    target_z, not the first completion's. The capex formula is quadratic
+    in depth, so the second well's capex must equal drill_capex(base,
+    second_z, world_d)."""
+    from world.subsurface import drill_capex
+
+    w = World()
+    w.reset(seed=42)
+    w.state.treasury = 10_000_000
+    treasury_after_first = w.state.treasury
+    w.drill(10, 10, 8, "production")
+    treasury_after_first = w.state.treasury
+    res = w.drill(10, 10, 4, "production")
+    assert res["ok"] is True
+    expected_second_capex = drill_capex(50_000.0, 4, w.config.world_d)
+    assert w.state.wells[-1].capex_paid == expected_second_capex
+    assert treasury_after_first - w.state.treasury == expected_second_capex
 
 
 def test_drill_rejects_voxel_out_of_bounds_high():

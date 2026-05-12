@@ -55,6 +55,7 @@ from world.subsurface import (
     WELL_SETPOINT_MIN,
     SubsurfaceGrid,
     drill_capex,
+    drill_collision,
     generate_subsurface,
     injector_supports,
     is_size_valid,
@@ -453,11 +454,15 @@ class World:
             return self._build_error("out_of_bounds")
         if not (0 <= target_z < self.config.world_d):
             return self._build_error("voxel_out_of_bounds")
-        # Brief §4.12: two wells cannot share the same (x, y) — even if
-        # they target different z. The `tile_occupied` error name matches
-        # the build-side rejection for consistency with the issue AC.
-        if self._well_at(x, y) is not None:
-            return self._build_error("tile_occupied")
+        # Stacked completions are allowed at the same (x, y) iff the two
+        # 3×3×3 drainage cubes do not overlap on the z-axis (|Δtarget_z|
+        # ≥ 3). A non-well build (road / refinery / pipeline) on the
+        # surface tile still blocks with `tile_occupied`. Both checks
+        # live in the pure helper so the UI hover-affordance can share
+        # the predicate.
+        collision = drill_collision(self.state.wells, self.state.tiles, x, y, target_z)
+        if collision is not None:
+            return self._build_error(collision)
 
         spec_type = "oil_well" if well_type == "production" else "injection_well"
         spec = TILE_CATALOG[spec_type]
@@ -520,12 +525,6 @@ class World:
                 "setpoint_rate_bbl_day": clamped,
             },
         }
-
-    def _well_at(self, x: int, y: int) -> Well | None:
-        for w in self.state.wells:
-            if w.x == x and w.y == y:
-                return w
-        return None
 
     def _next_well_id(self, well_type: str) -> str:
         self._well_seq += 1

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from world.api import create_app
 from world.sim import World
-from world.state import Well
+from world.state import Tile, Well
 from world.subsurface import (
     N_RESERVOIRS_MAX,
     N_RESERVOIRS_MIN,
@@ -20,6 +20,7 @@ from world.subsurface import (
     SEISMIC_MAX_SIZE,
     SEISMIC_MIN_SIZE,
     VOXEL_VOLUME_BBL,
+    drill_collision,
     generate_subsurface,
     injector_supports,
     reservoirs_summary,
@@ -860,3 +861,97 @@ def test_state_wells_supports_producer_ids_present_on_injection():
     for iw in inj_dicts:
         assert "supports_producer_ids" in iw
         assert isinstance(iw["supports_producer_ids"], list)
+
+
+# -- drill_collision (reservoir-scale-and-stacked-completions #03) ---------
+
+
+def test_drill_collision_returns_none_for_same_xy_dz_three():
+    """|Δtarget_z| ≥ 3 at the same (x, y) is the legal stacked-completion
+    case — the two 3×3×3 cubes don't overlap on the z-axis."""
+    existing = _make_producer("p1", 10, 10, 8, reservoir_id=1)
+    assert drill_collision([existing], [], 10, 10, 5) is None
+    assert drill_collision([existing], [], 10, 10, 11) is None
+
+
+def test_drill_collision_completion_overlap_for_same_xy_dz_below_three():
+    """|Δtarget_z| < 3 at the same (x, y) overlaps the drainage cube."""
+    existing = _make_producer("p1", 10, 10, 8, reservoir_id=1)
+    for dz in (-2, -1, 0, 1, 2):
+        assert drill_collision([existing], [], 10, 10, 8 + dz) == "completion_overlap"
+
+
+def test_drill_collision_none_for_different_xy_at_any_z():
+    existing = _make_producer("p1", 10, 10, 8, reservoir_id=1)
+    for z in (0, 4, 8, 12, 15):
+        assert drill_collision([existing], [], 11, 10, z) is None
+        assert drill_collision([existing], [], 10, 11, z) is None
+        assert drill_collision([existing], [], 0, 0, z) is None
+
+
+def test_drill_collision_tile_occupied_when_road_on_surface():
+    """A road/refinery/pipeline on the surface tile still rejects with
+    `tile_occupied`. Wells stay legal at that (x, y) so the regression
+    test pins the build-side rejection through the new helper."""
+    tile = Tile(id="road-1", type="road", x=10, y=10, built_day=0)
+    assert drill_collision([], [tile], 10, 10, 8) == "tile_occupied"
+    assert drill_collision([], [tile], 11, 10, 8) is None
+
+
+def test_drill_collision_tile_takes_priority_over_completion_overlap():
+    """When both a tile and an overlapping well exist at (x, y), tile_occupied
+    is reported (it's the more fundamental, pre-existing build-side rule)."""
+    tile = Tile(id="road-1", type="road", x=10, y=10, built_day=0)
+    overlapping = _make_producer("p1", 10, 10, 8, reservoir_id=1)
+    assert drill_collision([overlapping], [tile], 10, 10, 9) == "tile_occupied"
+
+
+def test_drill_collision_multiple_wells_only_same_xy_counts():
+    """Wells at different (x, y) don't constrain the new completion."""
+    far = _make_producer("p1", 5, 5, 8, reservoir_id=1)
+    same = _make_producer("p2", 10, 10, 8, reservoir_id=1)
+    assert drill_collision([far, same], [], 10, 10, 5) is None
+    assert drill_collision([far, same], [], 10, 10, 7) == "completion_overlap"
+
+
+def test_api_drill_returns_completion_overlap_for_deep_z_collision():
+    """The HTTP /drill path surfaces the new error key in the same shape
+    as the existing `tile_occupied` error."""
+    w = World()
+    w.reset(seed=42)
+    w.state.treasury = 10_000_000
+    client = TestClient(create_app(world=w))
+    r1 = client.post(
+        "/drill",
+        json={"x": 10, "y": 10, "target_z": 8, "well_type": "production"},
+    ).json()
+    assert r1["ok"] is True
+    r2 = client.post(
+        "/drill",
+        json={"x": 10, "y": 10, "target_z": 7, "well_type": "production"},
+    ).json()
+    assert r2["ok"] is False
+    assert r2["error"] == "completion_overlap"
+    assert r2["result"] is None
+
+
+def test_api_drill_rejects_tile_occupied_road_on_surface():
+    """A road on the surface tile blocks drilling with `tile_occupied`."""
+    w = World()
+    w.reset(seed=42)
+    w.state.treasury = 10_000_000
+    # Find a road-adjacent buildable square and place a road there. The
+    # town-hall sits at the world center, so a tile to its east has road
+    # adjacency via the hall.
+    cx = w.config.world_w // 2
+    cy = w.config.world_h // 2
+    rx, ry = cx + 1, cy
+    br = w.build("road", rx, ry)
+    assert br["ok"] is True
+    client = TestClient(create_app(world=w))
+    r = client.post(
+        "/drill",
+        json={"x": rx, "y": ry, "target_z": 8, "well_type": "production"},
+    ).json()
+    assert r["ok"] is False
+    assert r["error"] == "tile_occupied"

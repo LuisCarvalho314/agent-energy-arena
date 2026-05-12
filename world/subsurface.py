@@ -386,6 +386,37 @@ def pools_intersect(ax: int, ay: int, az: int, bx: int, by: int, bz: int) -> boo
     return abs(ax - bx) <= 2 and abs(ay - by) <= 2 and abs(az - bz) <= 2
 
 
+def drill_collision(
+    wells: list[Any],
+    tiles: list[Any],
+    x: int,
+    y: int,
+    target_z: int,
+) -> str | None:
+    """Predicate for whether a new drill at (x, y, target_z) is blocked.
+
+    Returns the error key, or None if the new completion is legal:
+      - "tile_occupied" when a non-well build (road / refinery / pipeline …)
+        occupies the surface tile at (x, y).
+      - "completion_overlap" when an existing well shares (x, y) and its
+        target_z is within 2 of the new target_z (so the two 3×3×3
+        drainage cubes would overlap on the z-axis). The legal stacked-
+        completion rule is |Δtarget_z| ≥ 3.
+      - None otherwise.
+
+    Tile-occupied is checked first so a road-blocked surface reports the
+    tile error rather than a stacked-completion error when both would apply.
+    Duck-typed on the `.x` / `.y` (and `.target_z` for wells) attributes.
+    """
+    for t in tiles:
+        if t.x == x and t.y == y:
+            return "tile_occupied"
+    for w in wells:
+        if w.x == x and w.y == y and abs(w.target_z - target_z) < 3:
+            return "completion_overlap"
+    return None
+
+
 def well_production_bbl_day(
     grid: SubsurfaceGrid,
     x: int,
