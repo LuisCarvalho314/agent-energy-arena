@@ -37,7 +37,11 @@ def _fresh_world() -> World:
 
 
 def _inject_tile(w: World, *, tile_type: str, x: int, y: int) -> None:
-    """Bypass /build to plant a demand-bearing tile directly."""
+    """Bypass /build to plant a demand-bearing tile directly.
+
+    Workforce slice 01: defaults ``staffed_jobs`` to ``spec.jobs`` so injected
+    producer tiles look fully staffed by the helper.
+    """
     from world.catalog import TILE_CATALOG
 
     spec = TILE_CATALOG[tile_type]
@@ -51,6 +55,7 @@ def _inject_tile(w: World, *, tile_type: str, x: int, y: int) -> None:
             operational=True,
             housing_capacity=spec.housing_capacity,
             jobs=spec.jobs,
+            staffed_jobs=spec.jobs,
         )
     )
 

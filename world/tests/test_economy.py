@@ -39,6 +39,9 @@ def _hc_voxel(world: World) -> Voxel:
 
 
 def _refinery_tile(rid: str, setpoint: float) -> Tile:
+    from world.catalog import TILE_CATALOG
+
+    spec = TILE_CATALOG["refinery"]
     return Tile(
         id=rid,
         type="refinery",
@@ -46,6 +49,8 @@ def _refinery_tile(rid: str, setpoint: float) -> Tile:
         y=0,
         built_day=0,
         operational=True,
+        jobs=spec.jobs,
+        staffed_jobs=spec.jobs,
         setpoint_rate_bbl_day=setpoint,
     )
 

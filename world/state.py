@@ -21,6 +21,9 @@ class Tile:
     opex_per_day: float = 0.0
     housing_capacity: int = 0
     jobs: int = 0
+    # Workforce slice 01: hired headcount. Allocator fills/drains; defaults to
+    # 0 until `world.workforce.hire_to_fill` runs.
+    staffed_jobs: int = 0
     # Refinery-specific (slice 09): setpoint and yesterday's actual throughput.
     # Hourly demand reads `current_throughput_bbl_day` (1-day lag) so the
     # process-load contribution to dispatch is well-defined; end-of-day
@@ -45,6 +48,9 @@ class Well:
     # accrual is independent of catalog retunes between sessions).
     capex_paid: float = 0.0
     opex_per_day: float = 0.0
+    # Workforce slice 01: hired headcount. Allocator fills/drains; defaults to
+    # 0 until `world.workforce.hire_to_fill` runs.
+    staffed_jobs: int = 0
 
 
 @dataclass

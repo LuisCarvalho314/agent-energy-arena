@@ -66,6 +66,9 @@ from world.weather import (
     step_weather_one_hour,
     v_mean,
 )
+from world.workforce import employed as workforce_employed
+from world.workforce import hire_to_fill
+from world.workforce import unemployed as workforce_unemployed
 
 
 def _tile_to_dict(t: Tile) -> dict[str, Any]:
@@ -80,6 +83,7 @@ def _tile_to_dict(t: Tile) -> dict[str, Any]:
         "opex_per_day": t.opex_per_day,
         "housing_capacity": t.housing_capacity,
         "jobs": t.jobs,
+        "staffed_jobs": t.staffed_jobs,
         "current_output_kw": t.current_output_kw,
         "setpoint_rate_bbl_day": t.setpoint_rate_bbl_day,
         "current_throughput_bbl_day": t.current_throughput_bbl_day,
@@ -100,6 +104,7 @@ def _well_to_dict(w: Well) -> dict[str, Any]:
         "cumulative_injected_bbl": w.cumulative_injected_bbl,
         "capex_paid": w.capex_paid,
         "opex_per_day": w.opex_per_day,
+        "staffed_jobs": w.staffed_jobs,
     }
 
 
@@ -187,6 +192,9 @@ class World:
             self.config.world_d,
         )
         self._place_town_hall()
+        # Workforce slice 01: auto-staff the town hall (and any future
+        # reset-time injections) from the starting unemployed pool.
+        hire_to_fill(self.state)
 
     def _place_town_hall(self) -> None:
         spec = TILE_CATALOG["town_hall"]
@@ -241,6 +249,7 @@ class World:
             jobs=spec.jobs,
         )
         self.state.tiles.append(tile)
+        hire_to_fill(self.state)
         return {
             "ok": True,
             "treasury_after": self.state.treasury,
@@ -269,6 +278,10 @@ class World:
         refund = 0.25 * tile.capex_paid
         self.state.treasury += refund
         self.state.tiles.remove(tile)
+        # Workforce slice 01: the demolished tile's staffed_jobs are gone with
+        # the tile, returning those workers to the unemployed pool. Backfill
+        # any older under-staffed facility before the response goes out.
+        hire_to_fill(self.state)
         return {
             "ok": True,
             "treasury_after": self.state.treasury,
@@ -374,6 +387,7 @@ class World:
             opex_per_day=spec.opex_per_day,
         )
         self.state.wells.append(well)
+        hire_to_fill(self.state)
         return {
             "ok": True,
             "treasury_after": self.state.treasury,
@@ -761,6 +775,8 @@ class World:
             "hour": s.hour,
             "treasury": s.treasury,
             "population": s.population,
+            "employed": workforce_employed(s),
+            "unemployed": workforce_unemployed(s),
             "happiness": s.happiness,
             "config": {
                 "world_w": c.world_w,

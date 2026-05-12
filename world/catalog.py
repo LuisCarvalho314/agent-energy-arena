@@ -90,6 +90,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=50,
         requires_road=False,
         description="Up to 150 kW (sun-dependent). No road requirement.",
+        jobs=2,
         capacity_kw=150,
     ),
     "wind_turbine": TileSpec(
@@ -98,6 +99,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=80,
         requires_road=False,
         description="Up to 200 kW (wind-dependent). No road requirement.",
+        jobs=2,
         capacity_kw=200,
     ),
     "gas_peaker": TileSpec(
@@ -106,6 +108,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=150,
         requires_road=False,
         description="0-500 kW. Ramp 50%/h. Fuel $30/MWh.",
+        jobs=4,
         capacity_kw=500,
         fuel_cost_per_mwh=30.0,
         co2_t_per_mwh=0.4,
@@ -116,6 +119,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=400,
         requires_road=False,
         description="200-800 kW. Min run 25%, ramp 10%/h. Fuel $20/MWh.",
+        jobs=8,
         capacity_kw=800,
         fuel_cost_per_mwh=20.0,
         co2_t_per_mwh=0.9,
@@ -134,6 +138,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=100,
         requires_road=False,
         description="Production well. Setpoint 0-200 bbl/day. Drilled via /drill.",
+        jobs=3,
         buildable=False,
     ),
     "injection_well": TileSpec(
@@ -142,6 +147,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=50,
         requires_road=False,
         description="Injection well. Setpoint 0-200 bbl/day. 50 kWh/bbl. Drilled via /drill.",
+        jobs=2,
         buildable=False,
     ),
     "town_hall": TileSpec(

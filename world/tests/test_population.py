@@ -29,8 +29,14 @@ def _inject_tile(
     y: int,
     jobs: int = 0,
     housing_capacity: int = 0,
+    staffed_jobs: int | None = None,
 ) -> None:
-    """Bypass /build's adjacency/funds checks to set up arbitrary aggregates."""
+    """Bypass /build's adjacency/funds checks to set up arbitrary aggregates.
+
+    Workforce slice 01: defaults ``staffed_jobs`` to ``jobs`` so injected
+    producer tiles look fully staffed. Tests that want a partially-staffed
+    tile pass ``staffed_jobs=N`` explicitly.
+    """
     w.state.tiles.append(
         Tile(
             id=f"injected-{x}-{y}",
@@ -41,6 +47,7 @@ def _inject_tile(
             operational=True,
             jobs=jobs,
             housing_capacity=housing_capacity,
+            staffed_jobs=jobs if staffed_jobs is None else staffed_jobs,
         )
     )
 

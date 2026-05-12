@@ -39,6 +39,8 @@ def _plant(tile_type: str, idx: int = 1) -> Tile:
         operational=True,
         capex_paid=spec.capex,
         opex_per_day=spec.opex_per_day,
+        jobs=spec.jobs,
+        staffed_jobs=spec.jobs,
     )
 
 
