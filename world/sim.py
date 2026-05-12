@@ -74,20 +74,24 @@ from world.workforce import unemployed as workforce_unemployed
 
 
 def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
+    from world.catalog import TILE_CATALOG
     from world.pricing import (
         _commercial_residents_in_radius,
         commercial_revenue_for_tile,
         industrial_co2_for_tile,
         industrial_revenue_for_tile,
+        plant_carbon_cost_for_tile,
+        plant_co2_for_tile,
+        plant_fuel_cost_for_tile,
         plant_revenue_for_tile,
     )
 
     # Slice 01 surfaced industrial economics; slice 02 adds commercial; slice
-    # 03 adds plants (solar/wind/coal/gas) with kwh-served-based revenue.
-    # Fuel cost + carbon cost rows for fossil plants land in slice 04, so the
-    # Net for plants here is still revenue − OPEX and intentionally overstates
-    # fossil profit until those rows are filled in.
+    # 03 adds plants (solar/wind/coal/gas) with kwh-served-based revenue;
+    # slice 04 adds the fuel + carbon cost rows for fossil plants and folds
+    # them into Net, so the displayed Net now reconciles with the row math.
     extra: dict[str, Any] = {}
+    fuel_cost = 0.0
     if t.type == "industrial":
         revenue = industrial_revenue_for_tile(t)
         co2_t = industrial_co2_for_tile(t)
@@ -100,10 +104,12 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         net = revenue - t.opex_per_day
         extra["residents_in_radius"] = _commercial_residents_in_radius(world.state, t)
     elif t.type in PLANT_TYPES:
+        spec = TILE_CATALOG[t.type]
         revenue = plant_revenue_for_tile(t, world.config)
-        co2_t = 0.0
-        carbon_cost = 0.0
-        net = revenue - t.opex_per_day
+        co2_t = plant_co2_for_tile(t, spec)
+        fuel_cost = plant_fuel_cost_for_tile(t, spec)
+        carbon_cost = plant_carbon_cost_for_tile(world.state, t, spec)
+        net = revenue - t.opex_per_day - fuel_cost - carbon_cost
     else:
         revenue = 0.0
         co2_t = 0.0
@@ -129,6 +135,7 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         "current_throughput_bbl_day": t.current_throughput_bbl_day,
         "estimated_revenue_per_day": revenue,
         "estimated_co2_per_day": co2_t,
+        "estimated_fuel_cost_per_day": fuel_cost,
         "estimated_carbon_cost_per_day": carbon_cost,
         "estimated_net_per_day": net,
         **extra,

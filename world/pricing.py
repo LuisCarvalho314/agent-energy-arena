@@ -20,6 +20,7 @@ from world.economy import INDUSTRIAL_PROCESS_CO2_T_PER_DAY
 from world.power import PLANT_TYPES
 
 if TYPE_CHECKING:
+    from world.catalog import TileSpec
     from world.config import Config
     from world.sim import World
     from world.state import Tile, WorldState
@@ -122,6 +123,40 @@ def plant_revenue_for_tile(tile: Tile, config: Config) -> float:
     if tile.type not in PLANT_TYPES or not tile.operational:
         return 0.0
     return tile.kwh_served_yesterday * config.grid_price_retail
+
+
+def plant_fuel_cost_for_tile(tile: Tile, spec: TileSpec) -> float:
+    """Daily fuel cost for one plant tile, based on yesterday's served kWh.
+
+    Returns ``kwh_served_yesterday / 1000 × spec.fuel_cost_per_mwh``. Renewables
+    have ``fuel_cost_per_mwh == 0`` so the result is 0; non-plant tiles and
+    non-operational plants also return 0.
+    """
+    if tile.type not in PLANT_TYPES or not tile.operational:
+        return 0.0
+    return (tile.kwh_served_yesterday / 1000.0) * spec.fuel_cost_per_mwh
+
+
+def plant_co2_for_tile(tile: Tile, spec: TileSpec) -> float:
+    """Daily CO2 in tonnes for one plant tile, based on yesterday's served kWh.
+
+    Returns ``kwh_served_yesterday / 1000 × spec.co2_t_per_mwh``. Renewables
+    have ``co2_t_per_mwh == 0`` so the result is 0. This is the popup-row
+    figure; the city-wide aggregator still drives carbon accounting via the
+    hourly dispatch path.
+    """
+    if tile.type not in PLANT_TYPES or not tile.operational:
+        return 0.0
+    return (tile.kwh_served_yesterday / 1000.0) * spec.co2_t_per_mwh
+
+
+def plant_carbon_cost_for_tile(state: WorldState, tile: Tile, spec: TileSpec) -> float:
+    """Daily carbon cost in $ for one plant tile.
+
+    Reads ``state.carbon_price`` at compute time so regulatory-tightening
+    events flow through into the Net row the same day they fire.
+    """
+    return plant_co2_for_tile(tile, spec) * state.carbon_price
 
 
 def _commercial_residents_in_radius(state: WorldState, tile: Tile) -> float:

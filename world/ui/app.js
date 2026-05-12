@@ -642,22 +642,23 @@
       rows.push(row("Current output", `${fmtNum(out, 1)} kW (${pct}%)`, "pos"));
       const kwhYesterday = t.kwh_served_yesterday || 0;
       rows.push(row("Served (yest.)", `${fmtNum(kwhYesterday, 0)} kWh`, "pos"));
-      if ((spec.fuel_cost_per_mwh || 0) > 0) {
-        rows.push(row("Fuel cost", `$${fmtNum(spec.fuel_cost_per_mwh, 2)} / MWh`, "neg"));
-      }
-      if ((spec.co2_t_per_mwh || 0) > 0) {
-        const dailyCo2 = (out * 24 / 1000) * spec.co2_t_per_mwh;
-        rows.push(row("CO₂", `${fmtNum(spec.co2_t_per_mwh, 2)} t/MWh · ${fmtNum(dailyCo2, 2)} t/day`, "neg"));
-      }
-      if ((spec.co2_t_per_mwh || 0) === 0 && (spec.fuel_cost_per_mwh || 0) === 0) {
-        rows.push(row("Emissions", "0 (renewable)", "pos"));
-      }
-      // Per-facility economics (facility-economics-popup slice 03). Revenue
-      // is yesterday's actual served kWh × grid retail (server-stamped). Net
-      // here is revenue − OPEX; fuel and carbon cost rows for fossil plants
-      // land in slice 04, so fossil Net is intentionally overstated today.
+      // Per-facility economics (facility-economics-popup slice 04). All
+      // dollar and tonnage figures come from server-stamped /state fields
+      // and reconcile with Net by eye. Renewables show $0 explicitly so the
+      // contrast with fossils is visible.
+      const co2 = t.estimated_co2_per_day || 0;
+      const fuelCost = t.estimated_fuel_cost_per_day || 0;
+      const carbonCost = t.estimated_carbon_cost_per_day || 0;
       const revenue = t.estimated_revenue_per_day || 0;
       const net = t.estimated_net_per_day || 0;
+      const isFossil = (spec.fuel_cost_per_mwh || 0) > 0 || (spec.co2_t_per_mwh || 0) > 0;
+      const co2Cls = co2 > 0 ? "neg" : "pos";
+      rows.push(row("CO₂ / day", `${fmtNum(co2, 2)} t`, co2Cls));
+      rows.push(row("Fuel cost / day", fmtMoney(-fuelCost), fuelCost > 0 ? "neg" : "pos"));
+      rows.push(row("Carbon cost / day", fmtMoney(-carbonCost), carbonCost > 0 ? "neg" : "pos"));
+      if (!isFossil) {
+        rows.push(row("Emissions", "0 (renewable)", "pos"));
+      }
       rows.push(row("Revenue / day (est.)", fmtMoney(revenue), "pos"));
       rows.push(row("Net / day", fmtMoney(net), net >= 0 ? "pos" : "neg"));
     }

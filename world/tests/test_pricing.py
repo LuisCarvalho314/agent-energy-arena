@@ -732,24 +732,28 @@ def test_state_tile_dict_estimated_revenue_matches_yesterday_times_retail() -> N
     assert coal_dict["estimated_revenue_per_day"] == pytest.approx(
         coal.kwh_served_yesterday * w.config.grid_price_retail
     )
+    # Slice 04 folds fuel + carbon cost into Net for plants. The revenue row
+    # is unchanged.
     assert coal_dict["estimated_net_per_day"] == pytest.approx(
-        coal_dict["estimated_revenue_per_day"] - coal_dict["opex_per_day"]
+        coal_dict["estimated_revenue_per_day"]
+        - coal_dict["opex_per_day"]
+        - coal_dict["estimated_fuel_cost_per_day"]
+        - coal_dict["estimated_carbon_cost_per_day"]
     )
 
 
-def test_state_tile_dict_plant_estimated_co2_and_carbon_cost_are_zero_in_slice_03() -> None:
-    """Slice 03 only fills revenue + net for plants. Fuel cost and carbon
-    cost rows land in slice 04; this slice keeps their popup placeholders
-    at 0."""
+def test_state_tile_dict_renewable_plant_co2_and_carbon_are_zero() -> None:
+    """Renewables (solar/wind) keep estimated_co2_per_day = 0 and
+    estimated_carbon_cost_per_day = 0 even after dispatching real kWh."""
     w = World()
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
-    w.build("coal_plant", th.x + 2, th.y)
+    w.build("solar_farm", th.x + 2, th.y)
     w.step(days=1)
     s = w.state_dict()
-    coal_dict = next(t for t in s["tiles"] if t["type"] == "coal_plant")
-    assert coal_dict["estimated_co2_per_day"] == 0.0
-    assert coal_dict["estimated_carbon_cost_per_day"] == 0.0
+    solar_dict = next(t for t in s["tiles"] if t["type"] == "solar_farm")
+    assert solar_dict["estimated_co2_per_day"] == 0.0
+    assert solar_dict["estimated_carbon_cost_per_day"] == 0.0
 
 
 def test_state_tile_dict_exposes_kwh_fields_on_plants() -> None:
@@ -774,3 +778,236 @@ def test_catalog_economics_exposes_grid_prices() -> None:
     eco = cat["economics"]
     assert eco["grid_price_retail"] == pytest.approx(cfg.grid_price_retail)
     assert eco["grid_price_export"] == pytest.approx(cfg.grid_price_export)
+
+
+# =========================================================================
+# Slice 04 — fossil plant fuel + carbon cost rows; kWh-based CO2 row
+# =========================================================================
+
+
+def _solar_tile(x: int = 0, y: int = 0) -> Tile:
+    spec = TILE_CATALOG["solar_farm"]
+    return Tile(
+        id="solar_1",
+        type="solar_farm",
+        x=x,
+        y=y,
+        built_day=0,
+        operational=True,
+        capex_paid=spec.capex,
+        opex_per_day=spec.opex_per_day,
+        jobs=spec.jobs,
+        staffed_jobs=spec.jobs,
+    )
+
+
+def _gas_peaker_tile(x: int = 0, y: int = 0) -> Tile:
+    spec = TILE_CATALOG["gas_peaker"]
+    return Tile(
+        id="gas_1",
+        type="gas_peaker",
+        x=x,
+        y=y,
+        built_day=0,
+        operational=True,
+        capex_paid=spec.capex,
+        opex_per_day=spec.opex_per_day,
+        jobs=spec.jobs,
+        staffed_jobs=spec.jobs,
+    )
+
+
+# -- plant_fuel_cost_for_tile unit -----------------------------------------
+
+
+def test_plant_fuel_cost_zero_when_no_kwh_served() -> None:
+    from world.pricing import plant_fuel_cost_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    # Default kwh_served_yesterday == 0 → no fuel burned, no cost.
+    assert plant_fuel_cost_for_tile(t, spec) == 0.0
+
+
+def test_plant_fuel_cost_scales_with_kwh_and_fuel_cost_per_mwh() -> None:
+    from world.pricing import plant_fuel_cost_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    t.kwh_served_yesterday = 2000.0  # 2 MWh
+    # spec.fuel_cost_per_mwh = 20.0 → expected $40/day.
+    assert plant_fuel_cost_for_tile(t, spec) == pytest.approx(2.0 * spec.fuel_cost_per_mwh)
+
+
+def test_plant_fuel_cost_uses_yesterday_not_today() -> None:
+    """Fuel cost is anchored to the just-completed day so the popup row
+    matches the revenue row's accounting window."""
+    from world.pricing import plant_fuel_cost_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    t.kwh_served_today = 9999.0  # today's running total — must be ignored
+    t.kwh_served_yesterday = 1000.0
+    assert plant_fuel_cost_for_tile(t, spec) == pytest.approx(1.0 * spec.fuel_cost_per_mwh)
+
+
+def test_plant_fuel_cost_zero_for_renewable() -> None:
+    """Solar/wind have ``fuel_cost_per_mwh == 0`` so the helper returns 0
+    even when the plant served real kWh."""
+    from world.pricing import plant_fuel_cost_for_tile
+
+    spec = TILE_CATALOG["solar_farm"]
+    t = _solar_tile()
+    t.kwh_served_yesterday = 5000.0
+    assert plant_fuel_cost_for_tile(t, spec) == 0.0
+
+
+def test_plant_fuel_cost_zero_when_not_operational() -> None:
+    from world.pricing import plant_fuel_cost_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    t.kwh_served_yesterday = 1000.0
+    t.operational = False
+    assert plant_fuel_cost_for_tile(t, spec) == 0.0
+
+
+# -- plant_carbon_cost_for_tile unit ---------------------------------------
+
+
+def test_plant_carbon_cost_zero_when_no_kwh_served() -> None:
+    from world.pricing import plant_carbon_cost_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    assert plant_carbon_cost_for_tile(state, t, spec) == 0.0
+
+
+def test_plant_carbon_cost_scales_with_kwh_and_intensity_and_price() -> None:
+    from world.pricing import plant_carbon_cost_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    t.kwh_served_yesterday = 1000.0  # 1 MWh
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    expected = 1.0 * spec.co2_t_per_mwh * CARBON_PRICE_USD_PER_TON
+    assert plant_carbon_cost_for_tile(state, t, spec) == pytest.approx(expected)
+
+
+def test_plant_carbon_cost_tracks_state_carbon_price() -> None:
+    """A regulatory-tightening event that raises ``state.carbon_price`` must
+    flow into the per-tile carbon cost the same day it fires."""
+    from world.pricing import plant_carbon_cost_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    t.kwh_served_yesterday = 1000.0
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    baseline = plant_carbon_cost_for_tile(state, t, spec)
+    state.carbon_price = CARBON_PRICE_USD_PER_TON * 2.0
+    after = plant_carbon_cost_for_tile(state, t, spec)
+    assert after == pytest.approx(baseline * 2.0)
+
+
+def test_plant_carbon_cost_zero_for_renewable() -> None:
+    from world.pricing import plant_carbon_cost_for_tile
+
+    spec = TILE_CATALOG["solar_farm"]
+    t = _solar_tile()
+    t.kwh_served_yesterday = 5000.0
+    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
+    assert plant_carbon_cost_for_tile(state, t, spec) == 0.0
+
+
+# -- plant_co2_for_tile unit (kWh-based daily tonnage) ---------------------
+
+
+def test_plant_co2_for_tile_uses_yesterday_kwh() -> None:
+    from world.pricing import plant_co2_for_tile
+
+    spec = TILE_CATALOG["coal_plant"]
+    t = _coal_plant_tile()
+    t.kwh_served_yesterday = 1000.0
+    # spec.co2_t_per_mwh = 0.9 → 0.9 t/day for 1 MWh.
+    assert plant_co2_for_tile(t, spec) == pytest.approx(spec.co2_t_per_mwh)
+
+
+def test_plant_co2_for_tile_zero_for_renewable() -> None:
+    from world.pricing import plant_co2_for_tile
+
+    spec = TILE_CATALOG["solar_farm"]
+    t = _solar_tile()
+    t.kwh_served_yesterday = 5000.0
+    assert plant_co2_for_tile(t, spec) == 0.0
+
+
+# -- /state per-tile economics fields for plants (slice 04) ---------------
+
+
+def test_state_tile_dict_plant_emits_estimated_fuel_and_carbon_cost() -> None:
+    """Coal plant tile dict has all four new keys; renewables get 0 for
+    fuel/carbon so the popup shows the contrast explicitly."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("industrial", th.x + 1, th.y)
+    w.build("coal_plant", th.x + 2, th.y)
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    w.step(days=1)
+    assert coal.kwh_served_yesterday > 0.0
+
+    s = w.state_dict()
+    coal_dict = next(t for t in s["tiles"] if t["type"] == "coal_plant")
+    spec = TILE_CATALOG["coal_plant"]
+    mwh = coal.kwh_served_yesterday / 1000.0
+    assert coal_dict["estimated_fuel_cost_per_day"] == pytest.approx(mwh * spec.fuel_cost_per_mwh)
+    assert coal_dict["estimated_carbon_cost_per_day"] == pytest.approx(
+        mwh * spec.co2_t_per_mwh * w.state.carbon_price
+    )
+    assert coal_dict["estimated_co2_per_day"] == pytest.approx(mwh * spec.co2_t_per_mwh)
+
+
+def test_state_tile_dict_renewable_plant_has_zero_fuel_and_carbon() -> None:
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("solar_farm", th.x + 2, th.y)
+    w.step(days=1)
+    s = w.state_dict()
+    solar_dict = next(t for t in s["tiles"] if t["type"] == "solar_farm")
+    assert solar_dict["estimated_fuel_cost_per_day"] == 0.0
+    assert solar_dict["estimated_carbon_cost_per_day"] == 0.0
+    assert solar_dict["estimated_co2_per_day"] == 0.0
+
+
+def test_state_tile_dict_plant_net_reconciles_with_component_rows() -> None:
+    """Integration AC: for a coal plant tile dict,
+    ``net == revenue − opex − fuel − carbon`` exactly."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("industrial", th.x + 1, th.y)
+    w.build("coal_plant", th.x + 2, th.y)
+    w.step(days=1)
+    s = w.state_dict()
+    coal_dict = next(t for t in s["tiles"] if t["type"] == "coal_plant")
+    expected_net = (
+        coal_dict["estimated_revenue_per_day"]
+        - coal_dict["opex_per_day"]
+        - coal_dict["estimated_fuel_cost_per_day"]
+        - coal_dict["estimated_carbon_cost_per_day"]
+    )
+    assert coal_dict["estimated_net_per_day"] == pytest.approx(expected_net)
+
+
+def test_state_tile_dict_non_plant_has_zero_fuel_cost_field() -> None:
+    """Slice-04 schema additivity: non-plant tiles still emit the new
+    ``estimated_fuel_cost_per_day`` key and it is 0.0."""
+    w = World()
+    w.reset(seed=42)
+    s = w.state_dict()
+    for tile_dict in s["tiles"]:
+        assert "estimated_fuel_cost_per_day" in tile_dict
+        if tile_dict["type"] not in {"coal_plant", "gas_peaker"}:
+            assert tile_dict["estimated_fuel_cost_per_day"] == 0.0
