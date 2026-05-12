@@ -40,6 +40,8 @@ from world.pipelines import routing_units
 from world.population import update_population
 from world.power import (
     PLANT_TYPES,
+    battery_charge_step,
+    battery_discharge_step,
     compute_balance_state,
     dispatch,
     total_demand_kw,
@@ -706,6 +708,32 @@ class World:
                 hour,
             )
 
+            # Battery dispatch (balance-upgrade-p0 slice 02). Charge step
+            # absorbs renewable surplus (1.5 in the merit order); discharge
+            # step closes residual demand after gas ramps (step 5). The two
+            # are mutually exclusive in a given hour — a renewable surplus
+            # implies no residual, and vice versa. Renewable supply for the
+            # purposes of charging is solar+wind only; charging from fossil
+            # is forbidden by construction (the surplus check gates it).
+            batteries = [t for t in self.state.tiles if t.type == "battery"]
+            renewable_supply_kw = by_source.get("solar", 0.0) + by_source.get("wind", 0.0)
+            _charges, total_charge_kw, charge_socs = battery_charge_step(
+                batteries, renewable_supply_kw, demand_kw
+            )
+            residual_demand_kw = max(0.0, demand_kw - supply_kw)
+            _discharges, total_discharge_kw, discharge_socs = battery_discharge_step(
+                batteries, residual_demand_kw
+            )
+            # Apply SoC deltas; clamp at storage bounds to absorb float jitter.
+            for b in batteries:
+                spec = TILE_CATALOG[b.type]
+                delta = charge_socs.get(b.id, 0.0) + discharge_socs.get(b.id, 0.0)
+                b.soc_kwh = max(0.0, min(spec.storage_kwh, b.soc_kwh + delta))
+            # Charging consumes renewable kWh that would otherwise have been
+            # curtailed (export); discharge adds delivered kWh to supply. Both
+            # adjust the bus-level supply used for the balance-state check.
+            supply_kw = supply_kw - total_charge_kw + total_discharge_kw
+
             balance, served_kw, excess_kw, _R = compute_balance_state(supply_kw, demand_kw)
 
             # Outage bookkeeping. Happiness damage is applied in one shot
@@ -740,8 +768,17 @@ class World:
             # demand). renewable_served caps the renewable supply at served
             # so any renewable kWh that fell into curtailment is dropped from
             # both numerator and denominator.
-            renewable_supply_kw = by_source.get("solar", 0.0) + by_source.get("wind", 0.0)
-            renewable_served_kw = min(renewable_supply_kw, served_kw)
+            #
+            # Battery accounting (slice 02): kWh charged into batteries is
+            # subtracted from renewable supply (it never served load this
+            # hour) and kWh discharged is added back as 100% renewable (PRD
+            # §"Renewable-share accounting"). Round-trip losses vanish from
+            # both numerator and denominator. The manual-charge clamp at
+            # step 1.5 guarantees every kWh entering a battery is renewable.
+            renewable_supply_after_battery = (
+                renewable_supply_kw - total_charge_kw + total_discharge_kw
+            )
+            renewable_served_kw = min(renewable_supply_after_battery, served_kw)
             self.state.cumulative_total_served_kwh += served_kw
             self.state.cumulative_renewable_served_kwh += renewable_served_kw
 

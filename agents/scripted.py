@@ -34,6 +34,8 @@ from agents.base import BaseAgent
 
 # --- Strategy thresholds ----------------------------------------------------
 
+BATTERY_CAPEX: float = 60_000.0  # catalog["battery"].capex
+MAX_BATTERIES: int = 4  # PRD §"Scripted agent battery rule"
 RESERVE_MARGIN_TARGET: float = 0.20  # build a plant when supply/demand < 1.20
 HOUSING_HEADROOM: int = 30  # leave this much capacity above pop
 JOBS_HEADROOM: int = 20  # commercial/industrial when jobs < pop + JOBS_HEADROOM
@@ -99,6 +101,8 @@ class ScriptedAgent(BaseAgent):
         n_commercial = sum(1 for t in tiles if t["type"] == "commercial")
         n_industrial = sum(1 for t in tiles if t["type"] == "industrial")
         n_solar = sum(1 for t in tiles if t["type"] == "solar_farm")
+        n_wind = sum(1 for t in tiles if t["type"] == "wind_turbine")
+        n_battery = sum(1 for t in tiles if t["type"] == "battery")
         n_gas = sum(1 for t in tiles if t["type"] == "gas_peaker")
         n_coal = sum(1 for t in tiles if t["type"] == "coal_plant")
         n_refinery = sum(1 for t in tiles if t["type"] == "refinery")
@@ -173,6 +177,26 @@ class ScriptedAgent(BaseAgent):
             and (n_solar + 1) < (n_commercial + n_industrial * 2)
             and treasury >= 500_000
             and self._build_plant("wind_turbine", treasury, cx, cy, w, h, occupied)
+        ):
+            return
+
+        # ----- Battery buildout (balance-upgrade-p0 slice 02) -------------
+        # Once any renewable plant exists, scale storage with the renewable
+        # fleet. Sizing rule (PRD §"Scripted agent battery rule"):
+        # `target = min(MAX_BATTERIES, (n_solar + n_wind) // 2)`. Built once
+        # treasury can afford the full capex; one per turn keeps the cash
+        # discipline consistent with the rest of the agent's single-action
+        # branches. Power-margin is already comfortable by the time we land
+        # here — the reserve-margin branch above returns early when dispatch
+        # is short, so a battery build never starves the grid.
+        n_renewable = n_solar + n_wind
+        target_batteries = min(MAX_BATTERIES, n_renewable // 2)
+        if (
+            phase != "bootstrap"
+            and n_renewable >= 1
+            and n_battery < target_batteries
+            and treasury >= BATTERY_CAPEX
+            and self._build_plant("battery", treasury, cx, cy, w, h, occupied)
         ):
             return
 

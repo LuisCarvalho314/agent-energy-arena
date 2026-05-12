@@ -25,6 +25,7 @@ entry into `state.active_events`. The flags go live in slice 11.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from world import workforce
@@ -218,6 +219,109 @@ def dispatch(
         "gas": sum(outputs[p.id] for p in gas),
     }
     return outputs, supply, by_source
+
+
+# -- Batteries ---------------------------------------------------------------
+#
+# Dispatch slots (PRD §"Battery dispatch"):
+#   * step 1.5 — `battery_charge_step` absorbs renewable surplus into SoC,
+#     consuming `sqrt(eta)` per kWh stored (the charging half of round-trip).
+#   * step 5   — `battery_discharge_step` closes any residual demand after gas
+#     ramps, draining `1/sqrt(eta)` kWh of SoC per kWh delivered.
+#
+# Setpoint sign convention (`Tile.charge_setpoint_kw`):
+#   *  0  → auto: charge from surplus, discharge to close residual.
+#   * >0  → manual charge mode: cap charging at the setpoint (still clamped
+#           to renewable surplus + rated power + SoC room). Does NOT discharge.
+#   * <0  → manual discharge mode: cap discharge at |setpoint| (still clamped
+#           to rated power + available SoC). Does NOT charge.
+
+
+def _battery_sqrt_eta(b: Tile) -> float:
+    spec = TILE_CATALOG[b.type]
+    if spec.round_trip_efficiency <= 0.0:
+        return 0.0
+    return math.sqrt(spec.round_trip_efficiency)
+
+
+def battery_charge_step(
+    batteries: list[Tile],
+    renewable_supply_kw: float,
+    demand_kw: float,
+) -> tuple[dict[str, float], float, dict[str, float]]:
+    """Absorb renewable surplus into batteries (dispatch step 1.5).
+
+    Returns `(draw_kw_per_battery, total_draw_kw, soc_delta_kwh_per_battery)`.
+    `draw_kw` is the kW each battery pulls from the bus this hour; SoC grows by
+    `sqrt(eta) * draw_kw * 1h`. Batteries are iterated in id-ascending order so
+    the order of operations is deterministic across runs.
+    """
+    charges: dict[str, float] = {b.id: 0.0 for b in batteries}
+    soc_deltas: dict[str, float] = {b.id: 0.0 for b in batteries}
+    surplus = max(0.0, renewable_supply_kw - demand_kw)
+    if surplus <= 0:
+        return charges, 0.0, soc_deltas
+
+    total = 0.0
+    for b in sorted(batteries, key=lambda x: x.id):
+        if not b.operational:
+            continue
+        if b.charge_setpoint_kw < 0:
+            continue  # manual discharge mode — no charging this hour
+        spec = TILE_CATALOG[b.type]
+        rated = spec.capacity_kw * workforce.efficiency(b)
+        max_draw = rated if b.charge_setpoint_kw == 0 else min(b.charge_setpoint_kw, rated)
+        sqrt_eta = _battery_sqrt_eta(b)
+        if sqrt_eta <= 0:
+            continue
+        room_kwh = max(0.0, spec.storage_kwh - b.soc_kwh)
+        max_room_draw = room_kwh / sqrt_eta
+        draw = min(max_draw, max_room_draw, surplus)
+        if draw <= 0:
+            continue
+        charges[b.id] = draw
+        soc_deltas[b.id] = draw * sqrt_eta
+        total += draw
+        surplus -= draw
+    return charges, total, soc_deltas
+
+
+def battery_discharge_step(
+    batteries: list[Tile],
+    residual_demand_kw: float,
+) -> tuple[dict[str, float], float, dict[str, float]]:
+    """Close residual demand from battery SoC (dispatch step 5).
+
+    Returns `(deliver_kw_per_battery, total_deliver_kw, soc_delta_kwh_per_battery)`.
+    `soc_delta` is negative — delivering 1 kWh drains `1/sqrt(eta)` from SoC.
+    Iteration is id-ascending for determinism.
+    """
+    discharges: dict[str, float] = {b.id: 0.0 for b in batteries}
+    soc_deltas: dict[str, float] = {b.id: 0.0 for b in batteries}
+    if residual_demand_kw <= 0:
+        return discharges, 0.0, soc_deltas
+
+    total = 0.0
+    for b in sorted(batteries, key=lambda x: x.id):
+        if not b.operational:
+            continue
+        if b.charge_setpoint_kw > 0:
+            continue  # manual charge mode — no discharge this hour
+        spec = TILE_CATALOG[b.type]
+        rated = spec.capacity_kw * workforce.efficiency(b)
+        rated_cap = min(rated, -b.charge_setpoint_kw) if b.charge_setpoint_kw < 0 else rated
+        sqrt_eta = _battery_sqrt_eta(b)
+        if sqrt_eta <= 0:
+            continue
+        deliverable_kwh = max(0.0, b.soc_kwh) * sqrt_eta
+        deliver = min(rated_cap, deliverable_kwh, residual_demand_kw)
+        if deliver <= 0:
+            continue
+        discharges[b.id] = deliver
+        soc_deltas[b.id] = -(deliver / sqrt_eta)
+        total += deliver
+        residual_demand_kw -= deliver
+    return discharges, total, soc_deltas
 
 
 # -- Balance state -----------------------------------------------------------

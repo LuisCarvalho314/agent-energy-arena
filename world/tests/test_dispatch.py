@@ -7,6 +7,8 @@ via World.step.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from world.catalog import TILE_CATALOG
@@ -15,6 +17,8 @@ from world.power import (
     COAL_MIN_RUN,
     COAL_RAMP_PER_HOUR,
     GAS_RAMP_PER_HOUR,
+    battery_charge_step,
+    battery_discharge_step,
     compute_balance_state,
     dispatch,
 )
@@ -513,6 +517,270 @@ def test_idle_coal_plant_zero_fuel_and_co2_through_sim() -> None:
     # would be from coal — both must be zero.
     assert summary.get("fuel_cost", 0.0) == pytest.approx(0.0)
     assert summary.get("co2_emitted_t", 0.0) == pytest.approx(0.0)
+
+
+# -- Battery charge/discharge step (slice 02) -------------------------------
+
+
+def _battery(
+    idx: int = 1,
+    soc_kwh: float = 0.0,
+    charge_setpoint_kw: float = 0.0,
+    operational: bool = True,
+) -> Tile:
+    spec = TILE_CATALOG["battery"]
+    return Tile(
+        id=f"battery-{idx}",
+        type="battery",
+        x=idx,
+        y=0,
+        built_day=0,
+        operational=operational,
+        capex_paid=spec.capex,
+        opex_per_day=spec.opex_per_day,
+        jobs=spec.jobs,
+        staffed_jobs=spec.jobs,
+        soc_kwh=soc_kwh,
+        charge_setpoint_kw=charge_setpoint_kw,
+    )
+
+
+SQRT_ETA = math.sqrt(0.85)  # battery round_trip_efficiency = 0.85
+
+
+def test_battery_charge_step_absorbs_surplus_at_rated_power() -> None:
+    """With ample surplus and empty SoC, the battery pulls its rated 200 kW."""
+    b = _battery(soc_kwh=0.0)
+    charges, total, soc_deltas = battery_charge_step(
+        [b], renewable_supply_kw=400.0, demand_kw=100.0
+    )
+    # Surplus = 300, rated = 200 → draw = 200 kW, SoC gain = 200 × sqrt(0.85).
+    assert charges[b.id] == pytest.approx(200.0)
+    assert total == pytest.approx(200.0)
+    assert soc_deltas[b.id] == pytest.approx(200.0 * SQRT_ETA)
+
+
+def test_battery_charge_step_respects_rated_power_below_surplus() -> None:
+    """Surplus 250 > rated 200 → battery still capped at rated."""
+    b = _battery(soc_kwh=0.0)
+    charges, total, _ = battery_charge_step([b], renewable_supply_kw=300.0, demand_kw=50.0)
+    assert charges[b.id] == pytest.approx(200.0)
+    assert total == pytest.approx(200.0)
+
+
+def test_battery_charge_step_respects_soc_cap() -> None:
+    """Battery near full only draws what fits in remaining headroom."""
+    spec = TILE_CATALOG["battery"]
+    # Leave 50 kWh of room → max draw = 50/sqrt(eta).
+    b = _battery(soc_kwh=spec.storage_kwh - 50.0)
+    charges, _total, soc_deltas = battery_charge_step(
+        [b], renewable_supply_kw=400.0, demand_kw=100.0
+    )
+    expected_draw = 50.0 / SQRT_ETA
+    assert charges[b.id] == pytest.approx(expected_draw)
+    assert soc_deltas[b.id] == pytest.approx(50.0)
+
+
+def test_battery_charge_step_applies_sqrt_eta() -> None:
+    """1 kWh drawn → sqrt(0.85) ≈ 0.922 kWh enters SoC."""
+    b = _battery(soc_kwh=0.0, charge_setpoint_kw=1.0)
+    _charges, _total, soc_deltas = battery_charge_step([b], renewable_supply_kw=10.0, demand_kw=0.0)
+    assert soc_deltas[b.id] == pytest.approx(SQRT_ETA)
+
+
+def test_battery_charge_step_no_op_when_supply_not_above_demand() -> None:
+    """No renewable surplus → battery does not charge regardless of SoC."""
+    b = _battery(soc_kwh=0.0)
+    charges, total, soc_deltas = battery_charge_step(
+        [b], renewable_supply_kw=100.0, demand_kw=100.0
+    )
+    assert charges[b.id] == 0.0
+    assert total == 0.0
+    assert soc_deltas[b.id] == 0.0
+
+
+def test_battery_charge_step_clamps_manual_positive_to_surplus() -> None:
+    """Manual setpoint = 500 with surplus = 80 → draw clamped to 80."""
+    b = _battery(soc_kwh=0.0, charge_setpoint_kw=500.0)
+    charges, _total, _socs = battery_charge_step([b], renewable_supply_kw=180.0, demand_kw=100.0)
+    assert charges[b.id] == pytest.approx(80.0)
+
+
+def test_battery_charge_step_skips_negative_setpoint() -> None:
+    """Manual discharge mode → no charging this hour."""
+    b = _battery(soc_kwh=0.0, charge_setpoint_kw=-100.0)
+    charges, total, _ = battery_charge_step([b], renewable_supply_kw=400.0, demand_kw=0.0)
+    assert charges[b.id] == 0.0
+    assert total == 0.0
+
+
+def test_battery_discharge_step_closes_residual_demand() -> None:
+    """Battery with full SoC discharges to close 100 kW shortfall."""
+    spec = TILE_CATALOG["battery"]
+    b = _battery(soc_kwh=spec.storage_kwh)
+    discharges, total, soc_deltas = battery_discharge_step([b], residual_demand_kw=100.0)
+    assert discharges[b.id] == pytest.approx(100.0)
+    assert total == pytest.approx(100.0)
+    # SoC drains by 100 / sqrt(eta) kWh per hour.
+    assert soc_deltas[b.id] == pytest.approx(-100.0 / SQRT_ETA)
+
+
+def test_battery_discharge_step_respects_rated_power() -> None:
+    """Battery capped at rated 200 kW even when shortfall and SoC are huge."""
+    spec = TILE_CATALOG["battery"]
+    b = _battery(soc_kwh=spec.storage_kwh)
+    discharges, total, _ = battery_discharge_step([b], residual_demand_kw=10_000.0)
+    assert discharges[b.id] == pytest.approx(200.0)
+    assert total == pytest.approx(200.0)
+
+
+def test_battery_discharge_step_respects_soc_floor() -> None:
+    """Battery with 10 kWh SoC delivers up to 10 × sqrt(eta) before draining."""
+    b = _battery(soc_kwh=10.0)
+    discharges, _total, soc_deltas = battery_discharge_step([b], residual_demand_kw=1000.0)
+    # Deliverable energy this hour = SoC × sqrt(eta) = 10 × sqrt(0.85).
+    assert discharges[b.id] == pytest.approx(10.0 * SQRT_ETA)
+    # SoC drains to ~0.
+    assert b.soc_kwh + soc_deltas[b.id] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_battery_discharge_step_applies_sqrt_eta() -> None:
+    """1 kWh delivered to load → 1/sqrt(eta) ≈ 1.085 kWh drained from SoC."""
+    b = _battery(soc_kwh=100.0, charge_setpoint_kw=-1.0)
+    _discharges, _total, soc_deltas = battery_discharge_step([b], residual_demand_kw=1.0)
+    assert soc_deltas[b.id] == pytest.approx(-1.0 / SQRT_ETA)
+
+
+def test_battery_discharge_step_no_op_when_residual_zero() -> None:
+    """Grid is balanced → battery stays put."""
+    spec = TILE_CATALOG["battery"]
+    b = _battery(soc_kwh=spec.storage_kwh)
+    discharges, total, soc_deltas = battery_discharge_step([b], residual_demand_kw=0.0)
+    assert discharges[b.id] == 0.0
+    assert total == 0.0
+    assert soc_deltas[b.id] == 0.0
+
+
+def test_battery_discharge_step_skips_positive_setpoint() -> None:
+    """Manual charge mode → no discharge this hour."""
+    spec = TILE_CATALOG["battery"]
+    b = _battery(soc_kwh=spec.storage_kwh, charge_setpoint_kw=100.0)
+    discharges, total, _ = battery_discharge_step([b], residual_demand_kw=200.0)
+    assert discharges[b.id] == 0.0
+    assert total == 0.0
+
+
+def test_battery_charges_during_curtailment() -> None:
+    """End-to-end: solar surplus during midday charges the battery."""
+    w = _fresh_world()
+    cx, cy = w.config.world_w // 2, w.config.world_h // 2
+    w.state.population = 0  # no residential demand
+    # Multiple solar farms so surplus is comfortable at noon.
+    for x in range(cx + 1, cx + 6):
+        _build_at(w, "solar_farm", x, cy)
+    _build_at(w, "battery", cx + 7, cy)
+    bat = next(t for t in w.state.tiles if t.type == "battery")
+    soc_before = bat.soc_kwh
+    w.step(days=1)
+    # Battery should have stored renewable surplus across midday hours.
+    assert bat.soc_kwh > soc_before
+
+
+def test_battery_discharges_to_avoid_brownout() -> None:
+    """End-to-end: battery with SoC closes a residual that would otherwise brown out."""
+    w = _fresh_world()
+    cx, cy = w.config.world_w // 2, w.config.world_h // 2
+    # Pre-load a battery near full SoC.
+    _build_at(w, "battery", cx + 1, cy)
+    bat = next(t for t in w.state.tiles if t.type == "battery")
+    spec = TILE_CATALOG["battery"]
+    bat.soc_kwh = spec.storage_kwh
+    # No plants → demand drives blackouts every hour without the battery.
+    # With the battery, at most 200 kW of residual is covered for ~4 hours.
+    w.step(days=1)
+    # Battery should have discharged.
+    assert bat.soc_kwh < spec.storage_kwh
+
+
+def test_battery_round_trip_loses_15_percent() -> None:
+    """1 kWh in via charge → ~0.85 kWh out via discharge."""
+    spec = TILE_CATALOG["battery"]
+    # Charge 1 kWh worth into the battery.
+    _c, _t, soc_deltas_c = battery_charge_step(
+        [_battery(soc_kwh=0.0, charge_setpoint_kw=1.0)],
+        renewable_supply_kw=10.0,
+        demand_kw=0.0,
+    )
+    energy_stored = list(soc_deltas_c.values())[0]
+    # Now discharge that stored energy.
+    b2 = _battery(soc_kwh=energy_stored)
+    disch, total, _ = battery_discharge_step([b2], residual_demand_kw=10.0)
+    # 1 kWh drawn from grid → sqrt(eta) stored → eta × 1 kWh delivered.
+    assert total == pytest.approx(spec.round_trip_efficiency, abs=1e-6)
+    assert disch[b2.id] == pytest.approx(0.85, abs=1e-6)
+
+
+def test_battery_renewable_share_includes_discharge() -> None:
+    """Battery discharge counts as renewable kWh in both numerator and denominator."""
+    w = _fresh_world()
+    cx, cy = w.config.world_w // 2, w.config.world_h // 2
+    # Setup: a battery preloaded with energy, an industrial load to draw on
+    # the battery (no plants → battery is the only supply that turns up).
+    _build_at(w, "industrial", cx + 1, cy)  # 300 kW demand
+    _build_at(w, "battery", cx + 2, cy)
+    bat = next(t for t in w.state.tiles if t.type == "battery")
+    spec = TILE_CATALOG["battery"]
+    bat.soc_kwh = spec.storage_kwh
+    w.state.population = 0
+    pre_total = w.state.cumulative_total_served_kwh
+    pre_ren = w.state.cumulative_renewable_served_kwh
+    w.step(days=1)
+    # Battery delivered something → both accumulators advanced equally.
+    delta_total = w.state.cumulative_total_served_kwh - pre_total
+    delta_ren = w.state.cumulative_renewable_served_kwh - pre_ren
+    assert delta_total > 0
+    assert delta_ren == pytest.approx(delta_total, rel=1e-6)
+
+
+def test_battery_manual_charge_clamped_to_renewable_surplus_via_api() -> None:
+    """Manual positive setpoint > rated power → still clamped to renewable surplus."""
+    w = _fresh_world()
+    cx, cy = w.config.world_w // 2, w.config.world_h // 2
+    # No renewable plants → no surplus, ever.
+    _build_at(w, "industrial", cx + 1, cy)
+    _build_at(w, "coal_plant", cx + 2, cy)
+    _build_at(w, "battery", cx + 3, cy)
+    bat = next(t for t in w.state.tiles if t.type == "battery")
+    # Crank the setpoint absurdly high; without renewable surplus the battery
+    # must NOT charge from fossil supply.
+    w.control_battery(bat.id, 9_999.0)
+    soc_before = bat.soc_kwh
+    w.step(days=1)
+    # No solar/wind plant means no charging is possible.
+    assert bat.soc_kwh == pytest.approx(soc_before)
+
+
+def test_battery_dispatch_step_size_invariance() -> None:
+    """Adding batteries preserves the step-size determinism contract."""
+    a = World()
+    a.reset(seed=42)
+    _build_at(a, "solar_farm", 5, 5)
+    _build_at(a, "battery", 6, 5)
+    a.step(days=7)
+
+    b = World()
+    b.reset(seed=42)
+    _build_at(b, "solar_farm", 5, 5)
+    _build_at(b, "battery", 6, 5)
+    for _ in range(7):
+        b.step(days=1)
+
+    assert a.state.treasury == b.state.treasury
+    assert a.state.population == b.state.population
+    # SoC trajectory identical too.
+    a_bat = next(t for t in a.state.tiles if t.type == "battery")
+    b_bat = next(t for t in b.state.tiles if t.type == "battery")
+    assert a_bat.soc_kwh == b_bat.soc_kwh
 
 
 def test_plant_failure_preserves_staffing() -> None:

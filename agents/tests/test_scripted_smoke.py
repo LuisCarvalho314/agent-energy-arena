@@ -84,3 +84,16 @@ def test_scripted_matches_committed_baseline() -> None:
     assert "score" in breakdown
     assert breakdown["P"] == P_actual
     assert breakdown["T"] == T_actual
+
+
+def test_scripted_builds_batteries_when_renewables_exist() -> None:
+    """balance-upgrade-p0 #02: agent builds 2-4 batteries on a seed where
+    solar/wind exists and treasury permits."""
+    world = _play(seed=42)
+    n_battery = sum(1 for t in world.state.tiles if t.type == "battery")
+    n_renewable = sum(1 for t in world.state.tiles if t.type in ("solar_farm", "wind_turbine"))
+    # Seed-42 bootstrap places 4 solar farms — battery target = min(4, 4//2) = 2.
+    # Cap is 4 per PRD. We pin the [2, 4] band rather than exact count so a
+    # later renewable build doesn't tip the test fragile.
+    assert n_renewable >= 2, n_renewable
+    assert 2 <= n_battery <= 4, n_battery
