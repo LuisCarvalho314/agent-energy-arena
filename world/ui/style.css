@@ -331,6 +331,26 @@ main {
 }
 .sub-hint { font-size: 0.75rem; color: #8b8f9a; line-height: 1.4; margin: 0.5rem 0 0; }
 
+/* oilfield-v2 slice 09: pipeline-orphan indicators in the wells +
+   refineries tables. Map-canvas borders are drawn in code; these chips
+   give the same signal in the tabular view so a player scanning the
+   tables can spot disconnected facilities without eyeballing the map. */
+.orphan-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: help;
+}
+.orphan-well-badge { background: #3a3119; color: #f5d76e; }
+.orphan-refinery-badge { background: #3a1d1d; color: #ff8080; }
+tr.orphan-well > td:first-child { border-left: 2px solid #f5d76e; }
+tr.orphan-refinery > td:first-child { border-left: 2px solid #ff5050; }
+
 #tab-wells.active { padding: 1rem 1.5rem; }
 #wellswrap { width: 720px; max-width: 100%; }
 .wells-stats {

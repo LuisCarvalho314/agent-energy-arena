@@ -89,7 +89,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         capex=2_000,
         opex_per_day=5,
         requires_road=False,
-        description="Aesthetic / connectivity tile (v1: no transport cost).",
+        description="Crude transport. 4-connected networks route producer crude to refineries on the same network; orphan producers sell raw at $40/bbl; orphan refineries starve.",
     ),
     "solar_farm": TileSpec(
         tile_type="solar_farm",

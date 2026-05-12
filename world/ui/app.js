@@ -41,7 +41,7 @@
     commercial: "#9d6cff",
     industrial: "#ff7a59",
     park: "#3fbf7f",
-    pipeline: "#bdb6a8",
+    pipeline: "#9ec6e8",
     solar_farm: "#f5d76e",
     wind_turbine: "#6dd5ed",
     coal_plant: "#c97676",
@@ -81,6 +81,12 @@
   let rows = 32;
   let tiles = [];
   let wells = [];
+  // oilfield-v2 slice 09: pipeline-routing orphan sets, populated from
+  // /state.{orphan_well_ids, orphan_refinery_ids} every tick. Producers in
+  // `orphanWellIds` are selling raw at $40/bbl; refineries in
+  // `orphanRefineryIds` have no crude. Empty sets = everyone is connected.
+  let orphanWellIds = new Set();
+  let orphanRefineryIds = new Set();
   let activeEvents = [];
   let historicalEvents = [];
   let summary = {};
@@ -150,6 +156,30 @@
       ctx.textBaseline = "middle";
       const symbol = w.type === "production" ? "▼" : "▲";
       ctx.fillText(symbol, w.x * cw + cw / 2, w.y * ch + ch / 2);
+    }
+
+    // oilfield-v2 slice 09: orphan badges. Red border on refineries with no
+    // crude (pipeline-disconnected from any producer). Yellow border on
+    // producers selling raw at $40/bbl (no pipeline path to a refinery).
+    // The border sits on top of the tile/well fill but underneath the grid
+    // lines so it reads as a property of the cell, not as a selection cue.
+    for (const t of tiles) {
+      if (t.type === "refinery" && orphanRefineryIds.has(t.id)) {
+        ctx.save();
+        ctx.strokeStyle = "#ff5050";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(t.x * cw + 1, t.y * ch + 1, cw - 2, ch - 2);
+        ctx.restore();
+      }
+    }
+    for (const w of wells) {
+      if (w.type !== "production") continue;
+      if (!orphanWellIds.has(w.id)) continue;
+      ctx.save();
+      ctx.strokeStyle = "#f5d76e";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(w.x * cw + 1, w.y * ch + 1, cw - 2, ch - 2);
+      ctx.restore();
     }
 
     ctx.strokeStyle = "#2a2d34";
@@ -1380,8 +1410,13 @@
         const throughput = r.current_throughput_bbl_day || 0;
         const refined = throughput * REFINERY_YIELD;
         const tr = document.createElement("tr");
+        const orphan = orphanRefineryIds.has(r.id);
+        if (orphan) tr.classList.add("orphan-refinery");
+        const idCell = orphan
+          ? `${r.id} <span class="orphan-badge orphan-refinery-badge" title="Not connected to any producer's pipeline network — zero throughput today.">no crude</span>`
+          : `${r.id}`;
         tr.innerHTML = `
-          <td>${r.id}</td>
+          <td>${idCell}</td>
           <td>(${r.x}, ${r.y})</td>
           <td>
             <input type="range" min="0" max="${REFINERY_MAX_BBL_DAY}" step="10" value="${setpoint}" data-id="${r.id}" />
@@ -1465,8 +1500,13 @@
         const cum = w.type === "injection"
           ? (w.cumulative_injected_bbl || 0)
           : (w.cumulative_produced_bbl || 0);
+        const orphan = w.type === "production" && orphanWellIds.has(w.id);
+        if (orphan) tr.classList.add("orphan-well");
+        const idCell = orphan
+          ? `${w.id} <span class="orphan-badge orphan-well-badge" title="No pipeline path to a refinery — selling raw crude at $40/bbl.">selling raw</span>`
+          : `${w.id}`;
         tr.innerHTML = `
-          <td>${w.id}</td>
+          <td>${idCell}</td>
           <td>${w.type}</td>
           <td>(${w.x}, ${w.y}, ${w.target_z})</td>
           <td>
@@ -1582,6 +1622,8 @@
       }
       tiles = s.tiles || [];
       wells = s.wells || [];
+      orphanWellIds = new Set(s.orphan_well_ids || []);
+      orphanRefineryIds = new Set(s.orphan_refinery_ids || []);
       activeEvents = s.active_events || [];
       historicalEvents = s.historical_events || [];
       summary = s.today_summary_so_far || {};
