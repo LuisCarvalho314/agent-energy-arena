@@ -11,10 +11,13 @@ Compression strategy:
 - Top-line: day, hour, treasury, population, happiness, carbon price.
 - Tile inventory: counts by type (full per-tile list is too big once
   the city has 50+ tiles).
-- Wells: compact one-row-per-well table (id, type, x, y, z, setpoint,
-  cum-bbl).
+- Wells: compact one-row-per-well table (id, type, x, y, z,
+  reservoir_id, setpoint, yesterday rate, cum-bbl; producers also get
+  yesterday's qualifying injector rate and pressure_boost).
+- Pipeline networks + orphans: which 4-connected components contain
+  which wells/refineries, and which wells/refineries are orphaned.
 - Reservoirs: top-K=30 voxels by oil×perm score (already compressed by
-  /reservoirs).
+  /reservoirs), each tagged with reservoir_id.
 - Power: yesterday's 24-hour supply/demand/balance traces as compact
   arrays.
 - Forecast: next-24h as one line per hour (solar / wind / demand).
@@ -88,19 +91,56 @@ def summarize_state(
         )
 
     # --- Wells -----------------------------------------------------------
+    # Surface reservoir_id + yesterday's rates so the LLM can reason about
+    # rate-based pressure support: a producer's pressure_boost is
+    # `min(0.5, qualifying_inj_rate / max(yesterday_rate, 1))`, where
+    # qualifying injectors share the producer's reservoir_id AND sit at
+    # 3D Chebyshev distance > 1 from the producer's (x, y, target_z).
     wells = obs.get("wells") or []
     if wells:
         lines.append(f"WELLS ({len(wells)}):")
         for w in wells[:MAX_WELL_ROWS]:
+            is_prod = w.get("type") == "production"
             cum = w.get("cumulative_produced_bbl", w.get("cumulative_injected_bbl", 0))
-            lines.append(
+            row = (
                 f"  id={w.get('id')} type={w.get('type')} "
                 f"@({w.get('x')},{w.get('y')},z={w.get('target_z')}) "
+                f"R{w.get('reservoir_id', '?')} "
                 f"setpoint={_round(w.get('setpoint_rate_bbl_day', 0), 1)} "
+                f"y_rate={_round(w.get('yesterday_rate_bbl_day', 0), 1)} "
                 f"cum_bbl={_round(cum, 0)}"
             )
+            if is_prod:
+                row += (
+                    f" y_inj_rate={_round(w.get('yesterday_inj_rate_bbl_day', 0), 1)}"
+                    f" boost={_round(w.get('pressure_boost', 0), 3)}"
+                )
+            lines.append(row)
         if len(wells) > MAX_WELL_ROWS:
             lines.append(f"  ...{len(wells) - MAX_WELL_ROWS} more wells")
+
+    # --- Pipeline networks + orphans -------------------------------------
+    # Crude routes ONLY through 4-connected pipeline components. Orphan
+    # producers sell raw at $40/bbl; orphan refineries starve at 0 bbl/day.
+    networks = obs.get("pipeline_networks") or []
+    if networks:
+        lines.append(f"PIPELINE_NETWORKS ({len(networks)}):")
+        for net in networks:
+            wids = net.get("well_ids") or []
+            rids = net.get("refinery_ids") or []
+            lines.append(
+                f"  net#{net.get('component_id')} "
+                f"wells=[{','.join(str(i) for i in wids)}] "
+                f"refineries=[{','.join(str(i) for i in rids)}]"
+            )
+    orphan_wells = obs.get("orphan_well_ids") or []
+    orphan_refs = obs.get("orphan_refinery_ids") or []
+    if orphan_wells or orphan_refs:
+        lines.append(
+            f"ORPHANS: wells=[{','.join(str(i) for i in orphan_wells)}] "
+            f"refineries=[{','.join(str(i) for i in orphan_refs)}] "
+            "(orphan producers sell raw @$40/bbl; orphan refineries idle)"
+        )
 
     # --- Reservoirs: top-K voxels ---------------------------------------
     reservoirs = obs.get("reservoirs_revealed") or {}
@@ -110,6 +150,7 @@ def summarize_state(
         for v in top[:TOP_K_VOXELS]:
             lines.append(
                 f"  ({v.get('x')},{v.get('y')},{v.get('z')}) "
+                f"R{v.get('reservoir_id', '?')} "
                 f"oil={_round(v.get('oil_estimate_bbl', 0), 0)}bbl "
                 f"perm={_round(v.get('perm_estimate_md', 0), 0)}mD"
             )

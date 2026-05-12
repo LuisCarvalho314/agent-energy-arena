@@ -49,11 +49,48 @@ Key mechanics:
   at the evening peak — only gas/coal cover the dispatchable margin.
 - Population grows when jobs ≥ pop, capacity > pop, happiness ≥ 0.5.
   Coal plants nearby drop happiness (chebyshev radius 3).
-- Surveys reveal a column of voxels; cost scales as 15_000·(size/8)².
-  Resurvey allowed; each draw is independent noise. Drill when an
-  estimated voxel has oil ≥ 5000 bbl AND perm ≥ 200 mD.
-- Injection wells act as demand-response: shed during brownout/blackout,
-  ramp 2× during curtailment.
+
+Subsurface & oilfield (oilfield-v2):
+- HC voxels are tagged with `reservoir_id` (1-indexed). All voxels
+  sharing the same id form a single 26-connected reservoir blob;
+  treat the id as the "pool" name for routing pressure-support.
+- Surveys reveal a size×size column of voxels. Cost = 15_000·(size/4)²
+  → size 4 = $15k (cheapest, default), size 8 = $60k, size 16 = $240k.
+  Resurvey allowed; each draw is independent noise. Prefer many size-4
+  sweeps to one big column. Drill when an estimated voxel has
+  oil ≥ 5000 bbl AND perm ≥ 200 mD.
+- Drill capex is quadratic in depth:
+    capex = base · (1 + (target_z / world_depth)²)
+  At z=0 you pay `base`; deeper targets cost more. `world_depth` is
+  `config.world_d`; base capex per well_type is in /catalog.
+- Pressure support is RATE-based, not cumulative. Each producer's
+  `pressure_boost` is recomputed daily from YESTERDAY's flows:
+    boost = min(0.5, Σ qualifying_injector_yesterday_rate
+                       / max(producer_yesterday_rate, 1))
+  An injector "qualifies" iff it shares the producer's `reservoir_id`
+  AND its 3D Chebyshev distance from the producer's (x, y, target_z)
+  is STRICTLY > 1 (adjacent injectors are rejected — breakthrough).
+  Cap is 0.5. To benefit a producer, drill the injector in the same
+  reservoir at Chebyshev distance ≥ 2.
+- Injection wells double as demand-response: shed during brownout/
+  blackout, ramp 2× during curtailment.
+
+Pipelines & crude routing:
+- Pipeline tiles are placed via `build`. Producers route crude to
+  refineries ONLY through orthogonally-adjacent (4-connected) chains
+  of pipeline tiles. Tile-adjacent producers/refineries also count as
+  network endpoints (no pipeline tile required between a well and a
+  refinery sitting next to each other).
+- Routing is PER-NETWORK: each connected pipeline component routes
+  its own producers' crude to its own refineries (descending setpoint,
+  workforce-capped). Crude does NOT cross between disjoint networks.
+- Orphan economics:
+    * Producer with no refinery on its network → 100% raw sale at
+      $40/bbl (no refining margin, no carbon credit).
+    * Refinery with no producer on its network → zero throughput.
+  Lay pipeline BEFORE expecting refined revenue.
+
+Events & macro:
 - Events (heatwave / fuel-price-shock / demand-surprise / plant-failure
   / regulatory-tightening) fire daily. Drop step size to 1 during a
   crisis.
@@ -106,7 +143,8 @@ def _build_action_tools() -> list[dict[str, Any]]:
             "name": "survey",
             "description": (
                 "Reveal a size×size column of subsurface voxels centered at (x, y). "
-                "Cost = 15_000·(size/8)². Size in [4, 16]."
+                "Cost = 15_000·(size/4)². Default size 4 ($15k, cheapest). "
+                "Size in [4, 16]."
             ),
             "parameters": {
                 "type": "object",
@@ -121,7 +159,9 @@ def _build_action_tools() -> list[dict[str, Any]]:
         {
             "name": "drill",
             "description": (
-                "Drill a well at (x, y) targeting voxel z. well_type ∈ {production, injection}."
+                "Drill a well at (x, y) targeting voxel z. well_type ∈ {production, injection}. "
+                "Capex = base·(1 + (target_z/world_depth)²). For injectors to support a producer, "
+                "drill in the same reservoir_id at 3D Chebyshev distance > 1 from the producer."
             ),
             "parameters": {
                 "type": "object",

@@ -86,6 +86,34 @@ def test_system_prompt_describes_step_final_requirement() -> None:
     assert "last" in SYSTEM_PROMPT.lower()
 
 
+def test_system_prompt_covers_oilfield_v2_mechanics() -> None:
+    """Primer must teach the new oilfield-v2 rules so the LLM's policy is
+    calibrated: reservoir_id, rate-based pressure (same-reservoir +
+    Chebyshev > 1, 0.5 cap), quadratic drill cost + world_depth, survey
+    `(size/4)²` + default 4, pipeline orthogonal/per-network routing,
+    orphan raw sale at $40/bbl."""
+    p = SYSTEM_PROMPT
+    assert "reservoir_id" in p
+    assert "(size/4)" in p
+    assert "world_depth" in p
+    assert "Chebyshev" in p
+    # 0.5 boost cap.
+    assert "0.5" in p
+    # Orphan economics.
+    assert "$40/bbl" in p
+    # Per-network routing language.
+    assert "network" in p.lower()
+
+
+def test_system_prompt_does_not_advertise_old_mechanics() -> None:
+    """Primer must not reference the retired cumulative-injection
+    pressure formula or the flat (size/8) survey cost."""
+    p = SYSTEM_PROMPT
+    assert "(size/8)" not in p
+    assert "cumulative_injected" not in p
+    assert "cumulative-injection" not in p
+
+
 # ---------- state_summary ---------------------------------------------------
 
 
@@ -113,6 +141,77 @@ def test_summarize_state_token_budget_stays_under_target() -> None:
     fc = api.forecast(hours=24)
     summary = summarize_state(s, forecast=fc)
     assert len(summary) <= 6000, f"summary too long: {len(summary)} chars"
+
+
+def test_summarize_state_surfaces_oilfield_v2_well_fields() -> None:
+    """For every well row, the summary must include reservoir_id +
+    yesterday_rate; producers also get yesterday_inj_rate + pressure_boost."""
+    api, _ = _client()
+    api.reset(seed=42)
+    s = api.state()
+    # Synthesize a producer + an injector in the state payload so we don't
+    # have to script a drill. The summarizer is a pure function of the obs
+    # dict, so a hand-built fixture is faithful.
+    s = dict(s)
+    s["wells"] = [
+        {
+            "id": "W1",
+            "type": "production",
+            "x": 5,
+            "y": 5,
+            "target_z": 2,
+            "reservoir_id": 3,
+            "setpoint_rate_bbl_day": 160.0,
+            "yesterday_rate_bbl_day": 150.0,
+            "yesterday_inj_rate_bbl_day": 75.0,
+            "pressure_boost": 0.5,
+            "cumulative_produced_bbl": 1200.0,
+        },
+        {
+            "id": "W2",
+            "type": "injection",
+            "x": 7,
+            "y": 5,
+            "target_z": 2,
+            "reservoir_id": 3,
+            "setpoint_rate_bbl_day": 160.0,
+            "yesterday_rate_bbl_day": 160.0,
+            "yesterday_inj_rate_bbl_day": 0.0,
+            "pressure_boost": 0.0,
+            "cumulative_injected_bbl": 800.0,
+        },
+    ]
+    summary = summarize_state(s, forecast=None)
+    assert "R3" in summary  # reservoir tag on at least one well row
+    assert "y_rate=150" in summary
+    assert "y_inj_rate=75" in summary  # producers only
+    assert "boost=0.5" in summary
+    # Injector row should NOT carry y_inj_rate / boost (those are
+    # producer-side terms).
+    inj_line = next(line for line in summary.splitlines() if "id=W2" in line)
+    assert "y_inj_rate" not in inj_line
+    assert "boost=" not in inj_line
+
+
+def test_summarize_state_surfaces_pipeline_networks_and_orphans() -> None:
+    """Top-level `pipeline_networks` + `orphan_well_ids` / `orphan_refinery_ids`
+    must appear in the summary so the LLM knows what's connected."""
+    api, _ = _client()
+    api.reset(seed=42)
+    s = dict(api.state())
+    s["pipeline_networks"] = [
+        {"component_id": 0, "well_ids": ["W1"], "refinery_ids": ["R1"]},
+        {"component_id": 1, "well_ids": ["W2"], "refinery_ids": []},
+    ]
+    s["orphan_well_ids"] = ["W2"]
+    s["orphan_refinery_ids"] = ["R9"]
+    summary = summarize_state(s, forecast=None)
+    assert "PIPELINE_NETWORKS" in summary
+    assert "net#0" in summary
+    assert "net#1" in summary
+    assert "ORPHANS" in summary
+    assert "W2" in summary
+    assert "R9" in summary
 
 
 def test_summarize_state_renders_forecast_block_when_provided() -> None:
