@@ -17,13 +17,17 @@ from typing import Any
 import numpy as np
 
 # Per-voxel oil capacity, named "VOXEL_VOLUME_BBL" in §3.5 of the brief and
-# explicitly flagged there as a "calibration constant". The brief's literal
-# value (100_000) plus its 0.6·(1 - d/r) HC probability gives total OOIP of
-# ~1M bbl on seed 42, far below the brief's own "expected ~5-15M bbl on
-# default size" estimate. We tune the calibration constant up to 700_000 so
-# seed 42 lands at ~6.7M bbl (mid-range), which is the AC for slice 06.
-# The HC-probability formula is left unchanged from the brief.
-VOXEL_VOLUME_BBL = 700_000.0
+# explicitly flagged there as a "calibration constant". An earlier slice
+# tuned this to 700_000 so seed 42 landed at ~6.7M bbl OOIP, but at
+# Q_MAX_WELL_BBL_DAY = 200 a single producer drains <5% of a typical
+# 36-voxel reservoir over a 10-year game — the geology is undepletable
+# on the game's time horizon, so the depletion signal stays invisible to
+# both the player and the LLM agent. The reservoir-scale rescale drops
+# the constant 10× to 70_000, so per-voxel OIP becomes ~4k–17k bbl and
+# a 36-voxel reservoir holds ~300k bbl — exhaustible by an injection-
+# supported well within the game span. The HC-probability formula is
+# left unchanged from the brief.
+VOXEL_VOLUME_BBL = 70_000.0
 
 # Survey constants (§4.10 + oilfield-v2 §"Survey rescale": cost is
 # 15_000 × (size/4)² so a size-4 column costs $15k and a size-8 column

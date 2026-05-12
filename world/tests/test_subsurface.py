@@ -44,11 +44,15 @@ def test_reset_generates_3_to_7_blobs_seed42():
 
 
 def test_seed42_total_ooip_in_expected_range():
-    """Total OOIP across all reservoirs falls in [5M, 15M] bbl on seed 42."""
+    """Total OOIP across all reservoirs falls in [500k, 1.5M] bbl on seed 42.
+
+    Post-rescale (VOXEL_VOLUME_BBL 700k → 70k) the OOIP range shifts 10×
+    downward so a 10-year game horizon produces legible depletion.
+    """
     w = World()
     w.reset(seed=42)
     total_ooip = w.subsurface.total_oil_in_place()
-    assert 5_000_000 <= total_ooip <= 15_000_000, f"OOIP={total_ooip:,.0f} out of [5M, 15M]"
+    assert 500_000 <= total_ooip <= 1_500_000, f"OOIP={total_ooip:,.0f} out of [500k, 1.5M]"
 
 
 def test_reservoir_generation_reproducible_same_seed():
