@@ -191,6 +191,7 @@ def _spec_to_dict(spec: TileSpec) -> dict[str, Any]:
 
 
 def build_catalog() -> dict[str, Any]:
+    from world.config import load_config
     from world.economy import CARBON_PRICE_USD_PER_TON
     from world.pricing import (
         COMMERCIAL_RADIUS,
@@ -241,11 +242,14 @@ def build_catalog() -> dict[str, Any]:
             },
         },
     }
+    cfg = load_config()
     economics = {
         "industrial_revenue_per_day": INDUSTRIAL_REVENUE_PER_DAY,
         "commercial_revenue_per_resident_per_day": COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
         "commercial_radius": COMMERCIAL_RADIUS,
         "carbon_price": CARBON_PRICE_USD_PER_TON,
+        "grid_price_retail": cfg.grid_price_retail,
+        "grid_price_export": cfg.grid_price_export,
     }
     return {
         "tiles": tiles,

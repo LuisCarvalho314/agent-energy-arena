@@ -34,6 +34,13 @@ class Tile:
     # routing pins it after the production loop runs.
     setpoint_rate_bbl_day: float = 0.0
     current_throughput_bbl_day: float = 0.0
+    # Plant-specific (facility-economics-popup slice 03): per-day served-energy
+    # accumulator. Reset at the start of each day, summed over the 24 hourly
+    # dispatch outputs, and copied to `kwh_served_yesterday` at end-of-day so
+    # per-plant revenue can be priced from yesterday's actual served energy
+    # (no last-hour × 24 extrapolation). Non-plant tiles leave both at 0.0.
+    kwh_served_today: float = 0.0
+    kwh_served_yesterday: float = 0.0
 
 
 @dataclass

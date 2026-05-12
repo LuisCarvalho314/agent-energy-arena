@@ -17,8 +17,10 @@ from typing import TYPE_CHECKING
 
 from world import workforce
 from world.economy import INDUSTRIAL_PROCESS_CO2_T_PER_DAY
+from world.power import PLANT_TYPES
 
 if TYPE_CHECKING:
+    from world.config import Config
     from world.sim import World
     from world.state import Tile, WorldState
 
@@ -102,6 +104,24 @@ def commercial_revenue_for_tile(state: WorldState, tile: Tile) -> float:
         * COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY
         * workforce.efficiency(tile)
     )
+
+
+def plant_revenue_for_tile(tile: Tile, config: Config) -> float:
+    """Daily revenue estimate for one plant tile at its current operating state.
+
+    Returns ``kwh_served_yesterday × config.grid_price_retail`` for plant
+    tiles (solar / wind / coal / gas). Day 0 has no completed dispatch yet
+    so ``kwh_served_yesterday == 0`` and revenue is 0; from day 1 onwards
+    the value reflects the just-completed day's gross dispatch output.
+
+    Non-plant tiles and non-operational plants return 0.0. This is an
+    estimate — total billable revenue at the city level still goes through
+    the dispatch/curtailment split in ``_advance_one_day``; this helper
+    surfaces a per-plant attribution for the hover popup.
+    """
+    if tile.type not in PLANT_TYPES or not tile.operational:
+        return 0.0
+    return tile.kwh_served_yesterday * config.grid_price_retail
 
 
 def _commercial_residents_in_radius(state: WorldState, tile: Tile) -> float:

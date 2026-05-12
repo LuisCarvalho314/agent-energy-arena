@@ -79,11 +79,14 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         commercial_revenue_for_tile,
         industrial_co2_for_tile,
         industrial_revenue_for_tile,
+        plant_revenue_for_tile,
     )
 
-    # Slice 01 surfaced industrial economics; slice 02 adds commercial. Other
-    # tile types get 0.0 placeholders for the estimated_* keys; later slices
-    # fill in plant, refinery, and well values via the same fields.
+    # Slice 01 surfaced industrial economics; slice 02 adds commercial; slice
+    # 03 adds plants (solar/wind/coal/gas) with kwh-served-based revenue.
+    # Fuel cost + carbon cost rows for fossil plants land in slice 04, so the
+    # Net for plants here is still revenue − OPEX and intentionally overstates
+    # fossil profit until those rows are filled in.
     extra: dict[str, Any] = {}
     if t.type == "industrial":
         revenue = industrial_revenue_for_tile(t)
@@ -96,6 +99,11 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         carbon_cost = 0.0
         net = revenue - t.opex_per_day
         extra["residents_in_radius"] = _commercial_residents_in_radius(world.state, t)
+    elif t.type in PLANT_TYPES:
+        revenue = plant_revenue_for_tile(t, world.config)
+        co2_t = 0.0
+        carbon_cost = 0.0
+        net = revenue - t.opex_per_day
     else:
         revenue = 0.0
         co2_t = 0.0
@@ -115,6 +123,8 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         "demand_kw": t.demand_kw,
         "staffed_jobs": t.staffed_jobs,
         "current_output_kw": t.current_output_kw,
+        "kwh_served_today": t.kwh_served_today,
+        "kwh_served_yesterday": t.kwh_served_yesterday,
         "setpoint_rate_bbl_day": t.setpoint_rate_bbl_day,
         "current_throughput_bbl_day": t.current_throughput_bbl_day,
         "estimated_revenue_per_day": revenue,
@@ -518,6 +528,14 @@ class World:
         for k in self.state.today_summary_so_far:
             self.state.today_summary_so_far[k] = 0.0
 
+        # facility-economics-popup slice 03: reset per-plant daily kWh-served
+        # accumulators. Hourly dispatch outputs are summed in below; the
+        # end-of-day copy to `kwh_served_yesterday` feeds the next day's
+        # per-plant revenue estimate.
+        for t in self.state.tiles:
+            if t.type in PLANT_TYPES:
+                t.kwh_served_today = 0.0
+
         # Events (slice 11): expire yesterday's finished events first (so a
         # fresh roll today doesn't get stomped by an immediate expiry), then
         # roll new events from event_rng. Effects apply via:
@@ -662,8 +680,15 @@ class World:
             gas_kwh += by_source["gas"]
 
             # Persist per-plant outputs for ramp-limit accounting next hour.
+            # Each hour at the kW dispatch step contributes 1 hour × kW = kWh
+            # to the plant's daily served-energy accumulator. Curtailed kWh
+            # are included here (per the PRD: revenue is priced from
+            # kwh_served_yesterday × grid_price_retail; the curtailment
+            # export rebate is a separate civilian-billing line item).
             for p in plants:
-                p.current_output_kw = outputs.get(p.id, 0.0)
+                out_kw = outputs.get(p.id, 0.0)
+                p.current_output_kw = out_kw
+                p.kwh_served_today += out_kw
             self._prev_plant_outputs = dict(outputs)
 
             # Snapshot power_now for /state consumers + traces for the UI chart.
@@ -790,6 +815,14 @@ class World:
         self.state.last_day_supply_kw_by_hour = supply_trace
         self.state.last_day_demand_kw_by_hour = demand_trace
         self.state.last_day_balance_state_by_hour = balance_trace
+
+        # facility-economics-popup slice 03: pin today's per-plant served kWh
+        # onto `kwh_served_yesterday` so the next day's hover popup (and the
+        # estimated_revenue_per_day stamped on /state) reads the actual served
+        # energy from the just-completed day rather than a stale value.
+        for t in self.state.tiles:
+            if t.type in PLANT_TYPES:
+                t.kwh_served_yesterday = t.kwh_served_today
 
         # Civic revenue (industrial + commercial) accrues before the
         # population update so commercial revenue (slice 02) uses today's

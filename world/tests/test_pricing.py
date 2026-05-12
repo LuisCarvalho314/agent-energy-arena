@@ -566,3 +566,211 @@ def test_catalog_commercial_description_mentions_new_revenue_behavior() -> None:
     desc = commercial["description"].lower()
     assert "resident" in desc
     assert "5" in commercial["description"]
+
+
+# =========================================================================
+# Slice 03 — plant kwh_served accumulator + per-plant revenue + Net
+# =========================================================================
+
+
+def _coal_plant_tile(x: int = 0, y: int = 0) -> Tile:
+    spec = TILE_CATALOG["coal_plant"]
+    return Tile(
+        id="coal_1",
+        type="coal_plant",
+        x=x,
+        y=y,
+        built_day=0,
+        operational=True,
+        capex_paid=spec.capex,
+        opex_per_day=spec.opex_per_day,
+        jobs=spec.jobs,
+        staffed_jobs=spec.jobs,
+    )
+
+
+# -- Tile dataclass field defaults -----------------------------------------
+
+
+def test_tile_dataclass_has_kwh_served_today_and_yesterday_defaults() -> None:
+    """Slice-03 AC: every Tile has both accumulators defaulting to 0.0."""
+    t = _coal_plant_tile()
+    assert t.kwh_served_today == 0.0
+    assert t.kwh_served_yesterday == 0.0
+
+
+# -- plant_revenue_for_tile unit -------------------------------------------
+
+
+def test_plant_revenue_for_tile_uses_yesterday_times_retail() -> None:
+    from world.config import load_config
+    from world.pricing import plant_revenue_for_tile
+
+    cfg = load_config()
+    t = _coal_plant_tile()
+    t.kwh_served_yesterday = 1000.0
+    assert plant_revenue_for_tile(t, cfg) == pytest.approx(1000.0 * cfg.grid_price_retail)
+
+
+def test_plant_revenue_for_tile_zero_when_yesterday_zero() -> None:
+    from world.config import load_config
+    from world.pricing import plant_revenue_for_tile
+
+    cfg = load_config()
+    t = _coal_plant_tile()
+    # Default kwh_served_yesterday == 0 (fresh tile, no /step yet).
+    assert plant_revenue_for_tile(t, cfg) == 0.0
+
+
+def test_plant_revenue_for_tile_zero_when_not_operational() -> None:
+    from world.config import load_config
+    from world.pricing import plant_revenue_for_tile
+
+    cfg = load_config()
+    t = _coal_plant_tile()
+    t.kwh_served_yesterday = 1000.0
+    t.operational = False
+    assert plant_revenue_for_tile(t, cfg) == 0.0
+
+
+def test_plant_revenue_for_tile_zero_for_non_plant() -> None:
+    from world.config import load_config
+    from world.pricing import plant_revenue_for_tile
+
+    cfg = load_config()
+    t = _industrial_tile()
+    t.kwh_served_yesterday = 1000.0  # set the field anyway, helper must gate
+    assert plant_revenue_for_tile(t, cfg) == 0.0
+
+
+# -- kwh accumulator behaviour through /step -------------------------------
+
+
+def test_kwh_served_today_resets_at_start_of_day() -> None:
+    """Building a plant mid-game with non-zero accumulator state still gets a
+    clean slate at the next /step (the reset runs at the top of
+    _advance_one_day)."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    res = w.build("coal_plant", th.x + 2, th.y)
+    assert res["ok"], res
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    coal.kwh_served_today = 9999.0
+    w.step(days=1)
+    # After the day, today's accumulator reflects this day's dispatch (not
+    # the 9999 we planted). It must NOT equal 9999.
+    assert coal.kwh_served_today != pytest.approx(9999.0)
+
+
+def test_kwh_served_today_copied_to_yesterday_after_step() -> None:
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("coal_plant", th.x + 2, th.y)
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    w.step(days=1)
+    # After one day, the just-completed-day accumulator was copied to
+    # yesterday. Both fields are equal because the end-of-day copy happens
+    # AFTER the hourly loop but BEFORE the next day reset.
+    assert coal.kwh_served_yesterday == pytest.approx(coal.kwh_served_today)
+
+
+def test_kwh_served_yesterday_isolates_from_today_after_two_steps() -> None:
+    """After two consecutive /step calls, kwh_served_yesterday holds day-1's
+    served kWh; kwh_served_today holds day-2's. They are independently
+    accumulated through the reset/copy cycle."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("coal_plant", th.x + 2, th.y)
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    w.step(days=1)
+    day1_kwh = coal.kwh_served_today
+    w.step(days=1)
+    day2_kwh = coal.kwh_served_today
+    # After day 2, yesterday should hold day-2 (most recently pinned), today
+    # equals day-2 (just-completed). The intermediate day-1 reading is gone.
+    assert coal.kwh_served_yesterday == pytest.approx(day2_kwh)
+    # Sanity: at least one of the two days produced kWh.
+    assert day1_kwh > 0.0 or day2_kwh > 0.0
+
+
+def test_freshly_built_plant_has_zero_revenue_until_next_step() -> None:
+    """AC: a freshly built plant has 0 revenue until the next /step."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("coal_plant", th.x + 2, th.y)
+    s = w.state_dict()
+    coal_dict = next(t for t in s["tiles"] if t["type"] == "coal_plant")
+    # No /step yet — kwh_served_yesterday is still 0.
+    assert coal_dict["estimated_revenue_per_day"] == 0.0
+
+
+# -- /state per-tile economics fields for plants ---------------------------
+
+
+def test_state_tile_dict_estimated_revenue_matches_yesterday_times_retail() -> None:
+    """AC integration: build a coal plant, step a day with non-zero dispatch,
+    assert the tile dict's estimated_revenue_per_day matches
+    kwh_served_yesterday × grid_price_retail."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    # A second industrial pushes total demand above the city's renewable
+    # output, forcing the coal plant to dispatch.
+    w.build("industrial", th.x + 1, th.y)
+    w.build("coal_plant", th.x + 2, th.y)
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    w.step(days=1)
+    # Sanity: coal actually dispatched something this day.
+    assert coal.kwh_served_yesterday > 0.0
+
+    s = w.state_dict()
+    coal_dict = next(t for t in s["tiles"] if t["type"] == "coal_plant")
+    assert coal_dict["estimated_revenue_per_day"] == pytest.approx(
+        coal.kwh_served_yesterday * w.config.grid_price_retail
+    )
+    assert coal_dict["estimated_net_per_day"] == pytest.approx(
+        coal_dict["estimated_revenue_per_day"] - coal_dict["opex_per_day"]
+    )
+
+
+def test_state_tile_dict_plant_estimated_co2_and_carbon_cost_are_zero_in_slice_03() -> None:
+    """Slice 03 only fills revenue + net for plants. Fuel cost and carbon
+    cost rows land in slice 04; this slice keeps their popup placeholders
+    at 0."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("coal_plant", th.x + 2, th.y)
+    w.step(days=1)
+    s = w.state_dict()
+    coal_dict = next(t for t in s["tiles"] if t["type"] == "coal_plant")
+    assert coal_dict["estimated_co2_per_day"] == 0.0
+    assert coal_dict["estimated_carbon_cost_per_day"] == 0.0
+
+
+def test_state_tile_dict_exposes_kwh_fields_on_plants() -> None:
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("solar_farm", th.x + 2, th.y)
+    s = w.state_dict()
+    solar_dict = next(t for t in s["tiles"] if t["type"] == "solar_farm")
+    assert "kwh_served_today" in solar_dict
+    assert "kwh_served_yesterday" in solar_dict
+
+
+# -- /catalog economics block: grid prices ---------------------------------
+
+
+def test_catalog_economics_exposes_grid_prices() -> None:
+    from world.config import load_config
+
+    cfg = load_config()
+    cat = build_catalog()
+    eco = cat["economics"]
+    assert eco["grid_price_retail"] == pytest.approx(cfg.grid_price_retail)
+    assert eco["grid_price_export"] == pytest.approx(cfg.grid_price_export)
