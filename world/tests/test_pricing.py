@@ -24,7 +24,7 @@ from world.pricing import (
     update_civic_revenue,
 )
 from world.sim import World
-from world.state import Tile, WorldState
+from world.state import Tile, Well, WorldState
 
 
 def _industrial_tile(staffed: int | None = None) -> Tile:
@@ -1199,3 +1199,165 @@ def test_catalog_economics_exposes_refinery_constants() -> None:
     assert eco["refined_price_usd_per_bbl"] == pytest.approx(REFINED_PRICE_USD_PER_BBL)
     assert eco["refinery_yield"] == pytest.approx(REFINERY_YIELD)
     assert eco["refinery_co2_t_per_bbl"] == pytest.approx(REFINERY_CO2_PER_BBL)
+
+
+# =========================================================================
+# Slice 06 — wells revenue + Net popup rows
+# =========================================================================
+
+
+def _production_well(rate: float = 0.0) -> Well:
+    spec = TILE_CATALOG["oil_well"]
+    return Well(
+        id="pw_1",
+        type="production",
+        x=0,
+        y=0,
+        target_z=0,
+        drilled_day=0,
+        setpoint_rate_bbl_day=rate,
+        current_rate_bbl_day=rate,
+        capex_paid=spec.capex,
+        opex_per_day=spec.opex_per_day,
+    )
+
+
+def _injection_well(rate: float = 0.0) -> Well:
+    spec = TILE_CATALOG["injection_well"]
+    return Well(
+        id="iw_1",
+        type="injection",
+        x=0,
+        y=0,
+        target_z=0,
+        drilled_day=0,
+        setpoint_rate_bbl_day=rate,
+        current_rate_bbl_day=rate,
+        capex_paid=spec.capex,
+        opex_per_day=spec.opex_per_day,
+    )
+
+
+# -- well_gross_crude_value_for_tile unit ----------------------------------
+
+
+def test_well_gross_crude_value_production_uses_rate_times_price() -> None:
+    from world.pricing import well_gross_crude_value_for_tile
+    from world.subsurface import CRUDE_PRICE_USD_PER_BBL
+
+    well = _production_well(rate=150.0)
+    expected = 150.0 * CRUDE_PRICE_USD_PER_BBL
+    assert well_gross_crude_value_for_tile(well) == pytest.approx(expected)
+
+
+def test_well_gross_crude_value_zero_when_rate_zero() -> None:
+    from world.pricing import well_gross_crude_value_for_tile
+
+    assert well_gross_crude_value_for_tile(_production_well(rate=0.0)) == 0.0
+
+
+def test_well_gross_crude_value_zero_for_injection_well() -> None:
+    from world.pricing import well_gross_crude_value_for_tile
+
+    well = _injection_well(rate=200.0)
+    assert well_gross_crude_value_for_tile(well) == 0.0
+
+
+# -- well_injection_kwh_per_day unit ---------------------------------------
+
+
+def test_well_injection_kwh_scales_with_rate() -> None:
+    from world.pricing import well_injection_kwh_per_day
+    from world.subsurface import INJECTION_KWH_PER_BBL
+
+    well = _injection_well(rate=100.0)
+    assert well_injection_kwh_per_day(well) == pytest.approx(100.0 * INJECTION_KWH_PER_BBL)
+
+
+def test_well_injection_kwh_zero_when_rate_zero() -> None:
+    from world.pricing import well_injection_kwh_per_day
+
+    assert well_injection_kwh_per_day(_injection_well(rate=0.0)) == 0.0
+
+
+def test_well_injection_kwh_zero_for_production_well() -> None:
+    from world.pricing import well_injection_kwh_per_day
+
+    well = _production_well(rate=150.0)
+    assert well_injection_kwh_per_day(well) == 0.0
+
+
+# -- integration: state_dict well fields -----------------------------------
+
+
+def test_state_well_dict_emits_revenue_kwh_and_net_fields() -> None:
+    """Drill a production well, run one /step, and assert the well dict
+    reports estimated_revenue_per_day = current_rate × crude_price and Net
+    reconciles with the helper."""
+    from world.subsurface import CRUDE_PRICE_USD_PER_BBL, Q_MAX_WELL_BBL_DAY
+    from world.tests.test_economy import _hc_voxel
+
+    w = World()
+    w.reset(seed=42)
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    well_id = w.state.wells[0].id
+    w.control_well(well_id, Q_MAX_WELL_BBL_DAY)
+    w.step(days=1)
+
+    well = w.state.wells[0]
+    assert well.current_rate_bbl_day > 0.0
+    s = w.state_dict()
+    well_dict = next(wd for wd in s["wells"] if wd["id"] == well_id)
+    expected_revenue = well.current_rate_bbl_day * CRUDE_PRICE_USD_PER_BBL
+    assert well_dict["estimated_revenue_per_day"] == pytest.approx(expected_revenue)
+    assert well_dict["injection_power_kwh_per_day"] == 0.0
+    expected_net = expected_revenue - well_dict["opex_per_day"]
+    assert well_dict["estimated_net_per_day"] == pytest.approx(expected_net)
+
+
+def test_state_well_dict_injection_has_zero_revenue_and_net_is_minus_opex() -> None:
+    """An injection well shows 0 revenue, kWh matching its setpoint, and
+    Net = -opex (no $-cost from power)."""
+    from world.subsurface import INJECTION_KWH_PER_BBL, Q_MAX_WELL_BBL_DAY
+    from world.tests.test_economy import _hc_voxel
+
+    w = World()
+    w.reset(seed=42)
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "injection")
+    well_id = w.state.wells[0].id
+    w.control_well(well_id, Q_MAX_WELL_BBL_DAY)
+
+    s = w.state_dict()
+    well_dict = next(wd for wd in s["wells"] if wd["id"] == well_id)
+    assert well_dict["estimated_revenue_per_day"] == 0.0
+    expected_kwh = well_dict["current_rate_bbl_day"] * INJECTION_KWH_PER_BBL
+    assert well_dict["injection_power_kwh_per_day"] == pytest.approx(expected_kwh)
+    assert well_dict["estimated_net_per_day"] == pytest.approx(-well_dict["opex_per_day"])
+
+
+def test_drill_response_includes_estimated_fields() -> None:
+    from world.tests.test_economy import _hc_voxel
+
+    w = World()
+    w.reset(seed=42)
+    hc = _hc_voxel(w)
+    resp = w.drill(hc.x, hc.y, hc.z, "production")
+    assert resp["ok"] is True
+    result = resp["result"]
+    assert "estimated_revenue_per_day" in result
+    assert "injection_power_kwh_per_day" in result
+    assert "estimated_net_per_day" in result
+
+
+# -- /catalog economics block: well constants ------------------------------
+
+
+def test_catalog_economics_exposes_well_constants() -> None:
+    from world.subsurface import CRUDE_PRICE_USD_PER_BBL, INJECTION_KWH_PER_BBL
+
+    cat = build_catalog()
+    eco = cat["economics"]
+    assert eco["crude_price_usd_per_bbl"] == pytest.approx(CRUDE_PRICE_USD_PER_BBL)
+    assert eco["injection_kwh_per_bbl"] == pytest.approx(INJECTION_KWH_PER_BBL)

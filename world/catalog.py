@@ -258,6 +258,8 @@ def build_catalog() -> dict[str, Any]:
         "refined_price_usd_per_bbl": REFINED_PRICE_USD_PER_BBL,
         "refinery_yield": REFINERY_YIELD,
         "refinery_co2_t_per_bbl": REFINERY_CO2_PER_BBL,
+        "crude_price_usd_per_bbl": CRUDE_PRICE_USD_PER_BBL,
+        "injection_kwh_per_bbl": INJECTION_KWH_PER_BBL,
     }
     return {
         "tiles": tiles,

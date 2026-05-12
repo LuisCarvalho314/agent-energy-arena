@@ -738,12 +738,19 @@
     const rate = w.current_rate_bbl_day || 0;
     rows.push(row("Setpoint", `${fmtNum(setpoint)} bbl/d`));
     rows.push(row("Actual rate", `${fmtNum(rate, 1)} bbl/d`, "pos"));
+    const revenue = w.estimated_revenue_per_day || 0;
+    const net = w.estimated_net_per_day || 0;
+    const ncls = net > 0 ? "pos" : net < 0 ? "neg" : "";
     if (w.type === "production") {
       rows.push(row("Cumulative produced", `${fmtNum(w.cumulative_produced_bbl || 0)} bbl`, "pos"));
+      rows.push(row("Gross crude value (est.) / day", fmtMoney(revenue), "pos"));
+      rows.push(row("Net / day", fmtMoney(net), ncls));
     } else {
-      const kwh = rate * 50; // INJECTION_KWH_PER_BBL = 50
-      rows.push(row("Injection load", `${fmtNum(kwh / 24, 1)} kW avg`, "warn"));
+      const injKwh = w.injection_power_kwh_per_day || 0;
+      rows.push(row("Injection load", `${fmtNum(injKwh / 24, 1)} kW avg`, "warn"));
+      rows.push(row("Power consumed / day", `${fmtNum(injKwh)} kWh`, "warn"));
       rows.push(row("Cumulative injected", `${fmtNum(w.cumulative_injected_bbl || 0)} bbl`));
+      rows.push(row("Net / day", fmtMoney(net), ncls));
     }
     return title + sep() + rows.join("");
   }

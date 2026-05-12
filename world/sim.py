@@ -150,7 +150,18 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
     }
 
 
-def _well_to_dict(w: Well) -> dict[str, Any]:
+def _well_to_dict(w: Well, world: World) -> dict[str, Any]:
+    from world.pricing import (
+        well_gross_crude_value_for_tile,
+        well_injection_kwh_per_day,
+    )
+
+    del world  # currently unused; mirrors _tile_to_dict signature for parity
+    revenue = well_gross_crude_value_for_tile(w)
+    injection_kwh = well_injection_kwh_per_day(w)
+    # Injection wells: power cost is internalized through plants, so Net is
+    # -opex with no $-cost from kWh consumption.
+    net = revenue - w.opex_per_day if w.type == "production" else -w.opex_per_day
     return {
         "id": w.id,
         "type": w.type,
@@ -165,6 +176,9 @@ def _well_to_dict(w: Well) -> dict[str, Any]:
         "capex_paid": w.capex_paid,
         "opex_per_day": w.opex_per_day,
         "staffed_jobs": w.staffed_jobs,
+        "estimated_revenue_per_day": revenue,
+        "injection_power_kwh_per_day": injection_kwh,
+        "estimated_net_per_day": net,
     }
 
 
@@ -453,7 +467,7 @@ class World:
         return {
             "ok": True,
             "treasury_after": self.state.treasury,
-            "result": _well_to_dict(well),
+            "result": _well_to_dict(well, self),
         }
 
     def control_well(self, well_id: str, rate_bbl_day: float) -> dict[str, Any]:
@@ -890,7 +904,7 @@ class World:
                 ),
             },
             "tiles": [_tile_to_dict(t, self) for t in s.tiles],
-            "wells": [_well_to_dict(w) for w in s.wells],
+            "wells": [_well_to_dict(w, self) for w in s.wells],
             "reservoirs_revealed": reservoirs_summary(self.subsurface, top_k=10),
             "active_events": list(s.active_events),
             "historical_events": list(s.historical_events),

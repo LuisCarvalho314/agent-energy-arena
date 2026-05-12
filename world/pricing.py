@@ -23,12 +23,13 @@ from world.economy import (
     REFINERY_YIELD,
 )
 from world.power import PLANT_TYPES
+from world.subsurface import CRUDE_PRICE_USD_PER_BBL, INJECTION_KWH_PER_BBL
 
 if TYPE_CHECKING:
     from world.catalog import TileSpec
     from world.config import Config
     from world.sim import World
-    from world.state import Tile, WorldState
+    from world.state import Tile, Well, WorldState
 
 # Industrial: flat daily revenue at full staffing, scaled linearly by workforce
 # efficiency. Calibrated at ~$500/day so a fully-staffed industrial tile
@@ -196,6 +197,30 @@ def refinery_carbon_cost_for_tile(state: WorldState, tile: Tile) -> float:
     events flow through into the Net row the same day they fire.
     """
     return refinery_co2_for_tile(tile) * state.carbon_price
+
+
+def well_gross_crude_value_for_tile(well: Well) -> float:
+    """Daily gross crude value estimate for one production well.
+
+    Returns ``current_rate_bbl_day × CRUDE_PRICE_USD_PER_BBL`` for production
+    wells. Injection wells return 0 (they consume bbl/day, not produce it).
+    """
+    if well.type != "production":
+        return 0.0
+    return well.current_rate_bbl_day * CRUDE_PRICE_USD_PER_BBL
+
+
+def well_injection_kwh_per_day(well: Well) -> float:
+    """Daily kWh consumed by one injection well at its current pump rate.
+
+    Returns ``current_rate_bbl_day × INJECTION_KWH_PER_BBL``. Production wells
+    return 0. This is informational — the player isn't billed in $ for it
+    (the cost is internalized through whichever plants serve the load), but
+    it's useful in the popup to gauge the operational power draw.
+    """
+    if well.type != "injection":
+        return 0.0
+    return well.current_rate_bbl_day * INJECTION_KWH_PER_BBL
 
 
 def _commercial_residents_in_radius(state: WorldState, tile: Tile) -> float:
