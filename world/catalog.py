@@ -33,6 +33,11 @@ class TileSpec:
     # CO2 intensity in tonnes/MWh (used by slice 10 carbon accounting; defined
     # here so the catalog has the full plant spec).
     co2_t_per_mwh: float = 0.0
+    # Battery-only: round-trip energy capacity (kWh) and AC-to-AC efficiency.
+    # capacity_kw is the rated charge/discharge power for batteries (same field
+    # as plants); these two extend it. Non-battery tiles leave at 0.
+    storage_kwh: float = 0.0
+    round_trip_efficiency: float = 0.0
     buildable: bool = True  # False = not placeable via /build (town_hall, wells)
 
 
@@ -131,6 +136,21 @@ TILE_CATALOG: dict[str, TileSpec] = {
         fuel_cost_per_mwh=20.0,
         co2_t_per_mwh=0.9,
     ),
+    "battery": TileSpec(
+        tile_type="battery",
+        capex=60_000,
+        opex_per_day=40,
+        requires_road=False,
+        description=(
+            "Grid-scale battery. 200 kW rated charge/discharge, 800 kWh storage, "
+            "85% round-trip. Auto-charges from renewable surplus and discharges "
+            "to cover residual demand; manual override via /control/battery."
+        ),
+        jobs=0,
+        capacity_kw=200,
+        storage_kwh=800,
+        round_trip_efficiency=0.85,
+    ),
     "refinery": TileSpec(
         tile_type="refinery",
         capex=150_000,
@@ -186,6 +206,8 @@ def _spec_to_dict(spec: TileSpec) -> dict[str, Any]:
         "capacity_kw": spec.capacity_kw,
         "fuel_cost_per_mwh": spec.fuel_cost_per_mwh,
         "co2_t_per_mwh": spec.co2_t_per_mwh,
+        "storage_kwh": spec.storage_kwh,
+        "round_trip_efficiency": spec.round_trip_efficiency,
         "buildable": spec.buildable,
     }
 

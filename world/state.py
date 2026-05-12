@@ -41,6 +41,12 @@ class Tile:
     # (no last-hour × 24 extrapolation). Non-plant tiles leave both at 0.0.
     kwh_served_today: float = 0.0
     kwh_served_yesterday: float = 0.0
+    # Battery (balance-upgrade-p0 slice 01): stored energy and the manual
+    # charge setpoint. Setpoint sign convention: >0 = charge, <0 = discharge,
+    # 0 = auto. Both stay at 0 on non-battery tiles. Slice 02 lights them up
+    # in dispatch; slice 01 only surfaces them through /state + /control.
+    soc_kwh: float = 0.0
+    charge_setpoint_kw: float = 0.0
 
 
 @dataclass

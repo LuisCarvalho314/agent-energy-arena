@@ -153,6 +153,11 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         "estimated_carbon_cost_per_day": carbon_cost,
         "estimated_net_per_day": net,
         **extra,
+        **(
+            {"soc_kwh": t.soc_kwh, "charge_setpoint_kw": t.charge_setpoint_kw}
+            if t.type == "battery"
+            else {}
+        ),
     }
 
 
@@ -505,6 +510,28 @@ class World:
             "result": {
                 "well_id": well.id,
                 "setpoint_rate_bbl_day": clamped,
+            },
+        }
+
+    def control_battery(self, tile_id: str, charge_kw: float) -> dict[str, Any]:
+        # Battery setpoint sign convention: >0 = charge, <0 = discharge,
+        # 0 = auto. Slice 01 only stores the value; slice 02 lights it up in
+        # dispatch (manual positive is clamped to renewable surplus at step
+        # 1.5; manual negative is honored up to SoC at step 5).
+        tile = next(
+            (t for t in self.state.tiles if t.id == tile_id and t.type == "battery"),
+            None,
+        )
+        if tile is None:
+            return self._build_error("unknown_battery")
+        tile.charge_setpoint_kw = float(charge_kw)
+        return {
+            "ok": True,
+            "treasury_after": self.state.treasury,
+            "result": {
+                "tile_id": tile.id,
+                "charge_setpoint_kw": tile.charge_setpoint_kw,
+                "soc_kwh": tile.soc_kwh,
             },
         }
 

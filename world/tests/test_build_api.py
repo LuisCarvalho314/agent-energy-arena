@@ -99,3 +99,142 @@ def test_build_townhall_via_endpoint_rejected(tmp_path: Path) -> None:
     assert r.status_code == 200
     assert r.json()["ok"] is False
     assert r.json()["error"] == "unknown_tile_type"
+
+
+# -- Battery (issue 01) ----------------------------------------------------
+
+
+def test_catalog_lists_battery_with_storage_and_efficiency(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    catalog = client.get("/catalog").json()
+    by_type = {entry["tile_type"]: entry for entry in catalog["tiles"]}
+    assert "battery" in by_type
+    bat = by_type["battery"]
+    assert bat["capex"] == 60_000
+    assert bat["opex_per_day"] == 40
+    assert bat["capacity_kw"] == 200
+    assert bat["storage_kwh"] == 800
+    assert bat["round_trip_efficiency"] == 0.85
+    assert bat["requires_road"] is False
+    assert bat["jobs"] == 0
+
+
+def test_build_battery_appears_in_state_with_soc_and_setpoint(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    client.post("/reset", json={"seed": 42})
+    treasury0 = client.get("/state").json()["treasury"]
+    r = client.post("/build", json={"tile_type": "battery", "x": 0, "y": 0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["treasury_after"] == treasury0 - 60_000
+    s = client.get("/state").json()
+    batteries = [t for t in s["tiles"] if t["type"] == "battery"]
+    assert len(batteries) == 1
+    bat = batteries[0]
+    assert bat["soc_kwh"] == 0.0
+    assert bat["charge_setpoint_kw"] == 0.0
+
+
+def test_state_response_includes_soc_kwh_per_battery(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    client.post("/reset", json={"seed": 42})
+    client.post("/build", json={"tile_type": "battery", "x": 0, "y": 0})
+    client.post("/build", json={"tile_type": "battery", "x": 0, "y": 1})
+    s = client.get("/state").json()
+    batteries = [t for t in s["tiles"] if t["type"] == "battery"]
+    assert len(batteries) == 2
+    for bat in batteries:
+        assert "soc_kwh" in bat
+        assert "charge_setpoint_kw" in bat
+        assert bat["soc_kwh"] == 0.0
+        assert bat["charge_setpoint_kw"] == 0.0
+
+
+def test_control_battery_endpoint_sets_setpoint(tmp_path: Path) -> None:
+    client, log = _client(tmp_path)
+    client.post("/reset", json={"seed": 42})
+    client.post("/build", json={"tile_type": "battery", "x": 0, "y": 0})
+    bat_id = next(t["id"] for t in client.get("/state").json()["tiles"] if t["type"] == "battery")
+
+    r = client.post("/control/battery", json={"tile_id": bat_id, "charge_kw": 50.0})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["result"]["tile_id"] == bat_id
+    assert body["result"]["charge_setpoint_kw"] == 50.0
+
+    s = client.get("/state").json()
+    bat = next(t for t in s["tiles"] if t["id"] == bat_id)
+    assert bat["charge_setpoint_kw"] == 50.0
+
+    entries = [json.loads(line) for line in log.path.read_text().splitlines()]
+    control_calls = [e for e in entries if e["endpoint"] == "/control/battery"]
+    assert len(control_calls) == 1
+    assert control_calls[0]["ok"] is True
+
+
+def test_control_battery_accepts_negative_setpoint(tmp_path: Path) -> None:
+    """Negative charge_kw = discharge command; no clamp at this layer."""
+    client, _ = _client(tmp_path)
+    client.post("/reset", json={"seed": 42})
+    client.post("/build", json={"tile_type": "battery", "x": 0, "y": 0})
+    bat_id = next(t["id"] for t in client.get("/state").json()["tiles"] if t["type"] == "battery")
+    r = client.post("/control/battery", json={"tile_id": bat_id, "charge_kw": -75.0})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["result"]["charge_setpoint_kw"] == -75.0
+
+
+def test_control_battery_unknown_id(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    client.post("/reset", json={"seed": 42})
+    r = client.post("/control/battery", json={"tile_id": "battery-99", "charge_kw": 10.0})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["error"] == "unknown_battery"
+
+
+def test_control_battery_rejects_non_battery_tile(tmp_path: Path) -> None:
+    client, _ = _client(tmp_path)
+    client.post("/reset", json={"seed": 42})
+    th_id = next(t["id"] for t in client.get("/state").json()["tiles"] if t["type"] == "town_hall")
+    r = client.post("/control/battery", json={"tile_id": th_id, "charge_kw": 10.0})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["error"] == "unknown_battery"
+
+
+def test_reset_clears_battery_soc_and_setpoint() -> None:
+    """Slice 01 has no dispatch participation yet, so we poke the dataclass
+    directly to seed non-zero state, then assert /reset truly clears it."""
+    from world.sim import World
+
+    w = World()
+    w.reset(seed=42)
+    w.build("battery", 0, 0)
+    bat = next(t for t in w.state.tiles if t.type == "battery")
+    bat.soc_kwh = 333.0
+    bat.charge_setpoint_kw = 50.0
+
+    w.reset(seed=42)
+    assert [t for t in w.state.tiles if t.type == "battery"] == []
+    # And a fresh build comes up zeroed.
+    w.build("battery", 0, 0)
+    bat = next(t for t in w.state.tiles if t.type == "battery")
+    assert bat.soc_kwh == 0.0
+    assert bat.charge_setpoint_kw == 0.0
+
+
+def test_battery_workforce_efficiency_is_one() -> None:
+    """Passive tile branch: jobs=0 → efficiency 1.0."""
+    from world import workforce
+    from world.sim import World
+
+    w = World()
+    w.reset(seed=42)
+    w.build("battery", 0, 0)
+    bat = next(t for t in w.state.tiles if t.type == "battery")
+    assert workforce.efficiency(bat) == 1.0
