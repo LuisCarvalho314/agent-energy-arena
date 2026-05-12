@@ -127,6 +127,22 @@
       }
     }
 
+    // Wells occupy a surface cell (sim.drill rejects co-located builds /
+    // re-drills), so render them as tiles in their own right. Production
+    // wells get a dark-rust fill + ▼; injection wells get a dark-teal
+    // fill + ▲. Matches the symbol convention used in the subsurface
+    // cross-section.
+    for (const w of wells) {
+      ctx.fillStyle = w.type === "production" ? "#5a2f1a" : "#1a3a4d";
+      ctx.fillRect(w.x * cw, w.y * ch, cw, ch);
+      ctx.fillStyle = w.type === "production" ? "#3fbf7f" : "#a8d8ff";
+      ctx.font = `${Math.floor(ch * 0.55)}px sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      const symbol = w.type === "production" ? "▼" : "▲";
+      ctx.fillText(symbol, w.x * cw + cw / 2, w.y * ch + ch / 2);
+    }
+
     ctx.strokeStyle = "#2a2d34";
     ctx.lineWidth = 1;
     for (let i = 0; i <= cols; i++) {
@@ -1003,12 +1019,25 @@
     }
     subChartEl.appendChild(filledG);
 
-    // Wellhead markers ▼/▲ for wells on this slice.
+    // Wellhead markers ▼/▲ for wells on this slice. The vertical bore
+    // line runs from the surface (z=0) down to the centre of the target
+    // voxel — visually anchors the surface tile to its subsurface target.
     const wellG = document.createElementNS("http://www.w3.org/2000/svg", "g");
     for (const w of wells) {
       const offAxis = axis === "y" ? w.y : w.x;
       if (offAxis !== slice) continue;
       const lateral = axis === "y" ? w.x : w.y;
+      const boreX = lateral * cw + cw / 2;
+      const boreY1 = (w.target_z + 0.5) * ch;
+      const bore = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      bore.setAttribute("x1", boreX.toFixed(2));
+      bore.setAttribute("y1", "0");
+      bore.setAttribute("x2", boreX.toFixed(2));
+      bore.setAttribute("y2", boreY1.toFixed(2));
+      bore.setAttribute("stroke", "#ff5050");
+      bore.setAttribute("stroke-width", "1.5");
+      bore.setAttribute("pointer-events", "none");
+      wellG.appendChild(bore);
       const symbol = w.type === "production" ? "▼" : "▲";
       const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
       t.setAttribute("x", (lateral * cw + cw / 2).toFixed(2));
