@@ -36,6 +36,7 @@ from world.events import (
     sample_and_apply_events,
 )
 from world.grid import has_road_adjacency, in_bounds, road_connected_set
+from world.pipelines import routing_units
 from world.population import update_population
 from world.power import (
     PLANT_TYPES,
@@ -792,7 +793,6 @@ class World:
         # sit at Chebyshev distance > 1 from the producer's target (no
         # breakthrough). Yesterday's rates were snapshotted at the top of
         # this method.
-        total_crude_bbl = 0.0
         for well in self.state.wells:
             if well.type != "production":
                 continue
@@ -831,23 +831,54 @@ class World:
             )
             well.current_rate_bbl_day = q
             well.cumulative_produced_bbl += q
-            total_crude_bbl += q
 
-        # Refinery routing (brief §4.6). Crude flows to operational refineries
-        # by descending setpoint, id-ascending tiebreak; surplus sells raw.
-        # Process loads are unbilled (no retail revenue) — they only show up
-        # in dispatch demand and on plant fuel-burn / carbon ledgers.
-        refineries = [t for t in self.state.tiles if t.type == "refinery" and t.operational]
-        per_refinery_actual = route_crude(refineries, total_crude_bbl)
-        total_refined_input = sum(per_refinery_actual.values())
-        for r in refineries:
-            r.current_throughput_bbl_day = per_refinery_actual.get(r.id, 0.0)
-        # Inoperable refineries reset to 0 so their next-day power load is 0.
-        for t in self.state.tiles:
-            if t.type == "refinery" and not t.operational:
-                t.current_throughput_bbl_day = 0.0
+        # Refinery routing (brief §4.6, oilfield-v2 slice 08). Crude only
+        # flows from producers to refineries on the same 4-connected pipeline
+        # network — `pipelines.routing_units` partitions wells + refineries by
+        # pipeline component. Per network, `route_crude` aggregates that
+        # network's producer crude, with the same descending-setpoint /
+        # id-ascending tiebreak as the old global call. Orphan producers (no
+        # pipeline neighbour) sell 100% of their crude raw at $40/bbl; orphan
+        # refineries (no pipeline neighbour or pipeline-isolated from any
+        # producer) starve at zero throughput.
+        networks, orphan_wells, orphan_refineries = routing_units(
+            self.state.tiles, self.state.wells
+        )
 
-        crude_direct_bbl = max(0.0, total_crude_bbl - total_refined_input)
+        total_refined_input = 0.0
+        total_routed_crude_bbl = 0.0
+        for net_wells, net_refs in networks:
+            net_producers = [w for w in net_wells if w.type == "production"]
+            net_crude = sum(w.current_rate_bbl_day for w in net_producers)
+            total_routed_crude_bbl += net_crude
+            operational_refs = [r for r in net_refs if r.operational]
+            per_refinery_actual = route_crude(operational_refs, net_crude)
+            for r in operational_refs:
+                r.current_throughput_bbl_day = per_refinery_actual.get(r.id, 0.0)
+            # Non-operational refineries in this network reset to 0 (same
+            # contract as the old global path).
+            for r in net_refs:
+                if not r.operational:
+                    r.current_throughput_bbl_day = 0.0
+            total_refined_input += sum(per_refinery_actual.values())
+            # Surplus within a network sells raw at $40/bbl — accumulated as
+            # part of the global crude_direct_bbl total below.
+
+        # Orphan refineries: zero throughput, identical to the pre-slice-08
+        # "no crude" outcome but pinned per-tile regardless of operational.
+        for r in orphan_refineries:
+            r.current_throughput_bbl_day = 0.0
+
+        # Orphan producers: all of their crude sells raw, independent of
+        # whether a refinery happens to live elsewhere on the map.
+        orphan_producer_crude_bbl = sum(
+            w.current_rate_bbl_day for w in orphan_wells if w.type == "production"
+        )
+
+        # Networked surplus = routed-network crude that no refinery in that
+        # network absorbed. Orphan producer crude is added on top.
+        networked_surplus = max(0.0, total_routed_crude_bbl - total_refined_input)
+        crude_direct_bbl = networked_surplus + orphan_producer_crude_bbl
         crude_revenue = crude_direct_bbl * CRUDE_PRICE_USD_PER_BBL
         # Yield is applied here (not in route_crude) so the routing remains
         # purely about input allocation; one place owns the 0.85 constant.
@@ -917,6 +948,20 @@ class World:
 
         s = self.state
         c = self.config
+        # oilfield-v2 slice 08: per-day pipeline graph summary. Pure derivation
+        # over the current tiles + wells, so it stays in lockstep with the
+        # routing decision taken in `_advance_one_day`.
+        networks, orphan_wells, orphan_refineries = routing_units(s.tiles, s.wells)
+        pipeline_networks = [
+            {
+                "component_id": i,
+                "well_ids": [w.id for w in net_wells],
+                "refinery_ids": [r.id for r in net_refs],
+            }
+            for i, (net_wells, net_refs) in enumerate(networks)
+        ]
+        orphan_well_ids = [w.id for w in orphan_wells]
+        orphan_refinery_ids = [r.id for r in orphan_refineries]
         return {
             "seed": s.seed,
             "day": s.day,
@@ -956,4 +1001,7 @@ class World:
             "today_summary_so_far": s.today_summary_so_far,
             "cumulative_renewable_served_kwh": s.cumulative_renewable_served_kwh,
             "cumulative_total_served_kwh": s.cumulative_total_served_kwh,
+            "pipeline_networks": pipeline_networks,
+            "orphan_well_ids": orphan_well_ids,
+            "orphan_refinery_ids": orphan_refinery_ids,
         }

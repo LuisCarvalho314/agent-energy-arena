@@ -1153,6 +1153,12 @@ def test_state_tile_dict_refinery_emits_revenue_co2_carbon_and_net() -> None:
     from world.subsurface import Q_MAX_WELL_BBL_DAY
 
     w.control_well(well_id, Q_MAX_WELL_BBL_DAY)
+    # oilfield-v2 slice 08: crude only routes inside a 4-connected pipeline
+    # network. Connect the refinery and the well so the test exercises the
+    # refining path, not the orphan-producer raw-sale path.
+    from world.tests.test_economy import _lay_pipeline_between_refinery_and_first_well
+
+    _lay_pipeline_between_refinery_and_first_well(w)
     w.step(days=1)
 
     ref = next(t for t in w.state.tiles if t.type == "refinery")

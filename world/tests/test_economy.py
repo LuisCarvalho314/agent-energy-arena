@@ -30,7 +30,7 @@ from world.economy import (
     route_crude,
 )
 from world.sim import World
-from world.state import Tile
+from world.state import Tile, Well
 from world.subsurface import CRUDE_PRICE_USD_PER_BBL, Q_MAX_WELL_BBL_DAY, Voxel
 
 
@@ -53,6 +53,33 @@ def _refinery_tile(rid: str, setpoint: float) -> Tile:
         staffed_jobs=spec.jobs,
         setpoint_rate_bbl_day=setpoint,
     )
+
+
+def _lay_pipeline_path(world: World, sx: int, sy: int, ex: int, ey: int) -> None:
+    """oilfield-v2 slice 08: lay an L-shaped pipeline path from (sx, sy) to
+    (ex, ey), inclusive on both ends.
+
+    Skips any cell already occupied so callers can paint over road tiles or
+    existing pipeline tiles without raising `tile_occupied`.
+    """
+    cx, cy = sx, sy
+    while True:
+        if world._tile_at(cx, cy) is None:
+            world.build("pipeline", cx, cy)
+        if (cx, cy) == (ex, ey):
+            return
+        if cx != ex:
+            cx += 1 if cx < ex else -1
+        elif cy != ey:
+            cy += 1 if cy < ey else -1
+
+
+def _lay_pipeline_between_refinery_and_first_well(world: World) -> None:
+    """Convenience wrapper: connect the only refinery to the only well via an
+    L-shaped pipeline run."""
+    ref = next(t for t in world.state.tiles if t.type == "refinery")
+    well = world.state.wells[0]
+    _lay_pipeline_path(world, ref.x + 1, ref.y, well.x - 1, well.y)
 
 
 def _build_road_link(world: World, x: int, y: int) -> None:
@@ -314,6 +341,7 @@ def test_refined_revenue_at_full_throughput():
     w.drill(hc.x, hc.y, hc.z, "production")
     well_id = w.state.wells[0].id
     w.control_well(well_id, Q_MAX_WELL_BBL_DAY)
+    _lay_pipeline_between_refinery_and_first_well(w)
 
     w.step(days=1)
     rate = w.state.wells[0].current_rate_bbl_day
@@ -366,6 +394,7 @@ def test_surplus_crude_after_refinery_setpoint_satisfied():
     hc = _hc_voxel(w)
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    _lay_pipeline_between_refinery_and_first_well(w)
 
     w.step(days=1)
     rate = w.state.wells[0].current_rate_bbl_day
@@ -425,6 +454,7 @@ def test_process_load_zero_on_day_one_then_lags_actual_throughput():
     hc = _hc_voxel(w)
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    _lay_pipeline_between_refinery_and_first_well(w)
 
     w.step(days=1)  # day 1: no prior throughput → no refinery load
     refinery = next(t for t in w.state.tiles if t.type == "refinery")
@@ -462,6 +492,11 @@ def test_two_refineries_higher_throughput_takes_more_crude():
     hc = _hc_voxel(w)
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    # Join both refineries + the well onto one pipeline network: row of
+    # pipeline tiles south of both refineries, then a south jog to the well.
+    well = w.state.wells[0]
+    _lay_pipeline_path(w, low.x, low.y + 1, well.x - 1, low.y + 1)
+    _lay_pipeline_path(w, well.x - 1, low.y + 1, well.x - 1, well.y)
 
     w.step(days=1)
     rate = w.state.wells[0].current_rate_bbl_day
@@ -575,6 +610,7 @@ def test_setpoint_not_auto_clamped_when_staffing_drops():
     hc = _hc_voxel(w)
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    _lay_pipeline_between_refinery_and_first_well(w)
 
     # Drop staffing AFTER all hire_to_fill hooks have run — they would
     # otherwise re-staff the refinery from the unemployed pool.
@@ -852,6 +888,7 @@ def test_refinery_emissions_scale_with_refined_throughput():
     hc = _hc_voxel(w)
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    _lay_pipeline_between_refinery_and_first_well(w)
     w.step(days=1)
     refinery = next(t for t in w.state.tiles if t.type == "refinery")
     refined_bbl = refinery.current_throughput_bbl_day
@@ -893,6 +930,7 @@ def test_step_size_invariance_with_refinery():
         hc = _hc_voxel(w)
         w.drill(hc.x, hc.y, hc.z, "production")
         w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+        _lay_pipeline_between_refinery_and_first_well(w)
     a.step(days=7)
     for _ in range(7):
         b.step(days=1)
@@ -900,3 +938,193 @@ def test_step_size_invariance_with_refinery():
     a_ref = next(t for t in a.state.tiles if t.type == "refinery")
     b_ref = next(t for t in b.state.tiles if t.type == "refinery")
     assert a_ref.current_throughput_bbl_day == pytest.approx(b_ref.current_throughput_bbl_day)
+
+
+# -- Pipeline routing (oilfield-v2 slice 08) ------------------------------
+
+
+def _setup_well_and_refinery(w: World, *, with_pipeline: bool) -> tuple[Tile, Well]:
+    """Build a refinery adjacent to the town_hall and drill the first HC well;
+    optionally lay an L-pipeline so they share a network."""
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    w.build("refinery", th.x + 1, th.y)
+    refinery = next(t for t in w.state.tiles if t.type == "refinery")
+    w.control_refinery(refinery.id, REFINERY_MAX_BBL_DAY)
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    well = w.state.wells[0]
+    w.control_well(well.id, Q_MAX_WELL_BBL_DAY)
+    if with_pipeline:
+        _lay_pipeline_between_refinery_and_first_well(w)
+    return refinery, well
+
+
+def test_pipeline_connected_producer_refinery_routes_crude():
+    """Producer + refinery on the same 4-connected pipeline network → the
+    refinery receives the producer's crude (subject to setpoint/cap)."""
+    w = World()
+    w.reset(seed=42)
+    refinery, well = _setup_well_and_refinery(w, with_pipeline=True)
+    w.step(days=1)
+    rate = w.state.wells[0].current_rate_bbl_day
+    assert rate > 0
+    refinery_after = next(t for t in w.state.tiles if t.id == refinery.id)
+    assert refinery_after.current_throughput_bbl_day == pytest.approx(rate)
+    # State exposes the network and zero orphans.
+    s = w.state_dict()
+    assert s["orphan_well_ids"] == []
+    assert s["orphan_refinery_ids"] == []
+    assert len(s["pipeline_networks"]) == 1
+    net = s["pipeline_networks"][0]
+    assert well.id in net["well_ids"]
+    assert refinery.id in net["refinery_ids"]
+
+
+def test_orphan_producer_sells_raw_refinery_starves():
+    """Producer with no pipeline neighbor → its crude shows in crude_revenue
+    at $40/bbl; the lone refinery's throughput stays at 0."""
+    w = World()
+    w.reset(seed=42)
+    refinery, well = _setup_well_and_refinery(w, with_pipeline=False)
+    w.step(days=1)
+    rate = w.state.wells[0].current_rate_bbl_day
+    assert rate > 0
+    refinery_after = next(t for t in w.state.tiles if t.id == refinery.id)
+    assert refinery_after.current_throughput_bbl_day == 0.0
+    assert w.state.today_summary_so_far["refined_revenue"] == 0.0
+    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(
+        rate * CRUDE_PRICE_USD_PER_BBL
+    )
+    s = w.state_dict()
+    assert well.id in s["orphan_well_ids"]
+    assert refinery.id in s["orphan_refinery_ids"]
+    assert s["pipeline_networks"] == []
+
+
+def test_orphan_refinery_with_producer_on_another_network_starves():
+    """Producer + pipeline isolated from a separate, pipeline-less refinery →
+    refinery throughput is 0; the producer's crude routes only within its
+    own network (no refinery there → sells raw)."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    # Lone refinery, no pipeline adjacent → orphan.
+    w.build("refinery", th.x + 1, th.y)
+    refinery = next(t for t in w.state.tiles if t.type == "refinery")
+    w.control_refinery(refinery.id, REFINERY_MAX_BBL_DAY)
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    well = w.state.wells[0]
+    w.control_well(well.id, Q_MAX_WELL_BBL_DAY)
+    # Build a *separate* pipeline network adjacent to the well only.
+    _lay_pipeline_path(w, well.x - 1, well.y, well.x - 1, well.y + 2)
+    w.step(days=1)
+    rate = w.state.wells[0].current_rate_bbl_day
+    assert rate > 0
+    refinery_after = next(t for t in w.state.tiles if t.id == refinery.id)
+    assert refinery_after.current_throughput_bbl_day == 0.0
+    # The producer's network contains no refinery → all crude sells raw.
+    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(
+        rate * CRUDE_PRICE_USD_PER_BBL
+    )
+    s = w.state_dict()
+    assert refinery.id in s["orphan_refinery_ids"]
+    assert well.id not in s["orphan_well_ids"]
+
+
+def test_two_disjoint_networks_do_not_share_crude():
+    """Network A: refinery + well via pipeline. Network B: refinery + well via
+    pipeline. A's crude must not reach B's refinery and vice versa."""
+    w = World()
+    w.reset(seed=42)
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
+    # Pick two HC voxels at distinct, non-adjacent (x, y) so each network
+    # can have its own well without sharing tiles.
+    unique_xy: dict[tuple[int, int], object] = {}
+    for v in w.subsurface.voxels.values():
+        unique_xy.setdefault((v.x, v.y), v)
+    sorted_xy = sorted(unique_xy.keys())
+    hc_west = unique_xy[sorted_xy[0]]
+    hc_east = unique_xy[sorted_xy[-1]]
+    # Refinery A on the east side of town_hall, paired with the east well; B
+    # on the west side, paired with the west well. Pipelines for A run east /
+    # north and never touch B's tiles, and vice versa.
+    w.build("refinery", th.x + 1, th.y)
+    ref_a = next(t for t in w.state.tiles if t.type == "refinery")
+    w.control_refinery(ref_a.id, REFINERY_MAX_BBL_DAY)
+    w.build("refinery", th.x - 1, th.y)
+    ref_b = next(t for t in w.state.tiles if t.id != ref_a.id and t.type == "refinery")
+    w.control_refinery(ref_b.id, REFINERY_MAX_BBL_DAY)
+    w.drill(hc_east.x, hc_east.y, hc_east.z, "production")  # type: ignore[attr-defined]
+    well_a = w.state.wells[0]  # paired with ref_a (east)
+    w.control_well(well_a.id, Q_MAX_WELL_BBL_DAY)
+    w.drill(hc_west.x, hc_west.y, hc_west.z, "production")  # type: ignore[attr-defined]
+    well_b = w.state.wells[1]  # paired with ref_b (west)
+    w.control_well(well_b.id, Q_MAX_WELL_BBL_DAY)
+    # Network A: ref_a (17, 16) → well_a (east). Run pipeline NORTH then EAST
+    # so it never touches ref_b or its row.
+    _lay_pipeline_path(w, ref_a.x, ref_a.y - 1, well_a.x, ref_a.y - 1)
+    _lay_pipeline_path(w, well_a.x, ref_a.y - 1, well_a.x, well_a.y - 1)
+    # Network B: ref_b (15, 16) → well_b (west). Run pipeline SOUTH then WEST
+    # so it never touches ref_a or its row.
+    _lay_pipeline_path(w, ref_b.x, ref_b.y + 1, well_b.x, ref_b.y + 1)
+    _lay_pipeline_path(w, well_b.x, ref_b.y + 1, well_b.x, well_b.y - 1)
+    s_pre = w.state_dict()
+    # Sanity: two networks, each pairing exactly one refinery with one well.
+    assert len(s_pre["pipeline_networks"]) == 2
+    assert s_pre["orphan_well_ids"] == []
+    assert s_pre["orphan_refinery_ids"] == []
+    for net in s_pre["pipeline_networks"]:
+        assert len(net["well_ids"]) == 1
+        assert len(net["refinery_ids"]) == 1
+    w.step(days=1)
+    rate_a = next(x for x in w.state.wells if x.id == well_a.id).current_rate_bbl_day
+    rate_b = next(x for x in w.state.wells if x.id == well_b.id).current_rate_bbl_day
+    assert rate_a > 0 and rate_b > 0
+    ref_a_after = next(t for t in w.state.tiles if t.id == ref_a.id)
+    ref_b_after = next(t for t in w.state.tiles if t.id == ref_b.id)
+    # Each refinery sees only its network's well — strictly bounded by that
+    # well's rate (capped at REFINERY_MAX_BBL_DAY).
+    assert ref_a_after.current_throughput_bbl_day == pytest.approx(
+        min(rate_a, REFINERY_MAX_BBL_DAY)
+    )
+    assert ref_b_after.current_throughput_bbl_day == pytest.approx(
+        min(rate_b, REFINERY_MAX_BBL_DAY)
+    )
+
+
+def test_demolishing_bridging_pipeline_orphans_well_next_day():
+    """Network: well — pipeline — pipeline (bridge) — pipeline — refinery.
+    Day 1 routes crude; demolishing the bridge produces TWO components on day
+    2 (well-side has no refinery, refinery-side has no well)."""
+    w = World()
+    w.reset(seed=42)
+    refinery, well = _setup_well_and_refinery(w, with_pipeline=True)
+    # Step once with the pipeline intact → routing happens.
+    w.step(days=1)
+    refinery_after_day1 = next(t for t in w.state.tiles if t.id == refinery.id)
+    assert refinery_after_day1.current_throughput_bbl_day > 0
+    # Identify a midpoint pipeline tile and demolish it.
+    pipelines = [t for t in w.state.tiles if t.type == "pipeline"]
+    mid = pipelines[len(pipelines) // 2]
+    res = w.demolish(mid.x, mid.y)
+    assert res["ok"] is True
+    # /state immediately reflects the new graph (no step needed).
+    s_after = w.state_dict()
+    # Either the well is now orphan or the refinery is — whichever side lost
+    # the bridge. The split must produce ≥2 components (well-side OR
+    # refinery-side might consist of just the endpoint adjacency, but the AC
+    # only cares that the formerly-joined pair is no longer in the same net).
+    well_net = next(
+        (
+            n
+            for n in s_after["pipeline_networks"]
+            if well.id in n["well_ids"] and refinery.id in n["refinery_ids"]
+        ),
+        None,
+    )
+    assert well_net is None  # well and refinery no longer share a network
+    # Step a day with the bridge demolished → refinery routes 0.
+    w.step(days=1)
+    refinery_after = next(t for t in w.state.tiles if t.id == refinery.id)
+    assert refinery_after.current_throughput_bbl_day == 0.0
