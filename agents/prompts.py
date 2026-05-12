@@ -63,6 +63,14 @@ Subsurface & oilfield (oilfield-v2):
     capex = base · (1 + (target_z / world_depth)²)
   At z=0 you pay `base`; deeper targets cost more. `world_depth` is
   `config.world_d`; base capex per well_type is in /catalog.
+- Per-voxel oil capacity is small (~4k–17k bbl, mean ~8.5k); a 36-voxel
+  reservoir holds ~300k bbl. Tall reservoirs deplete within the game
+  horizon, so stacking completions on the same surface tile is a real
+  lever for engaged-rollup growth.
+- Stacked completions: two wells may share (x, y) as long as their
+  target_z values differ by ≥ 3 (their 3×3×3 drainage cubes can't
+  overlap). Drilling a second producer at the same (x, y) with
+  |Δz| < 3 returns ok=false with error='completion_overlap'.
 - Pressure support is RATE-based, not cumulative. Each producer's
   `pressure_boost` is recomputed daily from YESTERDAY's flows:
     boost = min(0.5, Σ qualifying_injector_yesterday_rate

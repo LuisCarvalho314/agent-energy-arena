@@ -113,6 +113,12 @@ def test_action_sequence_byte_identical():
         # of seed-specific HC placement (drill returns ok even when
         # the voxel is rock, just yields zero production).
         w.drill(8, 8, 5, "production")
+        # Stacked completion (reservoir-scale-and-stacked-completions #07):
+        # second producer at same (x, y) with |Δz| ≥ 3 is now legal under
+        # the relaxed §4.12 rule. Pinning byte-identity across the stack
+        # ensures the drill order and reservoir-id assignment for the
+        # second completion are deterministic.
+        w.drill(8, 8, 9, "production")
         w.step(days=7)
         return w
 

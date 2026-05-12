@@ -218,6 +218,35 @@ class ScriptedAgent(BaseAgent):
                     self._lay_pipeline_to_refinery(cx_, cy_, tiles, occupied, w, h)
                     return
 
+        # ----- Stacked completion (reservoir-scale-and-stacked-completions
+        # #07): drill a second producer at the same (x, y) of an existing
+        # producer at a target_z ≥ 3 voxels away. The relaxed §4.12 rule
+        # (slice 03) makes this legal as long as the 3×3×3 drainage cubes
+        # don't overlap. Fires at most once per existing producer; we detect
+        # "already stacked" by checking whether any other well shares the
+        # producer's (x, y), so three-deep stacks stay out of scope. The
+        # n_prod_wells fresh-drill cap is NOT applied here — the per-producer
+        # "at most one stack" rule is the bound that matters for this branch.
+        #
+        # The state-level `reservoirs_revealed.top_k` ships only the top 10
+        # voxels by oil×perm; the deeper z's that make a stack legal are
+        # typically lower-ranked and fall outside that window. Query the
+        # richer `/reservoirs?top_k=100` endpoint so the helper sees the
+        # full per-column z-profile under each producer.
+        if treasury >= 50_000:
+            stacked_candidates = self.api.reservoirs(top_k=100).get("voxels", [])
+            stacked = self._pick_stacked_drill_target(wells, stacked_candidates, w, h)
+            if stacked is not None:
+                sx, sy, sz = stacked
+                r = self.api.drill(sx, sy, sz, "production")
+                if r.get("ok"):
+                    well_id = r["result"]["id"]
+                    self.api.control_well(well_id, WELL_RATE_BBL_DAY)
+                    # (sx, sy) is already in `occupied` from the existing
+                    # producer at the same surface tile; no need to re-add.
+                    self._lay_pipeline_to_refinery(sx, sy, tiles, occupied, w, h)
+                    return
+
         # ----- Capacity: housing first, then commercial/industrial ---------
         # Stop building housing in late phase once pop within 90% of capacity.
         # Civilian builds are gated on power: never grow demand past dispatch.
@@ -500,6 +529,73 @@ class ScriptedAgent(BaseAgent):
             if (x, y) in occupied or not _in_bounds(x, y, w, h):
                 continue
             return x, y, z
+        return None
+
+    def _pick_stacked_drill_target(
+        self,
+        wells: list[dict[str, Any]],
+        candidates: list[dict[str, Any]],
+        w: int,
+        h: int,
+    ) -> tuple[int, int, int] | None:
+        """Pick (x, y, z) for a second producer stacked on an existing one.
+
+        Per reservoir-scale-and-stacked-completions slice 07 AC:
+        - Same (x, y) as an existing producer whose `reservoir_id` is non-null
+        - Candidate voxel in that same reservoir with |Δz| ≥ 3 vs the
+          existing completion's `target_z` (the relaxed §4.12 drill rule)
+        - Fire at most once per existing producer — detected by checking
+          whether any other well already shares the producer's (x, y); if
+          so, that producer is treated as already stacked.
+
+        Iterate producers in id (creation) order, then candidates in their
+        existing top_k ranking, so the result is deterministic across runs.
+        """
+        producers = [w_ for w_ in wells if w_["type"] == "production"]
+        if not producers:
+            return None
+        # Count wells per surface tile so we can skip producers that already
+        # carry a stacked completion (three-deep stacks remain out of scope).
+        wells_at_xy: dict[tuple[int, int], int] = {}
+        for w_ in wells:
+            wells_at_xy[(int(w_["x"]), int(w_["y"]))] = (
+                wells_at_xy.get((int(w_["x"]), int(w_["y"])), 0) + 1
+            )
+        for prod in producers:
+            px, py = int(prod["x"]), int(prod["y"])
+            if wells_at_xy.get((px, py), 0) > 1:
+                continue
+            prod_rid = prod.get("reservoir_id")
+            if prod_rid is None:
+                continue
+            prod_z = int(prod["target_z"])
+            # Candidate must be at the producer's (px, py) column — the
+            # whole point of stacking is to reach voxels under the same
+            # surface tile. A same-rid voxel at a different (x, y) would
+            # need a fresh drill anyway, and drilling at (px, py, vz)
+            # where the actual voxel at that coordinate is rock would
+            # leave the new well with reservoir_id=None.
+            for v in candidates:
+                if int(v["x"]) != px or int(v["y"]) != py:
+                    continue
+                if v.get("reservoir_id") != prod_rid:
+                    continue
+                vz = int(v["z"])
+                if abs(vz - prod_z) < 3:
+                    continue
+                # Looser thresholds than fresh drills: the surface tile and
+                # pipeline are sunk costs, so even a stranded low-perm voxel
+                # is worth draining if it has bbl. We keep the oil floor
+                # (no point drilling at a dry voxel) but drop the perm gate
+                # — the 3×3×3 drainage cube aggregates perm across 27
+                # cells, so a single low-perm target voxel is still
+                # commercial when surrounded by higher-perm rock.
+                oil = float(v["oil_estimate_bbl"])
+                if oil < DRILL_OIL_THRESHOLD_BBL:
+                    continue
+                if not _in_bounds(px, py, w, h):
+                    continue
+                return px, py, vz
         return None
 
     def _lay_pipeline_to_refinery(
