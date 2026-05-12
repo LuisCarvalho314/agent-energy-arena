@@ -1617,7 +1617,7 @@
       for (const r of reservoirsSummary) {
         const producerIds = r.producer_ids || [];
         const injectorIds = r.injector_ids || [];
-        const head = `Reservoir R${r.reservoir_id} — est ${fmtBblCompact(r.estimated_bbl || 0)} bbl · remaining ${fmtBblCompact(r.remaining_bbl || 0)} · ${r.n_revealed_voxels || 0} revealed vox · ${producerIds.length}P + ${injectorIds.length}I`;
+        const head = `Reservoir R${r.reservoir_id} — est ${fmtBblCompact(r.estimated_bbl || 0)} bbl · engaged ${fmtBblCompact(r.engaged_bbl || 0)} · remaining ${fmtBblCompact(r.remaining_bbl || 0)} · ${r.n_revealed_voxels || 0} revealed vox · ${producerIds.length}P + ${injectorIds.length}I`;
         emitGroupHeader(head);
         if (producerIds.length === 0 && injectorIds.length === 0) {
           emitEmptyPlaceholder();

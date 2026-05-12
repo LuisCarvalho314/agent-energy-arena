@@ -253,6 +253,68 @@ def test_summarize_state_renders_reservoirs_rollup_above_voxel_block() -> None:
     assert roll_idx < vox_idx
 
 
+def test_summarize_state_reservoirs_rollup_surfaces_engaged_terms() -> None:
+    """Per reservoir, the rollup line must include `engaged=` +
+    `engaged_remain=` slotted between `remain=` and `revealed=`,
+    so the LLM sees the gap between geologic and reachable capacity."""
+    api, _ = _client()
+    api.reset(seed=42)
+    s = dict(api.state())
+    s["reservoirs_summary"] = [
+        {
+            "reservoir_id": 3,
+            "estimated_bbl": 320_000.0,
+            "remaining_bbl": 305_000.0,
+            "engaged_voxel_count": 8,
+            "engaged_bbl": 85_000.0,
+            "engaged_remaining_bbl": 78_000.0,
+            "n_revealed_voxels": 12,
+            "cumulative_produced_bbl": 7_000.0,
+            "cumulative_injected_bbl": 0.0,
+            "producer_ids": ["W1"],
+            "injector_ids": ["W2"],
+        }
+    ]
+    summary = summarize_state(s, forecast=None)
+    # Find the rollup line for R3.
+    line = next(ln for ln in summary.splitlines() if " R3 " in ln)
+    assert "engaged=" in line
+    assert "engaged_remain=" in line
+    # Slotted between remain= and revealed=.
+    rem_idx = line.index("remain=")
+    eng_idx = line.index("engaged=")
+    eng_rem_idx = line.index("engaged_remain=")
+    rev_idx = line.index("revealed=")
+    assert rem_idx < eng_idx < eng_rem_idx < rev_idx
+
+
+def test_summarize_state_reservoirs_rollup_engaged_zero_for_unwelled() -> None:
+    """A reservoir with no wells still surfaces explicit `engaged=0`
+    + `engaged_remain=0` — that gap is the headline "drill here" affordance."""
+    api, _ = _client()
+    api.reset(seed=42)
+    s = dict(api.state())
+    s["reservoirs_summary"] = [
+        {
+            "reservoir_id": 5,
+            "estimated_bbl": 280_000.0,
+            "remaining_bbl": 280_000.0,
+            "engaged_voxel_count": 0,
+            "engaged_bbl": 0.0,
+            "engaged_remaining_bbl": 0.0,
+            "n_revealed_voxels": 10,
+            "cumulative_produced_bbl": 0.0,
+            "cumulative_injected_bbl": 0.0,
+            "producer_ids": [],
+            "injector_ids": [],
+        }
+    ]
+    summary = summarize_state(s, forecast=None)
+    line = next(ln for ln in summary.splitlines() if " R5 " in ln)
+    assert "engaged=0" in line
+    assert "engaged_remain=0" in line
+
+
 def test_summarize_state_surfaces_pipeline_networks_and_orphans() -> None:
     """Top-level `pipeline_networks` + `orphan_well_ids` / `orphan_refinery_ids`
     must appear in the summary so the LLM knows what's connected."""

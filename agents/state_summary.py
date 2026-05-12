@@ -156,6 +156,8 @@ def summarize_state(
                 f"  R{r.get('reservoir_id')} "
                 f"est={_fmt(r.get('estimated_bbl', 0))} "
                 f"remain={_fmt(r.get('remaining_bbl', 0))} "
+                f"engaged={_fmt(r.get('engaged_bbl', 0))} "
+                f"engaged_remain={_fmt(r.get('engaged_remaining_bbl', 0))} "
                 f"revealed={r.get('n_revealed_voxels', 0)}vox "
                 f"wells={n_prod}P+{n_inj}I "
                 f"produced={_fmt(r.get('cumulative_produced_bbl', 0))} "
