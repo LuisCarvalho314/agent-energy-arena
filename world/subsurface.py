@@ -548,6 +548,58 @@ def injector_supports(injector: Any, wells: list[Any]) -> list[str]:
     return out
 
 
+def engaged_voxels(grid: SubsurfaceGrid, wells: list[Any]) -> set[tuple[int, int, int]]:
+    """Voxel positions reached by at least one well's 3×3×3 drainage cube.
+
+    Geometric, reservoir-agnostic union: a well with `reservoir_id=None`
+    (drilled into rock) still contributes its cube. Cube cells are clipped
+    to grid bounds (no padding). The result is a set, so overlapping
+    wells contribute via set union — never double-counted.
+    """
+    out: set[tuple[int, int, int]] = set()
+    for w in wells:
+        wx = int(w.x)
+        wy = int(w.y)
+        wz = int(w.target_z)
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    vx, vy, vz = wx + dx, wy + dy, wz + dz
+                    if 0 <= vx < grid.width and 0 <= vy < grid.height and 0 <= vz < grid.depth:
+                        out.add((vx, vy, vz))
+    return out
+
+
+def engaged_summary(grid: SubsurfaceGrid, wells: list[Any]) -> dict[int, dict[str, Any]]:
+    """Per-reservoir rollup of the engaged set's HC content.
+
+    Walks `engaged_voxels(grid, wells)` in ascending (x, y, z) order
+    (determinism: float-sum order is stable across runs, regardless of
+    Python set iteration), groups by `reservoir_id`, and emits
+    `{engaged_voxel_count, engaged_bbl, engaged_remaining_bbl}` per
+    reservoir. Non-HC cells (no entry in `grid.voxels`) are skipped —
+    they have no reservoir affiliation.
+    """
+    by_rid: dict[int, dict[str, Any]] = {}
+    for key in sorted(engaged_voxels(grid, wells)):
+        v = grid.voxels.get(key)
+        if v is None:
+            continue
+        rid = int(v.reservoir_id)
+        slot = by_rid.setdefault(
+            rid,
+            {
+                "engaged_voxel_count": 0,
+                "engaged_bbl": 0.0,
+                "engaged_remaining_bbl": 0.0,
+            },
+        )
+        slot["engaged_voxel_count"] += 1
+        slot["engaged_bbl"] += float(v.oil_in_place_bbl)
+        slot["engaged_remaining_bbl"] += float(v.oil_remaining_bbl)
+    return by_rid
+
+
 def reservoirs_summary(grid: SubsurfaceGrid, wells: list[Any]) -> list[dict[str, Any]]:
     """Per-reservoir rollup for the Wells-tab grouping + LLM RESERVOIRS block.
 
@@ -572,6 +624,10 @@ def reservoirs_summary(grid: SubsurfaceGrid, wells: list[Any]) -> list[dict[str,
         matching `reservoir_id`.
       * `producer_ids` / `injector_ids` — ascending-sorted lists of
         well-id strings in this reservoir.
+      * `engaged_voxel_count` / `engaged_bbl` / `engaged_remaining_bbl`
+        — `engaged_summary` rollup for this reservoir, or explicit zeros
+        when the reservoir is revealed but unwelled (the zero is the
+        "drill here" affordance, so we don't omit it).
     """
     revealed_by_id: dict[int, list[Voxel]] = {}
     for v in grid.voxels.values():
@@ -590,6 +646,8 @@ def reservoirs_summary(grid: SubsurfaceGrid, wells: list[Any]) -> list[dict[str,
         elif getattr(w, "type", None) == "injection":
             injectors_by_id.setdefault(int(rid), []).append(w)
 
+    engaged = engaged_summary(grid, wells)
+
     out: list[dict[str, Any]] = []
     for rid in sorted(revealed_by_id.keys()):
         voxels = revealed_by_id[rid]
@@ -601,6 +659,10 @@ def reservoirs_summary(grid: SubsurfaceGrid, wells: list[Any]) -> list[dict[str,
         injs = injectors_by_id.get(rid, [])
         cum_produced = sum(float(w.cumulative_produced_bbl) for w in prods)
         cum_injected = sum(float(w.cumulative_injected_bbl) for w in injs)
+        e = engaged.get(
+            rid,
+            {"engaged_voxel_count": 0, "engaged_bbl": 0.0, "engaged_remaining_bbl": 0.0},
+        )
         out.append(
             {
                 "reservoir_id": rid,
@@ -611,6 +673,9 @@ def reservoirs_summary(grid: SubsurfaceGrid, wells: list[Any]) -> list[dict[str,
                 "cumulative_injected_bbl": cum_injected,
                 "producer_ids": sorted(str(w.id) for w in prods),
                 "injector_ids": sorted(str(w.id) for w in injs),
+                "engaged_voxel_count": int(e["engaged_voxel_count"]),
+                "engaged_bbl": float(e["engaged_bbl"]),
+                "engaged_remaining_bbl": float(e["engaged_remaining_bbl"]),
             }
         )
     return out

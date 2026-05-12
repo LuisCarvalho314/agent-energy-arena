@@ -21,6 +21,8 @@ from world.subsurface import (
     SEISMIC_MIN_SIZE,
     VOXEL_VOLUME_BBL,
     drill_collision,
+    engaged_summary,
+    engaged_voxels,
     generate_subsurface,
     injector_supports,
     reservoirs_summary,
@@ -955,3 +957,226 @@ def test_api_drill_rejects_tile_occupied_road_on_surface():
     ).json()
     assert r["ok"] is False
     assert r["error"] == "tile_occupied"
+
+
+# -- engaged-rollup helpers (reservoir-scale-and-stacked-completions #05) --
+
+
+def test_engaged_voxels_empty_for_empty_wells():
+    w = World()
+    w.reset(seed=42)
+    assert engaged_voxels(w.subsurface, []) == set()
+
+
+def test_engaged_voxels_interior_well_yields_27_cells():
+    """A well centered well inside the grid bounds engages a full 3×3×3
+    cube — 27 (x, y, z) positions, regardless of HC-affiliation."""
+    w = World()
+    w.reset(seed=42)
+    well = _make_producer("W1", 10, 10, 8, reservoir_id=1)
+    out = engaged_voxels(w.subsurface, [well])
+    assert len(out) == 27
+    # Every returned coord must be in the well's 3×3×3 cube.
+    for vx, vy, vz in out:
+        assert abs(vx - 10) <= 1 and abs(vy - 10) <= 1 and abs(vz - 8) <= 1
+
+
+def test_engaged_voxels_clips_to_grid_at_corner():
+    """A well at the (0, 0, 0) corner engages a 2×2×2 cube (8 cells) —
+    the out-of-grid half is clipped (no padding)."""
+    w = World()
+    w.reset(seed=42)
+    well = _make_producer("W1", 0, 0, 0, reservoir_id=1)
+    out = engaged_voxels(w.subsurface, [well])
+    assert out == {(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)}
+
+
+def test_engaged_voxels_disjoint_union_for_non_overlapping_wells():
+    w = World()
+    w.reset(seed=42)
+    a = _make_producer("Wa", 5, 5, 8, reservoir_id=1)
+    b = _make_producer("Wb", 20, 20, 8, reservoir_id=1)
+    out = engaged_voxels(w.subsurface, [a, b])
+    assert len(out) == 54  # 27 + 27, disjoint
+
+
+def test_engaged_voxels_set_union_for_overlapping_wells():
+    """Two wells whose 3×3×3 cubes overlap return the set union, not the
+    sum — voxels are counted once."""
+    w = World()
+    w.reset(seed=42)
+    a = _make_producer("Wa", 10, 10, 8, reservoir_id=1)
+    # Δx=1 → x-axis cubes share a 2-wide y×z slab = 2*3*3 = 18 voxels.
+    b = _make_producer("Wb", 11, 10, 8, reservoir_id=1)
+    out = engaged_voxels(w.subsurface, [a, b])
+    # 27 + 27 - 18 (overlap) = 36
+    assert len(out) == 36
+
+
+def test_engaged_voxels_null_reservoir_well_contributes_cube():
+    """A well with reservoir_id=None (drilled into rock) still contributes
+    its geometric cube to the engaged set — the helper is reservoir-agnostic."""
+    w = World()
+    w.reset(seed=42)
+    rock = _make_producer("Wrock", 10, 10, 8, reservoir_id=None)
+    out = engaged_voxels(w.subsurface, [rock])
+    assert len(out) == 27
+
+
+def test_engaged_summary_empty_when_no_wells():
+    w = World()
+    w.reset(seed=42)
+    assert engaged_summary(w.subsurface, []) == {}
+
+
+def test_engaged_summary_one_well_count_equals_hc_voxels_in_cube():
+    """For a well drilled into a reservoir, `engaged_voxel_count` equals
+    the number of HC voxels in the well's 3×3×3 cube."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    # Count HC voxels in the 3×3×3 cube around (hc.x, hc.y, hc.z).
+    expected_count = sum(
+        1
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+        if w.subsurface.get(hc.x + dx, hc.y + dy, hc.z + dz) is not None
+    )
+    well = _make_producer("W1", hc.x, hc.y, hc.z, reservoir_id=hc.reservoir_id)
+    out = engaged_summary(w.subsurface, [well])
+    assert hc.reservoir_id in out
+    assert out[hc.reservoir_id]["engaged_voxel_count"] == expected_count
+
+
+def test_engaged_summary_overlapping_wells_use_union_not_double_count():
+    """Two overlapping wells in the same reservoir aggregate via set
+    union; the engaged_bbl is NOT the sum-of-cubes (which would
+    double-count the overlap)."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    a = _make_producer("Wa", hc.x, hc.y, hc.z, reservoir_id=hc.reservoir_id)
+    b = _make_producer("Wb", hc.x, hc.y, hc.z, reservoir_id=hc.reservoir_id)
+    single = engaged_summary(w.subsurface, [a])
+    double = engaged_summary(w.subsurface, [a, b])
+    # Identical wells → engaged set is identical → identical engaged stats.
+    assert single[hc.reservoir_id] == double[hc.reservoir_id]
+
+
+def test_engaged_summary_null_reservoir_well_not_aggregated():
+    """A well drilled into rock contributes geometric cells to
+    `engaged_voxels` but those cells are non-HC, so they don't roll up
+    into any reservoir bucket in `engaged_summary`."""
+    w = World()
+    w.reset(seed=42)
+    # Place the well in a corner where the 3×3×3 cube is very unlikely
+    # to overlap any HC voxel.
+    rock = _make_producer("Wrock", 0, 0, 0, reservoir_id=None)
+    out = engaged_summary(w.subsurface, [rock])
+    # If any HC voxels happened to land in that corner cube, they'd be
+    # aggregated into their reservoir; we only pin "no null bucket".
+    assert None not in out
+
+
+def test_engaged_summary_sums_oil_in_place_and_remaining_over_engaged_set():
+    """`engaged_bbl` and `engaged_remaining_bbl` sum exactly the HC voxels
+    in the engaged set, treating their oil_in_place / oil_remaining fields
+    as ground truth."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    well = _make_producer("W1", hc.x, hc.y, hc.z, reservoir_id=hc.reservoir_id)
+    expected_bbl = 0.0
+    expected_remain = 0.0
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                v = w.subsurface.get(hc.x + dx, hc.y + dy, hc.z + dz)
+                if v is not None and v.reservoir_id == hc.reservoir_id:
+                    expected_bbl += v.oil_in_place_bbl
+                    expected_remain += v.oil_remaining_bbl
+    out = engaged_summary(w.subsurface, [well])
+    row = out[hc.reservoir_id]
+    assert row["engaged_bbl"] == pytest.approx(expected_bbl)
+    assert row["engaged_remaining_bbl"] == pytest.approx(expected_remain)
+
+
+def test_reservoirs_summary_carries_engaged_keys_additively():
+    """`/state.reservoirs_summary` entries gain the three engaged keys
+    additively — every prior key is still present."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    w.survey(hc.x, hc.y, size=4)
+    out = reservoirs_summary(w.subsurface, w.state.wells)
+    assert out, "expected at least one revealed reservoir"
+    row = next(r for r in out if r["reservoir_id"] == hc.reservoir_id)
+    # Pre-existing keys preserved.
+    for key in (
+        "reservoir_id",
+        "estimated_bbl",
+        "remaining_bbl",
+        "n_revealed_voxels",
+        "cumulative_produced_bbl",
+        "cumulative_injected_bbl",
+        "producer_ids",
+        "injector_ids",
+    ):
+        assert key in row, f"missing legacy key {key!r}"
+    # New keys present.
+    for key in ("engaged_voxel_count", "engaged_bbl", "engaged_remaining_bbl"):
+        assert key in row, f"missing engaged key {key!r}"
+
+
+def test_reservoirs_summary_engaged_zero_for_revealed_but_unwelled_reservoir():
+    """A revealed reservoir with no wells still appears in the rollup;
+    its `engaged_voxel_count` is 0 (the explicit zero is the "drill here"
+    affordance)."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    w.survey(hc.x, hc.y, size=4)
+    # No wells drilled — `w.state.wells` is empty.
+    out = reservoirs_summary(w.subsurface, w.state.wells)
+    row = next(r for r in out if r["reservoir_id"] == hc.reservoir_id)
+    assert row["engaged_voxel_count"] == 0
+    assert row["engaged_bbl"] == 0.0
+    assert row["engaged_remaining_bbl"] == 0.0
+
+
+def test_reservoirs_summary_engaged_counts_match_helper_for_drilled_reservoir():
+    """When a producer has been drilled, the rollup's engaged stats match
+    `engaged_summary` for that reservoir."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    w.survey(hc.x, hc.y, size=4)
+    w.state.treasury = 10_000_000
+    r = w.drill(hc.x, hc.y, hc.z, well_type="production")
+    assert r["ok"], r
+    rollup = reservoirs_summary(w.subsurface, w.state.wells)
+    helper = engaged_summary(w.subsurface, w.state.wells)
+    row = next(r for r in rollup if r["reservoir_id"] == hc.reservoir_id)
+    assert row["engaged_voxel_count"] == helper[hc.reservoir_id]["engaged_voxel_count"]
+    assert row["engaged_bbl"] == pytest.approx(helper[hc.reservoir_id]["engaged_bbl"])
+    assert row["engaged_remaining_bbl"] == pytest.approx(
+        helper[hc.reservoir_id]["engaged_remaining_bbl"]
+    )
+
+
+def test_state_reservoirs_summary_byte_stable_across_consecutive_calls():
+    """No actions between two `state_dict()` calls → the
+    `reservoirs_summary` payload is byte-identical. Determinism pin: the
+    engaged-rollup must not depend on Python's set iteration order."""
+    import json
+
+    w = World()
+    w.reset(seed=42)
+    w.state.treasury = 10_000_000
+    hc = next(iter(w.subsurface.voxels.values()))
+    w.survey(hc.x, hc.y, size=4)
+    w.drill(hc.x, hc.y, hc.z, well_type="production")
+    a = json.dumps(w.state_dict()["reservoirs_summary"], sort_keys=False)
+    b = json.dumps(w.state_dict()["reservoirs_summary"], sort_keys=False)
+    assert a == b
