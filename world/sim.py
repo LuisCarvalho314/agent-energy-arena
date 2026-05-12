@@ -829,10 +829,11 @@ class World:
         if coal_kwh or gas_kwh:
             coal_cost_per_mwh = TILE_CATALOG["coal_plant"].fuel_cost_per_mwh
             gas_cost_per_mwh = TILE_CATALOG["gas_peaker"].fuel_cost_per_mwh
-            shock = fuel_price_shock_multiplier(self.state)
-            fuel_total = shock * (
-                (coal_kwh / 1000.0) * coal_cost_per_mwh + (gas_kwh / 1000.0) * gas_cost_per_mwh
-            )
+            coal_shock = fuel_price_shock_multiplier(self.state, "coal_plant")
+            gas_shock = fuel_price_shock_multiplier(self.state, "gas_peaker")
+            fuel_total = (coal_kwh / 1000.0) * coal_cost_per_mwh * coal_shock + (
+                gas_kwh / 1000.0
+            ) * gas_cost_per_mwh * gas_shock
             self.state.treasury -= fuel_total
             self.state.today_summary_so_far["fuel_cost"] = fuel_total
 

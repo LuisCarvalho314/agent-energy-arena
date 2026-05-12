@@ -9,8 +9,8 @@ don't interleave with the deterministic weather sequence.
 | Event                  | Probability       | Duration (days) | Effect                            |
 |-----------------------|-------------------|-----------------|-----------------------------------|
 | heatwave              | 0.003 daily       | 5 fixed         | residential demand × 1.40         |
-| plant_failure         | 0.001 per fossil  | 3-7 uniform     | affected plant outputs 0 kW       |
-| fuel_price_shock      | 0.002 daily       | 30 fixed        | gas + coal fuel cost × 2          |
+| plant_failure         | per-type (gas 0.0014 / coal 0.0006) | 3-7 uniform | affected plant outputs 0 kW |
+| fuel_price_shock      | 0.002 daily       | 30 fixed        | gas fuel × 2.5, coal fuel × 1.3   |
 | demand_surprise       | 0.003 daily       | 10 fixed        | I+C demand × 1.30                 |
 | regulatory_tightening | 0.001 daily (cap 3) | permanent     | carbon_price × 1.5                |
 
@@ -46,7 +46,12 @@ if TYPE_CHECKING:
 
 # Probabilities (per day unless noted).
 HEATWAVE_PROB: float = 0.003
-PLANT_FAILURE_PROB_PER_PLANT: float = 0.001
+# Per-fossil-type plant-failure daily probability. Average stays near 0.001/day;
+# gas is rolled at 0.0014 (more failure-prone) and coal at 0.0006 (baseload).
+PLANT_FAILURE_PROB: dict[str, float] = {
+    "gas_peaker": 0.0014,
+    "coal_plant": 0.0006,
+}
 FUEL_PRICE_SHOCK_PROB: float = 0.002
 DEMAND_SURPRISE_PROB: float = 0.003
 REGULATORY_TIGHTENING_PROB: float = 0.001
@@ -60,7 +65,15 @@ DEMAND_SURPRISE_DURATION: int = 10
 
 # Multipliers / constants.
 HEATWAVE_RESIDENTIAL_MULT: float = 1.40
-FUEL_PRICE_SHOCK_MULT: float = 2.0
+# Fuel-shock multipliers split per fuel type: gas exposure is sharp, coal
+# (historically more contract-locked) drags less. Severity stored on the
+# active-event record uses the gas mult as the headline figure.
+GAS_FUEL_SHOCK_MULT: float = 2.5
+COAL_FUEL_SHOCK_MULT: float = 1.3
+FUEL_SHOCK_MULT_BY_TYPE: dict[str, float] = {
+    "gas_peaker": GAS_FUEL_SHOCK_MULT,
+    "coal_plant": COAL_FUEL_SHOCK_MULT,
+}
 DEMAND_SURPRISE_IC_MULT: float = 1.30
 REGULATORY_TIGHTENING_MULT: float = 1.5
 REGULATORY_TIGHTENING_MAX_OCCURRENCES: int = 3
@@ -81,9 +94,14 @@ def fuel_price_shock_active(state: WorldState) -> bool:
     return _has_active(state, "fuel_price_shock")
 
 
-def fuel_price_shock_multiplier(state: WorldState) -> float:
-    """Return 2.0 when a fuel_price_shock is active, else 1.0."""
-    return FUEL_PRICE_SHOCK_MULT if fuel_price_shock_active(state) else 1.0
+def fuel_price_shock_multiplier(state: WorldState, fuel_type: str) -> float:
+    """Return the per-fuel-type shock multiplier (≥1.0) for the named fossil
+    plant type (`gas_peaker` or `coal_plant`). Returns 1.0 when no shock is
+    active.
+    """
+    if not fuel_price_shock_active(state):
+        return 1.0
+    return FUEL_SHOCK_MULT_BY_TYPE[fuel_type]
 
 
 def expire_finite_events(world: World) -> None:
@@ -136,14 +154,14 @@ def sample_and_apply_events(world: World) -> None:
             }
         )
 
-    # 2. Fuel price shock (gas + coal ×2 for 30 days).
+    # 2. Fuel price shock (gas ×2.5 + coal ×1.3 for 30 days).
     if not _has_active(state, "fuel_price_shock") and float(rng.random()) < FUEL_PRICE_SHOCK_PROB:
         state.active_events.append(
             {
                 "type": "fuel_price_shock",
                 "started_day": today,
                 "ends_day": today + FUEL_PRICE_SHOCK_DURATION,
-                "severity": FUEL_PRICE_SHOCK_MULT,
+                "severity": GAS_FUEL_SHOCK_MULT,
             }
         )
 
@@ -181,7 +199,7 @@ def sample_and_apply_events(world: World) -> None:
         key=lambda t: t.id,
     )
     for plant in fossil_plants:
-        if float(rng.random()) < PLANT_FAILURE_PROB_PER_PLANT:
+        if float(rng.random()) < PLANT_FAILURE_PROB[plant.type]:
             # Always consume the duration draw so the RNG sequence is stable
             # regardless of whether this plant is already in a failed state.
             duration = int(

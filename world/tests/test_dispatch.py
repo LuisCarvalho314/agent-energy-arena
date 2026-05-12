@@ -63,7 +63,21 @@ def test_plant_capacities_match_spec() -> None:
     assert TILE_CATALOG["solar_farm"].capacity_kw == 150
     assert TILE_CATALOG["wind_turbine"].capacity_kw == 200
     assert TILE_CATALOG["gas_peaker"].capacity_kw == 500
-    assert TILE_CATALOG["coal_plant"].capacity_kw == 800
+    assert TILE_CATALOG["coal_plant"].capacity_kw == 1500
+
+
+def test_coal_cheaper_per_mwh_than_gas_at_default_carbon() -> None:
+    """All-in $/MWh = fuel + carbon × CO2 intensity. At the default carbon
+    price ($25/t) coal should beat gas — the post-rebalance rule that
+    positions coal as the baseload anchor.
+    """
+    from world.economy import CARBON_PRICE_USD_PER_TON
+
+    coal_spec = TILE_CATALOG["coal_plant"]
+    gas_spec = TILE_CATALOG["gas_peaker"]
+    coal_all_in = coal_spec.fuel_cost_per_mwh + CARBON_PRICE_USD_PER_TON * coal_spec.co2_t_per_mwh
+    gas_all_in = gas_spec.fuel_cost_per_mwh + CARBON_PRICE_USD_PER_TON * gas_spec.co2_t_per_mwh
+    assert coal_all_in < gas_all_in
 
 
 def test_plants_do_not_require_road_adjacency() -> None:
@@ -148,10 +162,12 @@ def test_coal_can_ramp_down_to_must_run_freely() -> None:
 def test_coal_holds_output_when_prev_above_must_run() -> None:
     """If prev was above must-run and demand is high, coal stays near prev."""
     p = _plant("coal_plant")
-    prev = {p.id: 600.0}  # last hour at 600 kW (above must-run).
+    cap = TILE_CATALOG["coal_plant"].capacity_kw
+    prev = {p.id: 600.0}  # last hour at 600 kW (above must-run = cap × 0.25).
     outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs=prev, weather={}, D=0, h=12)
-    # Should ramp to min(cap, prev+ramp_room) = min(800, 680) = 680.
-    assert outputs[p.id] == pytest.approx(680.0)
+    # Should ramp to min(cap, prev + ramp_room) where ramp_room = cap × 0.10.
+    expected = min(cap, 600.0 + cap * COAL_RAMP_PER_HOUR)
+    assert outputs[p.id] == pytest.approx(expected)
 
 
 # -- Gas peakers (Step 4) ---------------------------------------------------

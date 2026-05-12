@@ -112,7 +112,7 @@ class ScriptedAgent(BaseAgent):
 
         # Dispatchable capacity (the only thing that helps at night) — gas
         # + coal nameplate. Renewables don't count toward reserve at peak.
-        dispatchable_kw = n_gas * 500.0 + n_coal * 800.0
+        dispatchable_kw = n_gas * 500.0 + n_coal * 1500.0
         # Expected peak demand (evening hour, factor 1.5 + commercial full +
         # industrial continuous). Used as a build-out gating predicate so
         # the agent never lets demand outrun reliable supply.
