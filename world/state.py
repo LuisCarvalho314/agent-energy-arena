@@ -62,6 +62,11 @@ class Well:
     # Workforce slice 01: hired headcount. Allocator fills/drains; defaults to
     # 0 until `world.workforce.hire_to_fill` runs.
     staffed_jobs: int = 0
+    # oilfield-v2 slice 01: 1-indexed reservoir tag resolved at drill time
+    # from the target voxel. None when the target voxel is non-HC rock —
+    # the well is still recorded, but it has no reservoir affiliation and
+    # cannot participate in same-reservoir pressure pairing.
+    reservoir_id: int | None = None
 
 
 @dataclass

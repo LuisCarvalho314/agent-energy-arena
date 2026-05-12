@@ -9,6 +9,7 @@ contract that anchors step-size invariance is unaffected).
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +64,12 @@ class Voxel:
     oil_saturation: float
     oil_in_place_bbl: float
     oil_remaining_bbl: float
+    # 1-indexed reservoir tag assigned at generation time. Every HC voxel
+    # belongs to exactly one reservoir; the BFS percolation generator
+    # guarantees that all voxels with the same `reservoir_id` form a single
+    # 26-connected component. Non-HC voxels are absent from `grid.voxels`
+    # entirely, so the 0 default is only reachable by test-only construction.
+    reservoir_id: int = 0
     # Append-only history of survey readings — one entry per survey that
     # included this voxel in its column. Resurveys produce independent noise
     # samples (PRD §"Subsurface").
@@ -98,16 +105,67 @@ def is_size_valid(size: int) -> bool:
     return SEISMIC_MIN_SIZE <= size <= SEISMIC_MAX_SIZE
 
 
+def _neighbors_26(
+    x: int, y: int, z: int, width: int, height: int, depth: int
+) -> list[tuple[int, int, int]]:
+    """26-connected in-bounds neighbors of (x, y, z), in fixed iteration order
+    (dx -1..1, dy -1..1, dz -1..1; skipping the origin). Deterministic order
+    matters for the BFS frontier so seed-42 reproduces byte-identically."""
+    out: list[tuple[int, int, int]] = []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx == 0 and dy == 0 and dz == 0:
+                    continue
+                nx, ny, nz = x + dx, y + dy, z + dz
+                if 0 <= nx < width and 0 <= ny < height and 0 <= nz < depth:
+                    out.append((nx, ny, nz))
+    return out
+
+
+def _make_voxel(rng: np.random.Generator, x: int, y: int, z: int, reservoir_id: int) -> Voxel:
+    """Draw porosity, permeability, oil-saturation from §3.5 distributions
+    and build the Voxel. Always consumes exactly three RNG draws so the
+    per-voxel cost is independent of acceptance bookkeeping."""
+    porosity = float(rng.uniform(POROSITY_MIN, POROSITY_MAX))
+    perm = float(np.exp(rng.uniform(np.log(PERM_LOG_MIN), np.log(PERM_LOG_MAX))))
+    s_o = float(rng.uniform(OIL_SAT_MIN, OIL_SAT_MAX))
+    oip = porosity * s_o * VOXEL_VOLUME_BBL
+    return Voxel(
+        x=x,
+        y=y,
+        z=z,
+        porosity=porosity,
+        permeability=perm,
+        oil_saturation=s_o,
+        oil_in_place_bbl=oip,
+        oil_remaining_bbl=oip,
+        reservoir_id=reservoir_id,
+    )
+
+
 def generate_subsurface(
     rng: np.random.Generator, width: int, height: int, depth: int
 ) -> SubsurfaceGrid:
-    """Place 3-7 reservoir blobs per §3.5 of the brief.
+    """Place 3-7 reservoir blobs via BFS percolation (oilfield-v2 PRD §1).
 
-    For each blob: random center (z ∈ [4, depth-2]), radius r ∈ [3, 6], and
-    every voxel within Manhattan distance r is HC-bearing with probability
-    `0.6 · (1 - dist/r)`. Geological properties are drawn per the brief's
-    distributions. First blob to claim a voxel wins (subsequent blobs leave
-    it alone).
+    For each blob:
+      * Pick a seed (cx, cy, cz) with cz ∈ [4, depth-2] and radius r ∈ [3, 6].
+      * The seed voxel is always accepted (unless already claimed by an
+        earlier blob, in which case the entire blob is skipped).
+      * Expand via a FIFO frontier seeded with the 26-connected neighbors of
+        the seed. A candidate is accepted iff:
+          - within Manhattan distance r of the seed,
+          - passes p = HC_PROBABILITY_BASE × (1 - dist/r),
+          - not already claimed (by this or any previous blob), and
+          - has ≥ 1 already-accepted same-blob neighbor in its 3×3×3
+            neighborhood (guaranteed-by-construction here because the
+            frontier is fed exclusively by accepted neighbors).
+      * Accepted voxels are tagged with `reservoir_id = blob_idx + 1`.
+
+    Each blob is a single 26-connected component because the frontier never
+    advances past a non-accepted voxel; two blobs that spawn adjacent stay
+    distinct because each voxel is claimed by exactly one blob.
     """
     grid = SubsurfaceGrid(width=width, height=height, depth=depth)
     n_blobs = int(rng.integers(N_RESERVOIRS_MIN, N_RESERVOIRS_MAX + 1))
@@ -117,46 +175,67 @@ def generate_subsurface(
     if z_hi < z_lo:
         return grid  # degenerate world dimensions; no reservoirs
 
-    for _ in range(n_blobs):
+    for blob_idx in range(n_blobs):
         cx = int(rng.integers(0, width))
         cy = int(rng.integers(0, height))
         cz = int(rng.integers(z_lo, z_hi + 1))
         r = int(rng.integers(BLOB_RADIUS_MIN, BLOB_RADIUS_MAX + 1))
+        reservoir_id = blob_idx + 1
 
-        for dx in range(-r, r + 1):
-            for dy in range(-r, r + 1):
-                for dz in range(-r, r + 1):
-                    dist = abs(dx) + abs(dy) + abs(dz)
-                    if dist > r:
-                        continue
-                    x, y, z = cx + dx, cy + dy, cz + dz
-                    if not (0 <= x < width and 0 <= y < height and 0 <= z < depth):
-                        continue
-                    if (x, y, z) in grid.voxels:
-                        continue
-                    p_hc = HC_PROBABILITY_BASE * (1.0 - dist / r) if r > 0 else 0.0
-                    # Draw the trial roll regardless of ordering tricks so
-                    # the RNG sequence stays reproducible voxel-by-voxel.
-                    roll = float(rng.random())
-                    if roll >= p_hc:
-                        continue
+        if not (0 <= cx < width and 0 <= cy < height and 0 <= cz < depth):
+            continue
+        if (cx, cy, cz) in grid.voxels:
+            # Seed already claimed by an earlier blob. Skip without
+            # consuming the property-RNG quota — the blob simply yields no
+            # voxels.
+            continue
 
-                    porosity = float(rng.uniform(POROSITY_MIN, POROSITY_MAX))
-                    perm = float(np.exp(rng.uniform(np.log(PERM_LOG_MIN), np.log(PERM_LOG_MAX))))
-                    s_o = float(rng.uniform(OIL_SAT_MIN, OIL_SAT_MAX))
-                    oip = porosity * s_o * VOXEL_VOLUME_BBL
-                    grid.voxels[(x, y, z)] = Voxel(
-                        x=x,
-                        y=y,
-                        z=z,
-                        porosity=porosity,
-                        permeability=perm,
-                        oil_saturation=s_o,
-                        oil_in_place_bbl=oip,
-                        oil_remaining_bbl=oip,
-                    )
+        grid.voxels[(cx, cy, cz)] = _make_voxel(rng, cx, cy, cz, reservoir_id)
+
+        # `attempted` tracks every cell this blob has rolled (whether
+        # accepted or rejected) so duplicate frontier entries don't burn
+        # extra RNG draws. The seed is implicitly in here — we never re-add
+        # the seed to the frontier.
+        attempted: set[tuple[int, int, int]] = {(cx, cy, cz)}
+        frontier: deque[tuple[int, int, int]] = deque(
+            _neighbors_26(cx, cy, cz, width, height, depth)
+        )
+
+        while frontier:
+            x, y, z = frontier.popleft()
+            if (x, y, z) in attempted:
+                continue
+            attempted.add((x, y, z))
+            if (x, y, z) in grid.voxels:
+                continue  # claimed by an earlier blob; no RNG draws here
+            dist = abs(x - cx) + abs(y - cy) + abs(z - cz)
+            if dist > r:
+                continue
+            p_hc = HC_PROBABILITY_BASE * (1.0 - dist / r) if r > 0 else 0.0
+            roll = float(rng.random())
+            if roll >= p_hc:
+                continue
+            grid.voxels[(x, y, z)] = _make_voxel(rng, x, y, z, reservoir_id)
+            for nb in _neighbors_26(x, y, z, width, height, depth):
+                if nb in attempted:
+                    continue
+                frontier.append(nb)
 
     return grid
+
+
+def voxel_reservoir_id(grid: SubsurfaceGrid, x: int, y: int, z: int) -> int | None:
+    """Return the `reservoir_id` of the voxel at (x, y, z), or None if the
+    cell is non-HC (no entry in `grid.voxels`)."""
+    v = grid.get(x, y, z)
+    return None if v is None else v.reservoir_id
+
+
+def well_reservoir_id(grid: SubsurfaceGrid, x: int, y: int, target_z: int) -> int | None:
+    """Return the `reservoir_id` of the voxel a well at (x, y) would target
+    at `target_z`. Drilling into rock (non-HC voxel) returns None — the well
+    is recorded but has no reservoir affiliation."""
+    return voxel_reservoir_id(grid, x, y, target_z)
 
 
 def _column_bounds(x: int, y: int, size: int, width: int, height: int) -> tuple[int, int, int, int]:
@@ -243,6 +322,7 @@ def revealed_voxels(
                 "x": v.x,
                 "y": v.y,
                 "z": v.z,
+                "reservoir_id": v.reservoir_id,
                 "oil_estimate_bbl": oil_est,
                 "perm_estimate_md": perm_est,
                 "survey_day": day,

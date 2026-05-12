@@ -21,6 +21,8 @@ from world.subsurface import (
     VOXEL_VOLUME_BBL,
     generate_subsurface,
     survey_cost,
+    voxel_reservoir_id,
+    well_reservoir_id,
 )
 from world.subsurface import survey as run_survey
 
@@ -59,6 +61,7 @@ def test_reservoir_generation_reproducible_same_seed():
         assert va.permeability == vb.permeability
         assert va.porosity == vb.porosity
         assert va.oil_saturation == vb.oil_saturation
+        assert va.reservoir_id == vb.reservoir_id
 
 
 def test_different_seeds_produce_different_grids():
@@ -361,3 +364,165 @@ def test_subsurface_survey_does_not_break_step_determinism_when_no_surveys():
     for _ in range(7):
         b.step(days=1)
     assert a.sim_rng.standard_normal() == b.sim_rng.standard_normal()
+
+
+# -- BFS reservoirs + reservoir_id (oilfield-v2 slice 01) ------------------
+
+
+def _connected_component_size(
+    voxel_set: set[tuple[int, int, int]], start: tuple[int, int, int]
+) -> int:
+    """Flood fill from `start` over `voxel_set` under 26-connectivity. Returns
+    the visited count — used by tests to assert each reservoir is one
+    connected component."""
+    from collections import deque
+
+    visited = {start}
+    q = deque([start])
+    while q:
+        x, y, z = q.popleft()
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    if dx == 0 and dy == 0 and dz == 0:
+                        continue
+                    nb = (x + dx, y + dy, z + dz)
+                    if nb in voxel_set and nb not in visited:
+                        visited.add(nb)
+                        q.append(nb)
+    return len(visited)
+
+
+def test_every_blob_is_single_26_connected_component():
+    """For seed 42 (and a handful of others) every distinct `reservoir_id`
+    flood-fills into all of its voxels under 26-connectivity — the BFS
+    generator's connectivity-by-construction guarantee."""
+    for seed in (42, 0, 1, 7, 99):
+        w = World()
+        w.reset(seed=seed)
+        by_id: dict[int, list[tuple[int, int, int]]] = {}
+        for v in w.subsurface.voxels.values():
+            by_id.setdefault(v.reservoir_id, []).append((v.x, v.y, v.z))
+        assert by_id, f"seed={seed} produced no HC voxels"
+        for rid, voxels in by_id.items():
+            visited = _connected_component_size(set(voxels), voxels[0])
+            assert visited == len(voxels), (
+                f"seed={seed} R{rid} not connected: flood reached {visited} of {len(voxels)} voxels"
+            )
+
+
+def test_every_hc_voxel_has_reservoir_id_at_least_1():
+    w = World()
+    w.reset(seed=42)
+    for v in w.subsurface.voxels.values():
+        assert v.reservoir_id >= 1
+
+
+def test_reservoir_id_stable_across_reset():
+    """Resetting with the same seed twice produces the same per-voxel
+    `reservoir_id`s. Already covered by the byte-identical-voxels test, but
+    pinned independently so a future regression doesn't accidentally swap
+    blob-iteration order without tripping any other assertion."""
+    a = World()
+    b = World()
+    a.reset(seed=42)
+    b.reset(seed=42)
+    for key, va in a.subsurface.voxels.items():
+        assert va.reservoir_id == b.subsurface.voxels[key].reservoir_id
+
+
+def test_adjacent_blobs_retain_distinct_reservoir_ids():
+    """A seed where two blob seeds spawn close enough that their grown
+    components touch under 26-connectivity. The BFS generator never
+    re-tags a voxel claimed by an earlier blob, so the seam stays at the
+    boundary and the two reservoirs keep distinct `reservoir_id`s."""
+    # seed=2 produces blobs whose 26-neighborhoods touch (R2 ↔ R5).
+    rng = np.random.default_rng(2)
+    grid = generate_subsurface(rng, 32, 32, 16)
+    distinct_id_pairs: set[tuple[int, int]] = set()
+    for (x, y, z), v in grid.voxels.items():
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for dz in (-1, 0, 1):
+                    if dx == 0 and dy == 0 and dz == 0:
+                        continue
+                    n = grid.get(x + dx, y + dy, z + dz)
+                    if n is not None and n.reservoir_id != v.reservoir_id:
+                        lo, hi = sorted((v.reservoir_id, n.reservoir_id))
+                        distinct_id_pairs.add((lo, hi))
+    assert distinct_id_pairs, (
+        "seed=2 should produce at least one pair of 26-adjacent voxels with "
+        "different reservoir_ids — if this assertion fires, the seed-2 layout "
+        "has shifted and the test fixture needs a new constructed seed"
+    )
+
+
+def test_voxel_reservoir_id_helper_returns_none_for_non_hc():
+    w = World()
+    w.reset(seed=42)
+    # (0, 0, 0) is rock on seed 42 — well outside any blob.
+    assert voxel_reservoir_id(w.subsurface, 0, 0, 0) is None
+    # Pick a known HC voxel and round-trip its id.
+    hc = next(iter(w.subsurface.voxels.values()))
+    assert voxel_reservoir_id(w.subsurface, hc.x, hc.y, hc.z) == hc.reservoir_id
+
+
+def test_well_reservoir_id_helper_matches_target_voxel():
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    assert well_reservoir_id(w.subsurface, hc.x, hc.y, hc.z) == hc.reservoir_id
+    # Rock target → None.
+    rock_xy = (0, 0)
+    rock_z = 0
+    assert w.subsurface.get(*rock_xy, rock_z) is None
+    assert well_reservoir_id(w.subsurface, *rock_xy, rock_z) is None
+
+
+def test_drilled_well_carries_target_voxel_reservoir_id():
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    w.state.treasury = 1_000_000  # ensure drill succeeds
+    res = w.drill(hc.x, hc.y, hc.z, "production")
+    assert res["ok"] is True
+    assert res["result"]["reservoir_id"] == hc.reservoir_id
+    well = w.state.wells[-1]
+    assert well.reservoir_id == hc.reservoir_id
+
+
+def test_drilled_well_into_rock_has_none_reservoir_id():
+    w = World()
+    w.reset(seed=42)
+    w.state.treasury = 1_000_000
+    # (0, 0, 0) is rock on seed 42 (no voxel record).
+    res = w.drill(0, 0, 0, "production")
+    assert res["ok"] is True
+    assert res["result"]["reservoir_id"] is None
+    assert w.state.wells[-1].reservoir_id is None
+
+
+def test_state_wells_expose_reservoir_id():
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    w.state.treasury = 1_000_000
+    w.drill(hc.x, hc.y, hc.z, "production")
+    state = w.state_dict()
+    assert state["wells"][-1]["reservoir_id"] == hc.reservoir_id
+
+
+def test_reservoirs_revealed_rows_carry_reservoir_id():
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    w.survey(hc.x, hc.y, size=8)
+    rr = w.state_dict()["reservoirs_revealed"]
+    assert rr["top_k"], "expected at least one revealed voxel"
+    for row in rr["top_k"]:
+        assert "reservoir_id" in row
+        assert row["reservoir_id"] >= 1
+    # /reservoirs endpoint mirror.
+    res = w.reservoirs(min_oil=0.0, top_k=50)
+    for row in res["voxels"]:
+        assert row["reservoir_id"] >= 1

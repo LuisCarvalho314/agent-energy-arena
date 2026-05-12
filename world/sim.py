@@ -59,6 +59,7 @@ from world.subsurface import (
     revealed_voxels,
     survey_cost,
     well_production_bbl_day,
+    well_reservoir_id,
 )
 from world.subsurface import survey as run_survey
 from world.weather import (
@@ -168,6 +169,7 @@ def _well_to_dict(w: Well, world: World) -> dict[str, Any]:
         "x": w.x,
         "y": w.y,
         "target_z": w.target_z,
+        "reservoir_id": w.reservoir_id,
         "drilled_day": w.drilled_day,
         "setpoint_rate_bbl_day": w.setpoint_rate_bbl_day,
         "current_rate_bbl_day": w.current_rate_bbl_day,
@@ -461,6 +463,7 @@ class World:
             drilled_day=self.state.day,
             capex_paid=spec.capex,
             opex_per_day=spec.opex_per_day,
+            reservoir_id=well_reservoir_id(self.subsurface, x, y, target_z),
         )
         self.state.wells.append(well)
         hire_to_fill(self.state)
