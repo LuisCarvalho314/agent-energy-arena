@@ -212,12 +212,15 @@ def test_injection_ramps_at_curtailment():
     w.state.population = 0
     w.state.treasury = 10_000_000.0
     w.build("coal_plant", 5, 5)  # forces some baseline
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    coal.staffed_jobs = coal.jobs  # pop=0; force-staff so plant dispatches
     w.state.power_now["balance_state"] = "curtailment"
     w.drill(10, 10, 8, "injection")
-    setpoint = 50.0
-    w.control_well(w.state.wells[0].id, setpoint)
-    w.step(days=1)
     iw = w.state.wells[0]
+    iw.staffed_jobs = 2  # injection_well jobs=2; force-staff under pop=0
+    setpoint = 50.0
+    w.control_well(iw.id, setpoint)
+    w.step(days=1)
     # If curtailment held all 24 hours, cumulative = 2 × setpoint = 100 bbl.
     # In practice, supply is ~200 kW (coal must-run) and demand from
     # injection alone is ~200 kW too, so dispatch may move to balanced after
@@ -438,6 +441,124 @@ def test_step_size_invariance_with_injection_wells():
     assert a_prod.cumulative_produced_bbl == pytest.approx(b_prod.cumulative_produced_bbl)
     assert a_inj.cumulative_injected_bbl == pytest.approx(b_inj.cumulative_injected_bbl)
     assert a.state.treasury == pytest.approx(b.state.treasury)
+
+
+# -- Workforce slice 07: efficiency scales injection baseline + DR cap -----
+
+
+def test_half_staffed_injection_baseline_halves():
+    """At balanced, an injection well's hourly draw equals
+    `setpoint × KWH_PER_BBL / 24 × efficiency`. Half-staffed (jobs=2,
+    staffed=1) cuts that figure exactly in half."""
+    w = World()
+    w.reset(seed=42)
+    w.state.population = 0
+    w.state.treasury = 10_000_000.0
+    w.build("coal_plant", 5, 5)
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    coal.staffed_jobs = coal.jobs
+    w.state.power_now["balance_state"] = "balanced"
+    w.drill(10, 10, 8, "injection")
+    inj = w.state.wells[0]
+    inj.staffed_jobs = 1  # injection_well jobs=2
+    setpoint = 100.0
+    w.control_well(inj.id, setpoint)
+    w.step(days=1)
+    # Hour 0 prev=balanced, well delivers eff_baseline = setpoint×50/24×0.5 kW
+    # → bbl/hr = setpoint/24×0.5. Over a day held at balanced, total ≈
+    # setpoint × 0.5. Loose lower bound (only first hour is guaranteed
+    # balanced from the pre-set prev_balance).
+    expected_first_hour_bbl = setpoint / 24.0 * 0.5
+    # The well injected at half-rate hour 0 at minimum.
+    assert inj.cumulative_injected_bbl >= expected_first_hour_bbl - 1e-9
+    # Upper bound: even if every hour stayed in curtailment mode
+    # (max scaled DR cap), bbl/day cannot exceed setpoint × efficiency
+    # (since 2×baseline gets capped by hardware cap, but cap is also
+    # scaled by efficiency; min(2×base×eff, cap×eff) = eff × min(2×base, cap)
+    # → bbl/day ≤ Q_MAX × eff = 100). With setpoint=100, 2×baseline=200×eff=100
+    # so curtailment-bbl/hr = setpoint×eff/12, /day = setpoint×eff×2 = 100.
+    assert inj.cumulative_injected_bbl <= setpoint * 2.0 * 0.5 + 1e-9
+
+
+def test_idle_injection_draws_zero_baseline():
+    """staffed_jobs=0 → injection draws 0 kW at every hour and injects 0 bbl."""
+    w = World()
+    w.reset(seed=42)
+    w.state.population = 0
+    w.state.treasury = 10_000_000.0
+    w.build("coal_plant", 5, 5)
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    coal.staffed_jobs = coal.jobs
+    w.state.power_now["balance_state"] = "balanced"
+    w.drill(10, 10, 8, "injection")
+    inj = w.state.wells[0]
+    inj.staffed_jobs = 0
+    w.control_well(inj.id, 200.0)
+    w.step(days=1)
+    assert inj.cumulative_injected_bbl == 0.0
+    assert w.state.today_summary_so_far["injection_kw"] == 0.0
+
+
+def test_idle_injection_offers_zero_dr_headroom():
+    """Even forced into curtailment, an idle well never ramps."""
+    w = World()
+    w.reset(seed=42)
+    w.state.population = 0
+    w.state.treasury = 10_000_000.0
+    w.build("coal_plant", 5, 5)
+    coal = next(t for t in w.state.tiles if t.type == "coal_plant")
+    coal.staffed_jobs = coal.jobs
+    w.state.power_now["balance_state"] = "curtailment"
+    w.drill(10, 10, 8, "injection")
+    inj = w.state.wells[0]
+    inj.staffed_jobs = 0
+    w.control_well(inj.id, 100.0)
+    w.step(days=1)
+    assert inj.cumulative_injected_bbl == 0.0
+
+
+def test_half_staffed_injection_pool_intersection_still_recovers_pressure_proportionally():
+    """A half-staffed injection well injects half the bbl per day, so its
+    cumulative_injected_bbl feeding pressure_boost is exactly half what a
+    fully-staffed well would contribute. Pool-intersection itself (geological)
+    is unchanged — the proportionally reduced recovery follows from the
+    halved injection rate, not from any intersection-mode toggle."""
+
+    def setup(staffed: int) -> World:
+        w = World()
+        w.reset(seed=42)
+        w.state.treasury = 10_000_000.0
+        w.build("coal_plant", 5, 5)
+        w.build("coal_plant", 6, 5)
+        hc = _hc_voxel(w)
+        for v in w.subsurface.voxels.values():
+            if abs(v.x - hc.x) <= 1 and abs(v.y - hc.y) <= 1 and abs(v.z - hc.z) <= 1:
+                v.oil_remaining_bbl = 0.05 * v.oil_in_place_bbl
+        w.drill(hc.x, hc.y, hc.z, "production")
+        w.control_well(w.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+        w.drill(hc.x + 1, hc.y, hc.z, "injection")
+        inj = w.state.wells[-1]
+        w.control_well(inj.id, Q_MAX_WELL_BBL_DAY)
+        inj.staffed_jobs = staffed
+        return w
+
+    full = setup(2)  # injection_well jobs=2 → fully staffed
+    half = setup(1)
+    for _ in range(3):
+        full.step(days=5)
+        half.step(days=5)
+    full_inj = next(ww for ww in full.state.wells if ww.type == "injection")
+    half_inj = next(ww for ww in half.state.wells if ww.type == "injection")
+    # Half-staffed well injects strictly less than fully staffed (the linear
+    # halving is approximate end-to-end because the production well consumes
+    # crude, but the inequality is robust).
+    assert half_inj.cumulative_injected_bbl < full_inj.cumulative_injected_bbl
+    assert half_inj.cumulative_injected_bbl > 0.0
+    # Production trajectory also strictly less for half-staffed inj → less
+    # pressure_boost → less production.
+    full_prod = next(ww for ww in full.state.wells if ww.type == "production")
+    half_prod = next(ww for ww in half.state.wells if ww.type == "production")
+    assert half_prod.cumulative_produced_bbl < full_prod.cumulative_produced_bbl
 
 
 # -- API smoke -------------------------------------------------------------

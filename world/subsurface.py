@@ -293,6 +293,7 @@ def well_production_bbl_day(
     setpoint_rate_bbl_day: float,
     *,
     inj_total_bbl: float = 0.0,
+    efficiency: float = 1.0,
 ) -> float:
     """Run the brief §4.5 production formula for one day. Mutates
     `oil_remaining_bbl` on the pool's HC voxels by perm × remaining
@@ -303,6 +304,13 @@ def well_production_bbl_day(
     pool (caller computes this). It maps to `pressure_boost = min(0.5,
     inj_total / V_init)`; `effective_fraction = min(1.0, fraction +
     pressure_boost)`. Slice 08 lights up this term.
+
+    `efficiency` is the staffing ratio in [0, 1] from
+    ``workforce.efficiency(well)``; it scales the effective max
+    production cap (``Q_MAX_WELL_BBL_DAY × efficiency``). The
+    player-facing setpoint is **not** clamped by efficiency — only the
+    realised throughput is. Idle wells (``efficiency=0``) produce 0
+    bbl/day regardless of setpoint or reservoir.
     """
     pool, n_positions = voxels_in_3x3x3(grid, x, y, target_z)
     if n_positions == 0:
@@ -315,7 +323,8 @@ def well_production_bbl_day(
     k_eff = sum(v.permeability for v in pool) / n_positions / PERM_NORMALIZATION_MD
     pressure_boost = min(PRESSURE_BOOST_MAX, inj_total_bbl / V_init)
     effective_fraction = min(1.0, fraction + pressure_boost)
-    q_potential = Q_MAX_WELL_BBL_DAY * k_eff * effective_fraction
+    effective_q_max = Q_MAX_WELL_BBL_DAY * efficiency
+    q_potential = effective_q_max * k_eff * effective_fraction
     q_actual = max(0.0, min(float(setpoint_rate_bbl_day), q_potential))
 
     weights = [v.permeability * v.oil_remaining_bbl for v in pool]

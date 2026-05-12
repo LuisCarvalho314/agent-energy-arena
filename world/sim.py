@@ -17,6 +17,7 @@ from typing import Any
 
 import numpy as np
 
+from world import workforce
 from world.catalog import TILE_CATALOG, is_buildable
 from world.config import Config, load_config
 from world.economy import (
@@ -534,8 +535,13 @@ class World:
             for iw in self.state.wells:
                 if iw.type != "injection":
                     continue
-                baseline_kw = iw.setpoint_rate_bbl_day * INJECTION_KWH_PER_BBL / 24.0
-                cap_kw = Q_MAX_WELL_BBL_DAY * INJECTION_KWH_PER_BBL / 24.0
+                # Workforce slice 07: baseline + hardware cap both scale linearly
+                # with the well's staffing efficiency. An idle injection well
+                # draws 0 kW and has 0 DR headroom; a half-staffed well delivers
+                # half the baseline and half the max curtailment ramp.
+                eff = workforce.efficiency(iw)
+                baseline_kw = iw.setpoint_rate_bbl_day * INJECTION_KWH_PER_BBL / 24.0 * eff
+                cap_kw = Q_MAX_WELL_BBL_DAY * INJECTION_KWH_PER_BBL / 24.0 * eff
                 if prev_balance in ("brownout", "blackout"):
                     power_kw = 0.0
                 elif prev_balance == "curtailment":
@@ -696,6 +702,7 @@ class World:
                 well.target_z,
                 well.setpoint_rate_bbl_day,
                 inj_total_bbl=inj_total,
+                efficiency=workforce.efficiency(well),
             )
             well.current_rate_bbl_day = q
             well.cumulative_produced_bbl += q

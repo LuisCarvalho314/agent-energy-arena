@@ -452,6 +452,81 @@ def test_drill_and_step_size_invariance():
     assert a.state.treasury == pytest.approx(b.state.treasury)
 
 
+# -- Workforce slice 07: efficiency scales oil-well production -------------
+
+
+def test_half_staffed_oil_well_caps_at_efficiency_scaled_q_max():
+    """`well_production_bbl_day` scales the effective q_max by efficiency.
+    A 33%-staffed well with k_eff=1, fraction=1 produces ~0.33 × Q_MAX."""
+    grid = SubsurfaceGrid(width=10, height=10, depth=10)
+    # Build a 27-voxel pool with perm tuned so k_eff = 1.0 exactly.
+    # k_eff = mean(perm)/PERM_NORMALIZATION_MD; to get 1.0 with n_positions=27
+    # all HC voxels at perm=PERM_NORMALIZATION_MD × 27 / n_voxels gives sum/27
+    # = perm/n_voxels × n_voxels/27 ... easier to just fill all 27 with perm=500.
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                grid.voxels[(5 + dx, 5 + dy, 5 + dz)] = _make_voxel(
+                    5 + dx, 5 + dy, 5 + dz, perm=PERM_NORMALIZATION_MD, oil=200_000.0
+                )
+    # k_eff = (500 × 27) / 27 / 500 = 1.0; fraction = 1.0. q_potential at full
+    # staff = 200 bbl/day; at efficiency=1/3 → ~66.67 bbl/day.
+    q = well_production_bbl_day(
+        grid, 5, 5, 5, setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY, efficiency=1.0 / 3.0
+    )
+    assert q == pytest.approx(Q_MAX_WELL_BBL_DAY / 3.0)
+
+
+def test_idle_oil_well_produces_zero():
+    """Efficiency=0 → q_potential=0 regardless of setpoint or reservoir."""
+    grid = SubsurfaceGrid(width=10, height=10, depth=10)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                grid.voxels[(5 + dx, 5 + dy, 5 + dz)] = _make_voxel(
+                    5 + dx, 5 + dy, 5 + dz, perm=1000.0, oil=200_000.0
+                )
+    q = well_production_bbl_day(
+        grid, 5, 5, 5, setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY, efficiency=0.0
+    )
+    assert q == 0.0
+    # Reservoir untouched.
+    assert grid.voxels[(5, 5, 5)].oil_remaining_bbl == 200_000.0
+
+
+def test_fully_staffed_oil_well_matches_v1_baseline():
+    """`efficiency=1.0` (default) reproduces the pre-slice-07 formula
+    byte-for-byte (existing test_q_potential_matches_brief_formula_*)."""
+    grid = SubsurfaceGrid(width=10, height=10, depth=10)
+    grid.voxels[(5, 5, 5)] = _make_voxel(5, 5, 5, perm=500.0, oil=100_000.0)
+    q_default = well_production_bbl_day(grid, 5, 5, 5, setpoint_rate_bbl_day=200.0)
+    grid.voxels[(5, 5, 5)] = _make_voxel(5, 5, 5, perm=500.0, oil=100_000.0)
+    q_explicit = well_production_bbl_day(grid, 5, 5, 5, setpoint_rate_bbl_day=200.0, efficiency=1.0)
+    assert q_default == pytest.approx(q_explicit)
+
+
+def test_setpoint_not_auto_clamped_by_well_efficiency():
+    """End-to-end: dropping staffed_jobs leaves setpoint unchanged; only
+    current_rate_bbl_day reflects the reduced cap."""
+    w = World()
+    w.reset(seed=42)
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    well = w.state.wells[0]
+    w.control_well(well.id, Q_MAX_WELL_BBL_DAY)
+    well.staffed_jobs = 1  # 1/3 of jobs=3
+    w.step(days=1)
+    assert well.setpoint_rate_bbl_day == Q_MAX_WELL_BBL_DAY
+    # Realised production reflects the efficiency cap (and the seed-42 voxel's
+    # k_eff/fraction); strictly less than full-staff production at same setpoint.
+    fully_staffed = World()
+    fully_staffed.reset(seed=42)
+    fully_staffed.drill(hc.x, hc.y, hc.z, "production")
+    fully_staffed.control_well(fully_staffed.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
+    fully_staffed.step(days=1)
+    assert well.current_rate_bbl_day < fully_staffed.state.wells[0].current_rate_bbl_day
+
+
 def test_catalog_exposes_well_specs():
     from world.catalog import build_catalog
 
