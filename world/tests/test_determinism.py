@@ -136,6 +136,86 @@ def test_action_sequence_byte_identical():
     assert a_vox == b_vox
 
 
+def test_seed_42_post_upgrade_replay_byte_identical():
+    """balance-upgrade-p0 #06: pin byte-identical replay on seed 42 after the
+    upgrade lands (battery dispatch, coal rebalance + per-fuel shock, spatial
+    happiness, heatwave solar derate).
+
+    A judge replaying the eval-seed run end-to-end must observe the same
+    final treasury, population, tile state (including new battery fields
+    `soc_kwh` and `charge_setpoint_kw`), active_events sequence, and
+    cumulative renewable-share counters. Two same-seed worlds running the
+    same scripted-style action sequence (build solar + battery, set a
+    manual charge setpoint, step a long stretch so dispatch + events have
+    a chance to fire) must agree byte-for-byte.
+
+    Distinct from `test_action_sequence_byte_identical` (which pre-dates
+    the upgrade and focuses on build/survey/drill); this test specifically
+    pins the post-upgrade contract: battery state survives `step()`,
+    event roll cadence is unchanged, and the new per-fuel shock + spatial
+    happiness paths are byte-stable on seed 42.
+    """
+
+    def _play() -> World:
+        w = World()
+        w.reset(seed=42)
+        th = next(t for t in w.state.tiles if t.type == "town_hall")
+        # Exercise the new post-upgrade code paths: a battery sitting next
+        # to renewable supply with a non-zero manual setpoint, plus a coal
+        # plant so the per-fuel shock branch is touchable by the events
+        # roll, plus residential/industrial so spatial happiness has
+        # something to evaluate.
+        w.build("road", th.x + 1, th.y)
+        w.build("road", th.x + 2, th.y)
+        w.build("house", th.x + 1, th.y + 1)
+        w.build("industrial", th.x + 2, th.y + 1)
+        w.build("solar_farm", th.x + 3, th.y)
+        w.build("battery", th.x + 4, th.y)
+        w.build("coal_plant", th.x + 5, th.y)
+        battery = next(t for t in w.state.tiles if t.type == "battery")
+        # Negative setpoint exercises the discharge-only manual branch in
+        # `battery_discharge_step`; the value is preserved across step().
+        w.control_battery(battery.id, charge_kw=-50.0)
+        # Long enough to give the events RNG room to draw (heatwave +
+        # fuel shock at ~0.003/day each, plus the per-plant failure roll
+        # cadence) and to accumulate measurable renewable-share kwh.
+        w.step(days=7)
+        w.step(days=7)
+        return w
+
+    a = _play()
+    b = _play()
+
+    # Core balance + headline state.
+    assert a.state.treasury == b.state.treasury
+    assert a.state.population == b.state.population
+
+    # Battery fields land on Tile (issue 01 contract: soc_kwh +
+    # charge_setpoint_kw survive step()). Pinned by full dict-equality.
+    a_tiles = [asdict(t) for t in a.state.tiles]
+    b_tiles = [asdict(t) for t in b.state.tiles]
+    assert a_tiles == b_tiles
+
+    # Renewable-share accumulators (issue 02 contract: battery discharge
+    # counts in numerator and denominator).
+    assert a.state.cumulative_total_served_kwh == b.state.cumulative_total_served_kwh
+    assert a.state.cumulative_renewable_served_kwh == b.state.cumulative_renewable_served_kwh
+
+    # Event sequence (issue 03 contract: per-plant roll cadence is
+    # unchanged — only the per-type threshold moves).
+    assert a.state.active_events == b.state.active_events
+    assert a.state.historical_events == b.state.historical_events
+
+    # Carbon price + regulatory tightenings are downstream of the same
+    # RNG stream; pinning here guards against silent drift in the
+    # tightening counter on seed 42.
+    assert a.state.carbon_price == b.state.carbon_price
+    assert a.state.regulatory_tightenings_applied == b.state.regulatory_tightenings_applied
+
+    # RNG state must match for any subsequent draw.
+    assert a.sim_rng.standard_normal() == b.sim_rng.standard_normal()
+
+
 def test_step_clamps_days_range():
     """`days` must be in [1, 7]."""
     import pytest
