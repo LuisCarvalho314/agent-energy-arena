@@ -21,6 +21,7 @@ from world.subsurface import (
     SEISMIC_MIN_SIZE,
     VOXEL_VOLUME_BBL,
     generate_subsurface,
+    injector_supports,
     reservoirs_summary,
     survey_cost,
     voxel_reservoir_id,
@@ -735,3 +736,123 @@ def test_api_state_exposes_reservoirs_summary_top_level_key():
     s = client.get("/state").json()
     assert "reservoirs_summary" in s
     assert isinstance(s["reservoirs_summary"], list)
+
+
+# -- injector_supports gate (wells-reservoir-rollup #02) -------------------
+
+
+def test_injector_supports_excludes_cross_reservoir_producers():
+    """A producer in a different reservoir than the injector is never
+    qualified, regardless of distance."""
+    inj = _make_injector("I1", 10, 10, 8, reservoir_id=3)
+    same_close = _make_producer("P_same", 10, 10, 8, reservoir_id=3)  # cheb=0
+    cross_far = _make_producer("P_cross", 0, 0, 0, reservoir_id=5)  # cheb large
+    out = injector_supports(inj, [inj, same_close, cross_far])
+    assert "P_cross" not in out
+
+
+def test_injector_supports_excludes_chebyshev_1_producers():
+    """Producers at Chebyshev distance 1 (adjacent) fail the breakthrough
+    gate and are excluded."""
+    inj = _make_injector("I1", 10, 10, 8, reservoir_id=3)
+    adj_x = _make_producer("P_x", 11, 10, 8, reservoir_id=3)  # cheb=1
+    adj_diag = _make_producer("P_d", 11, 11, 9, reservoir_id=3)  # cheb=1
+    same_cell = _make_producer("P_0", 10, 10, 8, reservoir_id=3)  # cheb=0
+    out = injector_supports(inj, [inj, adj_x, adj_diag, same_cell])
+    assert out == []
+
+
+def test_injector_supports_includes_chebyshev_ge_2_same_reservoir():
+    """Producers at Chebyshev ≥ 2 in the same reservoir are included."""
+    inj = _make_injector("I1", 10, 10, 8, reservoir_id=3)
+    far_x = _make_producer("P_a", 12, 10, 8, reservoir_id=3)  # cheb=2
+    far_diag = _make_producer("P_b", 13, 13, 11, reservoir_id=3)  # cheb=3
+    out = injector_supports(inj, [inj, far_x, far_diag])
+    assert out == ["P_a", "P_b"]
+
+
+def test_injector_supports_returns_ascending_sorted_producer_ids():
+    """Multiple qualifying producers are sorted ascending by id."""
+    inj = _make_injector("I1", 10, 10, 8, reservoir_id=3)
+    wells = [
+        inj,
+        _make_producer("W9", 12, 10, 8, reservoir_id=3),
+        _make_producer("W1", 13, 10, 8, reservoir_id=3),
+        _make_producer("W5", 10, 12, 8, reservoir_id=3),
+    ]
+    out = injector_supports(inj, wells)
+    assert out == ["W1", "W5", "W9"]
+
+
+def test_injector_supports_null_reservoir_injector_returns_empty():
+    """An injector drilled into rock (reservoir_id=None) has no reservoir
+    to share, so it never qualifies for any producer."""
+    inj = _make_injector("I1", 10, 10, 8, reservoir_id=None)
+    producers = [
+        _make_producer("W1", 12, 10, 8, reservoir_id=3),
+        _make_producer("W2", 12, 10, 8, reservoir_id=None),
+    ]
+    out = injector_supports(inj, [inj, *producers])
+    assert out == []
+
+
+def test_injector_supports_returns_empty_for_production_well():
+    """Producers carry the field for type symmetry only — the helper
+    returns `[]` for any non-injection well."""
+    prod = _make_producer("P1", 10, 10, 8, reservoir_id=3)
+    other = _make_producer("P2", 13, 13, 11, reservoir_id=3)
+    assert injector_supports(prod, [prod, other]) == []
+
+
+def test_well_to_dict_injection_carries_supports_producer_ids():
+    """`_well_to_dict` populates `supports_producer_ids` on injection wells
+    from the same-reservoir + Chebyshev > 1 gate."""
+    w = World()
+    w.reset(seed=42)
+    # Find a producer voxel and an injector voxel that share a reservoir id
+    # AND sit at Chebyshev > 1 from each other (so the gate qualifies).
+    voxels = list(w.subsurface.voxels.values())
+    pairs = (
+        (a, b)
+        for a in voxels
+        for b in voxels
+        if a is not b
+        and a.reservoir_id == b.reservoir_id
+        and max(abs(a.x - b.x), abs(a.y - b.y), abs(a.z - b.z)) > 1
+        and (a.x, a.y) != (b.x, b.y)  # /drill rejects same (x, y)
+    )
+    prod_vox, inj_vox = next(pairs)
+    r = w.drill(prod_vox.x, prod_vox.y, prod_vox.z, well_type="production")
+    assert r["ok"], r
+    prod_id = r["result"]["id"]
+    r = w.drill(inj_vox.x, inj_vox.y, inj_vox.z, well_type="injection")
+    assert r["ok"], r
+    inj_dict = r["result"]
+    assert inj_dict["type"] == "injection"
+    assert inj_dict["supports_producer_ids"] == [prod_id]
+
+
+def test_well_to_dict_production_carries_empty_supports_list():
+    """Production wells carry `supports_producer_ids = []` for type symmetry."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    r = w.drill(hc.x, hc.y, hc.z, well_type="production")
+    assert r["ok"], r
+    assert r["result"]["supports_producer_ids"] == []
+
+
+def test_state_wells_supports_producer_ids_present_on_injection():
+    """The `/state` payload's injection-well dicts carry the new field."""
+    w = World()
+    w.reset(seed=42)
+    hc = next(iter(w.subsurface.voxels.values()))
+    r = w.drill(hc.x, hc.y, hc.z, well_type="injection")
+    assert r["ok"], r
+    client = TestClient(create_app(world=w))
+    s = client.get("/state").json()
+    inj_dicts = [ww for ww in s["wells"] if ww["type"] == "injection"]
+    assert inj_dicts, "expected at least one injection well in /state"
+    for iw in inj_dicts:
+        assert "supports_producer_ids" in iw
+        assert isinstance(iw["supports_producer_ids"], list)

@@ -464,6 +464,48 @@ def reservoirs_voxel_summary(grid: SubsurfaceGrid, *, top_k: int = 10) -> dict[s
     }
 
 
+def injector_supports(injector: Any, wells: list[Any]) -> list[str]:
+    """Producer ids that an injection well currently qualifies to support.
+
+    Owns the same-reservoir + Chebyshev > 1 gate used by the rate-based
+    pressure_boost in `world.sim._advance_one_day`. A producer qualifies
+    iff:
+      * it shares `injector.reservoir_id` (both non-None), AND
+      * its `(x, y, target_z)` sits at 3D Chebyshev distance strictly
+        greater than 1 from the injector's `(x, y, target_z)` (the
+        breakthrough gate).
+
+    Injectors with `reservoir_id is None` (drilled into rock) always
+    return `[]` — no reservoir to share. Non-injection wells passed in
+    also return `[]`; the field exists on producer dicts only for type
+    symmetry. Result is sorted by ascending producer-id string.
+    """
+    rid = getattr(injector, "reservoir_id", None)
+    if rid is None:
+        return []
+    if getattr(injector, "type", None) != "injection":
+        return []
+    ix = int(injector.x)
+    iy = int(injector.y)
+    iz = int(injector.target_z)
+    out: list[str] = []
+    for w in wells:
+        if getattr(w, "type", None) != "production":
+            continue
+        if getattr(w, "reservoir_id", None) != rid:
+            continue
+        cheb = max(
+            abs(int(w.x) - ix),
+            abs(int(w.y) - iy),
+            abs(int(w.target_z) - iz),
+        )
+        if cheb <= 1:
+            continue
+        out.append(str(w.id))
+    out.sort()
+    return out
+
+
 def reservoirs_summary(grid: SubsurfaceGrid, wells: list[Any]) -> list[dict[str, Any]]:
     """Per-reservoir rollup for the Wells-tab grouping + LLM RESERVOIRS block.
 

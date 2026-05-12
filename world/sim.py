@@ -56,6 +56,7 @@ from world.subsurface import (
     SubsurfaceGrid,
     drill_capex,
     generate_subsurface,
+    injector_supports,
     is_size_valid,
     reservoirs_summary,
     reservoirs_voxel_summary,
@@ -160,12 +161,15 @@ def _well_to_dict(w: Well, world: World) -> dict[str, Any]:
         well_injection_kwh_per_day,
     )
 
-    del world  # currently unused; mirrors _tile_to_dict signature for parity
     revenue = well_gross_crude_value_for_tile(w)
     injection_kwh = well_injection_kwh_per_day(w)
     # Injection wells: power cost is internalized through plants, so Net is
     # -opex with no $-cost from kWh consumption.
     net = revenue - w.opex_per_day if w.type == "production" else -w.opex_per_day
+    # wells-reservoir-rollup #02: surface the same-reservoir + Chebyshev > 1
+    # gate that `_advance_one_day` uses for `pressure_boost`. Producers carry
+    # `[]` for type symmetry; UI ignores the field on producer rows.
+    supports: list[str] = injector_supports(w, world.state.wells) if w.type == "injection" else []
     return {
         "id": w.id,
         "type": w.type,
@@ -184,6 +188,7 @@ def _well_to_dict(w: Well, world: World) -> dict[str, Any]:
         "capex_paid": w.capex_paid,
         "opex_per_day": w.opex_per_day,
         "staffed_jobs": w.staffed_jobs,
+        "supports_producer_ids": supports,
         "estimated_revenue_per_day": revenue,
         "injection_power_kwh_per_day": injection_kwh,
         "estimated_net_per_day": net,
@@ -792,26 +797,22 @@ class World:
         # pressure_boost = min(0.5, qualifying_inj_rate / max(prod_yest, 1))
         # where qualifying injectors share the producer's reservoir_id AND
         # sit at Chebyshev distance > 1 from the producer's target (no
-        # breakthrough). Yesterday's rates were snapshotted at the top of
-        # this method.
+        # breakthrough). The qualification gate is owned by the
+        # `injector_supports` helper (wells-reservoir-rollup #02) so this
+        # loop and `_well_to_dict` use the same source of truth. Yesterday's
+        # rates were snapshotted at the top of this method.
+        qualifying_injectors_by_prod: dict[str, list[Well]] = {}
+        for iw in self.state.wells:
+            if iw.type != "injection":
+                continue
+            for prod_id in injector_supports(iw, self.state.wells):
+                qualifying_injectors_by_prod.setdefault(prod_id, []).append(iw)
         for well in self.state.wells:
             if well.type != "production":
                 continue
-            qualifying_inj_rate = 0.0
-            if well.reservoir_id is not None:
-                for iw in self.state.wells:
-                    if iw.type != "injection":
-                        continue
-                    if iw.reservoir_id != well.reservoir_id:
-                        continue
-                    cheb = max(
-                        abs(iw.x - well.x),
-                        abs(iw.y - well.y),
-                        abs(iw.target_z - well.target_z),
-                    )
-                    if cheb <= 1:
-                        continue  # breakthrough gate
-                    qualifying_inj_rate += iw.yesterday_rate_bbl_day
+            qualifying_inj_rate = sum(
+                iw.yesterday_rate_bbl_day for iw in qualifying_injectors_by_prod.get(well.id, [])
+            )
             # oilfield-v2 slice 04: stamp the inputs/output of the rate-based
             # pressure term on the producer so /state and the popup can report
             # the same numbers fed into today's production calc.
