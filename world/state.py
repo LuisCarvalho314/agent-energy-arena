@@ -67,6 +67,12 @@ class Well:
     # the well is still recorded, but it has no reservoir affiliation and
     # cannot participate in same-reservoir pressure pairing.
     reservoir_id: int | None = None
+    # oilfield-v2 slice 03: per-day snapshot of `current_rate_bbl_day` taken
+    # at the start of `_advance_one_day` (before production/injection
+    # computation). Producers consume their own and qualifying injectors'
+    # value to compute the rate-based pressure_boost. Day-0 / day-of-drill:
+    # stays at 0 so a freshly-drilled well gets no boost on its first day.
+    yesterday_rate_bbl_day: float = 0.0
 
 
 @dataclass

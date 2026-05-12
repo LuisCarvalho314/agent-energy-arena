@@ -372,18 +372,26 @@ def well_production_bbl_day(
     target_z: int,
     setpoint_rate_bbl_day: float,
     *,
-    inj_total_bbl: float = 0.0,
+    qualifying_inj_rate_bbl_day: float = 0.0,
+    producer_yesterday_rate_bbl_day: float = 0.0,
     efficiency: float = 1.0,
 ) -> float:
     """Run the brief §4.5 production formula for one day. Mutates
     `oil_remaining_bbl` on the pool's HC voxels by perm × remaining
     weights, and returns `q_actual` (bbl produced today).
 
-    `inj_total_bbl` is the sum of `cumulative_injected_bbl` across all
-    injection wells whose 3×3×3 pools intersect this production well's
-    pool (caller computes this). It maps to `pressure_boost = min(0.5,
-    inj_total / V_init)`; `effective_fraction = min(1.0, fraction +
-    pressure_boost)`. Slice 08 lights up this term.
+    `qualifying_inj_rate_bbl_day` is the sum of `yesterday_rate_bbl_day`
+    across injection wells that (a) share the producer's `reservoir_id`
+    and (b) sit at Chebyshev distance > 1 from the producer's target
+    voxel (avoiding the breakthrough gate). Caller (sim.py) computes
+    this. `producer_yesterday_rate_bbl_day` is this producer's own
+    `yesterday_rate_bbl_day` snapshot.
+
+    Pressure term (oilfield-v2 §"Rate-based pressure"):
+        pressure_boost = min(0.5, qualifying_inj_rate
+                                  / max(producer_yesterday_rate, 1.0))
+    On the day a well is drilled both yesterday rates are 0 so
+    pressure_boost = 0 that day.
 
     `efficiency` is the staffing ratio in [0, 1] from
     ``workforce.efficiency(well)``; it scales the effective max
@@ -401,7 +409,10 @@ def well_production_bbl_day(
     V_remain = sum(v.oil_remaining_bbl for v in pool)
     fraction = V_remain / V_init
     k_eff = sum(v.permeability for v in pool) / n_positions / PERM_NORMALIZATION_MD
-    pressure_boost = min(PRESSURE_BOOST_MAX, inj_total_bbl / V_init)
+    pressure_boost = min(
+        PRESSURE_BOOST_MAX,
+        qualifying_inj_rate_bbl_day / max(producer_yesterday_rate_bbl_day, 1.0),
+    )
     effective_fraction = min(1.0, fraction + pressure_boost)
     effective_q_max = Q_MAX_WELL_BBL_DAY * efficiency
     q_potential = effective_q_max * k_eff * effective_fraction

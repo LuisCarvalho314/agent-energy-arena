@@ -54,7 +54,6 @@ from world.subsurface import (
     SubsurfaceGrid,
     generate_subsurface,
     is_size_valid,
-    pools_intersect,
     reservoirs_summary,
     revealed_voxels,
     survey_cost,
@@ -173,6 +172,7 @@ def _well_to_dict(w: Well, world: World) -> dict[str, Any]:
         "drilled_day": w.drilled_day,
         "setpoint_rate_bbl_day": w.setpoint_rate_bbl_day,
         "current_rate_bbl_day": w.current_rate_bbl_day,
+        "yesterday_rate_bbl_day": w.yesterday_rate_bbl_day,
         "cumulative_produced_bbl": w.cumulative_produced_bbl,
         "cumulative_injected_bbl": w.cumulative_injected_bbl,
         "capex_paid": w.capex_paid,
@@ -560,6 +560,14 @@ class World:
         for k in self.state.today_summary_so_far:
             self.state.today_summary_so_far[k] = 0.0
 
+        # oilfield-v2 slice 03: snapshot every well's current_rate_bbl_day
+        # into yesterday_rate_bbl_day BEFORE any production/injection
+        # computation. Producers' rate-based pressure_boost is computed
+        # against this single-day snapshot, so an injector that idled
+        # yesterday contributes 0 today even if its setpoint is non-zero.
+        for w in self.state.wells:
+            w.yesterday_rate_bbl_day = w.current_rate_bbl_day
+
         # facility-economics-popup slice 03: reset per-plant daily kWh-served
         # accumulators. Hourly dispatch outputs are summed in below; the
         # end-of-day copy to `kwh_served_yesterday` feeds the next day's
@@ -773,25 +781,39 @@ class World:
         # Production-well daily output (brief §4.5). Iterates wells in
         # creation order — `state.wells` is appended-to on /drill — which
         # is the deterministic ordering required for shared-pool resolution.
-        # `pressure_boost = min(0.5, inj_total / V_init)` from injection
-        # wells whose 3×3×3 pools intersect this production well's pool.
+        # oilfield-v2 §"Rate-based pressure": each producer's
+        # pressure_boost = min(0.5, qualifying_inj_rate / max(prod_yest, 1))
+        # where qualifying injectors share the producer's reservoir_id AND
+        # sit at Chebyshev distance > 1 from the producer's target (no
+        # breakthrough). Yesterday's rates were snapshotted at the top of
+        # this method.
         total_crude_bbl = 0.0
         for well in self.state.wells:
             if well.type != "production":
                 continue
-            inj_total = sum(
-                iw.cumulative_injected_bbl
-                for iw in self.state.wells
-                if iw.type == "injection"
-                and pools_intersect(well.x, well.y, well.target_z, iw.x, iw.y, iw.target_z)
-            )
+            qualifying_inj_rate = 0.0
+            if well.reservoir_id is not None:
+                for iw in self.state.wells:
+                    if iw.type != "injection":
+                        continue
+                    if iw.reservoir_id != well.reservoir_id:
+                        continue
+                    cheb = max(
+                        abs(iw.x - well.x),
+                        abs(iw.y - well.y),
+                        abs(iw.target_z - well.target_z),
+                    )
+                    if cheb <= 1:
+                        continue  # breakthrough gate
+                    qualifying_inj_rate += iw.yesterday_rate_bbl_day
             q = well_production_bbl_day(
                 self.subsurface,
                 well.x,
                 well.y,
                 well.target_z,
                 well.setpoint_rate_bbl_day,
-                inj_total_bbl=inj_total,
+                qualifying_inj_rate_bbl_day=qualifying_inj_rate,
+                producer_yesterday_rate_bbl_day=well.yesterday_rate_bbl_day,
                 efficiency=workforce.efficiency(well),
             )
             well.current_rate_bbl_day = q

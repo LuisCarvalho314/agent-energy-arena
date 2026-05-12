@@ -59,8 +59,8 @@ def test_pools_dont_intersect_when_one_axis_exceeds_two():
 
 
 def test_pressure_boost_lifts_effective_fraction():
-    """A pool drained to fraction=0.1 with inj_total = 0.4 × V_init lifts
-    effective_fraction back to 0.5 (capped if it would exceed 1.0)."""
+    """A pool drained to fraction=0.1 receives a 0.4 boost when the
+    qualifying injection rate is 0.4× the producer's yesterday rate."""
     grid = SubsurfaceGrid(width=10, height=10, depth=10)
     grid.voxels[(5, 5, 5)] = _make_voxel(5, 5, 5, perm=1000.0, oil=1000.0)
     voxel = grid.voxels[(5, 5, 5)]
@@ -70,21 +70,34 @@ def test_pressure_boost_lifts_effective_fraction():
     voxel.oil_remaining_bbl = 100.0  # reset
 
     q_with_boost = well_production_bbl_day(
-        grid, 5, 5, 5, setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY, inj_total_bbl=400.0
+        grid,
+        5,
+        5,
+        5,
+        setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY,
+        qualifying_inj_rate_bbl_day=40.0,
+        producer_yesterday_rate_bbl_day=100.0,
     )
     assert q_with_boost > q_no_boost
 
 
 def test_pressure_boost_capped_at_max():
-    """`pressure_boost` is bounded at 0.5 even if inj_total >> V_init."""
+    """`pressure_boost` is bounded at 0.5 regardless of inj/prod ratio."""
     grid = SubsurfaceGrid(width=10, height=10, depth=10)
     grid.voxels[(5, 5, 5)] = _make_voxel(5, 5, 5, perm=1000.0, oil=1000.0)
     voxel = grid.voxels[(5, 5, 5)]
     voxel.oil_remaining_bbl = 100.0  # fraction = 0.1
 
-    # Even with massive injection, effective_fraction = 0.1 + 0.5 = 0.6.
+    # Massive injection rate vs tiny producer rate → ratio = huge, but
+    # pressure_boost caps at 0.5.
     q_huge_inj = well_production_bbl_day(
-        grid, 5, 5, 5, setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY, inj_total_bbl=1_000_000.0
+        grid,
+        5,
+        5,
+        5,
+        setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY,
+        qualifying_inj_rate_bbl_day=10_000.0,
+        producer_yesterday_rate_bbl_day=10.0,
     )
     voxel.oil_remaining_bbl = 100.0  # reset
     q_at_cap = well_production_bbl_day(
@@ -93,7 +106,8 @@ def test_pressure_boost_capped_at_max():
         5,
         5,
         setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY,
-        inj_total_bbl=PRESSURE_BOOST_MAX * 1000.0,  # exactly 0.5 boost
+        qualifying_inj_rate_bbl_day=PRESSURE_BOOST_MAX * 10.0,  # exactly 0.5 boost
+        producer_yesterday_rate_bbl_day=10.0,
     )
     assert q_huge_inj == pytest.approx(q_at_cap)
 
@@ -111,9 +125,30 @@ def test_pressure_boost_clipped_when_combined_above_one():
         5,
         5,
         setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY,
-        inj_total_bbl=10_000.0,
+        qualifying_inj_rate_bbl_day=10_000.0,
+        producer_yesterday_rate_bbl_day=100.0,
     )
     assert q_full_boost == pytest.approx(q_no_boost)
+
+
+def test_pressure_boost_zero_when_qualifying_inj_rate_zero():
+    """No qualifying injectors → pressure_boost = 0 regardless of
+    producer_yesterday_rate value (matches the day-of-drill state)."""
+    grid = SubsurfaceGrid(width=10, height=10, depth=10)
+    grid.voxels[(5, 5, 5)] = _make_voxel(5, 5, 5, perm=1000.0, oil=1000.0)
+    grid.voxels[(5, 5, 5)].oil_remaining_bbl = 100.0  # fraction = 0.1
+    q_default = well_production_bbl_day(grid, 5, 5, 5, setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY)
+    grid.voxels[(5, 5, 5)].oil_remaining_bbl = 100.0
+    q_explicit = well_production_bbl_day(
+        grid,
+        5,
+        5,
+        5,
+        setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY,
+        qualifying_inj_rate_bbl_day=0.0,
+        producer_yesterday_rate_bbl_day=100.0,
+    )
+    assert q_default == pytest.approx(q_explicit)
 
 
 # -- /drill injection well -------------------------------------------------
@@ -321,8 +356,10 @@ def test_injection_kw_summary_accumulates_hourly_power():
 
 def test_pressure_boost_keeps_late_game_capacity_high():
     """Two identical depleted-pool worlds. World A has an injection well in
-    the same pool; World B does not. After many days, A's production well
-    delivers strictly more crude than B's."""
+    the same reservoir as the producer, at Chebyshev distance 2 from the
+    producer's target (outside the breakthrough gate); World B does not.
+    After many days, A's production well delivers strictly more crude
+    than B's because A's qualifying injection rate is non-zero."""
 
     def setup_world(with_injection: bool) -> World:
         w = World()
@@ -340,7 +377,10 @@ def test_pressure_boost_keeps_late_game_capacity_high():
         w.drill(hc.x, hc.y, hc.z, "production")
         w.control_well(w.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
         if with_injection:
-            w.drill(hc.x + 1, hc.y, hc.z, "injection")
+            # Seed-42 reservoir-1 has a second voxel at (29, 20, 14),
+            # Chebyshev 2 from the producer's (29, 18, 14) target — outside
+            # the breakthrough gate (cheb > 1) and same reservoir_id.
+            w.drill(hc.x, hc.y + 2, hc.z, "injection")
             w.control_well(w.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
         return w
 
@@ -393,6 +433,222 @@ def test_injection_pool_must_intersect_production_pool():
     prod_b = next(ww for ww in b.state.wells if ww.type == "production")
     # Same production trajectory because the far-away injection contributes 0.
     assert prod_a.cumulative_produced_bbl == pytest.approx(prod_b.cumulative_produced_bbl)
+
+
+# -- Rate-based pressure mechanics (oilfield-v2 slice 03) ------------------
+
+
+def _setup_depleted_producer_world() -> World:
+    """Build a fresh seed-42 world with the canonical hc voxel's pool
+    pre-depleted to 5% OOIP and a coal-backed grid. Caller drills
+    producer + (optional) injector and steps the sim."""
+    w = World()
+    w.reset(seed=42)
+    w.state.treasury = 10_000_000.0
+    w.build("coal_plant", 5, 5)
+    w.build("coal_plant", 6, 5)
+    hc = _hc_voxel(w)
+    for v in w.subsurface.voxels.values():
+        if abs(v.x - hc.x) <= 1 and abs(v.y - hc.y) <= 1 and abs(v.z - hc.z) <= 1:
+            v.oil_remaining_bbl = 0.05 * v.oil_in_place_bbl
+    return w
+
+
+def test_producer_with_no_injector_has_zero_pressure_boost():
+    """The qualifying_inj_rate sum is 0 → production matches the no-boost
+    baseline (rate-pressure-physics AC: drilling a producer with no
+    injector → pressure_boost = 0)."""
+    a = _setup_depleted_producer_world()
+    hc = _hc_voxel(a)
+    a.drill(hc.x, hc.y, hc.z, "production")
+    a.control_well(a.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    for _ in range(2):
+        a.step(days=5)
+
+    b = _setup_depleted_producer_world()
+    b.drill(hc.x, hc.y, hc.z, "production")
+    b.control_well(b.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    for _ in range(2):
+        b.step(days=5)
+    # Identical worlds, identical trajectories.
+    a_prod = next(ww for ww in a.state.wells if ww.type == "production")
+    b_prod = next(ww for ww in b.state.wells if ww.type == "production")
+    assert a_prod.cumulative_produced_bbl == pytest.approx(b_prod.cumulative_produced_bbl)
+
+
+def test_same_reservoir_chebyshev_two_lifts_production_from_day_two():
+    """Day 1 both yesterday rates are 0 → boost=0 day 1; on day 2 the
+    producer's and injector's yesterday rates are non-zero → boost > 0
+    and the producer outproduces a no-injector control world."""
+    a = _setup_depleted_producer_world()
+    hc = _hc_voxel(a)
+    a.drill(hc.x, hc.y, hc.z, "production")
+    a.control_well(a.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    # Same-reservoir injector at Chebyshev 2 (seed-42 R1: (29,18,14)+(29,20,14)).
+    a.drill(hc.x, hc.y + 2, hc.z, "injection")
+    a.control_well(a.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    # Step 5 days so yesterday rates ramp up and boost kicks in.
+    a.step(days=5)
+
+    b = _setup_depleted_producer_world()
+    b.drill(hc.x, hc.y, hc.z, "production")
+    b.control_well(b.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    b.step(days=5)
+
+    a_prod = next(ww for ww in a.state.wells if ww.type == "production")
+    b_prod = next(ww for ww in b.state.wells if ww.type == "production")
+    assert a_prod.cumulative_produced_bbl > b_prod.cumulative_produced_bbl
+
+
+def test_chebyshev_one_breakthrough_gate_yields_zero_boost():
+    """Same-reservoir injector at Chebyshev 1 (inside the producer's
+    3×3×3 pool) is filtered out by the breakthrough gate; production
+    matches the no-injector control."""
+    a = _setup_depleted_producer_world()
+    hc = _hc_voxel(a)
+    a.drill(hc.x, hc.y, hc.z, "production")
+    a.control_well(a.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    # Same reservoir voxel inside the 3×3×3 pool — seed-42 R1 has (28,18,15)
+    # which is Chebyshev 1 from (29,18,14).
+    a.drill(28, 18, 15, "injection")
+    a.control_well(a.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    a.step(days=5)
+
+    b = _setup_depleted_producer_world()
+    b.drill(hc.x, hc.y, hc.z, "production")
+    b.control_well(b.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    b.step(days=5)
+
+    a_prod = next(ww for ww in a.state.wells if ww.type == "production")
+    b_prod = next(ww for ww in b.state.wells if ww.type == "production")
+    assert a_prod.cumulative_produced_bbl == pytest.approx(b_prod.cumulative_produced_bbl)
+
+
+def test_different_reservoirs_yields_zero_boost():
+    """An injector in a different reservoir at Chebyshev > 1 still
+    contributes 0 to qualifying_inj_rate (the reservoir_id mismatch is
+    the binding filter)."""
+    a = _setup_depleted_producer_world()
+    hc = _hc_voxel(a)
+    a.drill(hc.x, hc.y, hc.z, "production")
+    a.control_well(a.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    # Seed-42 R2 starts at (28, 31, 4) — different reservoir from R1.
+    a.drill(28, 31, 4, "injection")
+    a.control_well(a.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    a_prod_well = next(ww for ww in a.state.wells if ww.type == "production")
+    a_inj_well = next(ww for ww in a.state.wells if ww.type == "injection")
+    assert a_prod_well.reservoir_id == 1
+    assert a_inj_well.reservoir_id == 2
+    a.step(days=5)
+
+    b = _setup_depleted_producer_world()
+    b.drill(hc.x, hc.y, hc.z, "production")
+    b.control_well(b.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    b.step(days=5)
+
+    a_prod = next(ww for ww in a.state.wells if ww.type == "production")
+    b_prod = next(ww for ww in b.state.wells if ww.type == "production")
+    assert a_prod.cumulative_produced_bbl == pytest.approx(b_prod.cumulative_produced_bbl)
+
+
+def test_idled_injector_drops_boost_to_zero_next_day():
+    """After running the producer + injector at steady state for several
+    days, idling the injector (setpoint=0) leaves the boost engaged for
+    exactly one more day (today's pressure_boost reads yesterday's inj
+    rate, which is still > 0), then drops to 0 on the following day."""
+    w = _setup_depleted_producer_world()
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    w.control_well(w.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    w.drill(hc.x, hc.y + 2, hc.z, "injection")
+    inj_id = w.state.wells[-1].id
+    w.control_well(inj_id, Q_MAX_WELL_BBL_DAY)
+    w.step(days=5)
+    rate_with_boost = next(
+        ww.current_rate_bbl_day for ww in w.state.wells if ww.type == "production"
+    )
+    # Idle the injector. Snapshot today's yesterday rate first so we can
+    # confirm it drops on the subsequent day.
+    w.control_well(inj_id, 0.0)
+    w.step(days=1)
+    inj_after_one_idle = next(ww for ww in w.state.wells if ww.id == inj_id)
+    assert inj_after_one_idle.current_rate_bbl_day == 0.0
+    # One more day: injector's yesterday_rate snapshot is now 0, so the
+    # boost is gone and the producer matches the no-injector trajectory.
+    w.step(days=3)
+    rate_no_boost = next(ww.current_rate_bbl_day for ww in w.state.wells if ww.type == "production")
+    assert rate_no_boost < rate_with_boost
+
+
+def test_two_qualifying_injectors_sum_in_numerator():
+    """Two injection wells in the same reservoir at Chebyshev > 1 from
+    the producer both contribute to qualifying_inj_rate. The combined
+    boost exceeds a single-injector world's boost (subject to the 0.5
+    cap)."""
+    # Use a constructed grid + direct call: integration in seed-42 is
+    # constrained by reservoir geometry (R1 only exposes one Chebyshev-2
+    # peer to (29,18,14)).
+    grid = SubsurfaceGrid(width=10, height=10, depth=10)
+    grid.voxels[(5, 5, 5)] = _make_voxel(5, 5, 5, perm=1000.0, oil=1000.0)
+    grid.voxels[(5, 5, 5)].oil_remaining_bbl = 100.0  # fraction = 0.1
+    q_single = well_production_bbl_day(
+        grid,
+        5,
+        5,
+        5,
+        setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY,
+        qualifying_inj_rate_bbl_day=10.0,  # one injector at 10 bbl/day
+        producer_yesterday_rate_bbl_day=100.0,
+    )
+    grid.voxels[(5, 5, 5)].oil_remaining_bbl = 100.0  # reset
+    q_two = well_production_bbl_day(
+        grid,
+        5,
+        5,
+        5,
+        setpoint_rate_bbl_day=Q_MAX_WELL_BBL_DAY,
+        qualifying_inj_rate_bbl_day=20.0,  # two injectors summing to 20
+        producer_yesterday_rate_bbl_day=100.0,
+    )
+    assert q_two > q_single
+
+
+def test_yesterday_rate_snapshot_taken_before_production_loop():
+    """`yesterday_rate_bbl_day` is updated at the top of each /step's
+    daily loop, before the producer's pressure_boost is computed. After
+    one step, the producer's yesterday rate equals the rate the well
+    *just* produced (i.e. day-1's value)."""
+    w = World()
+    w.reset(seed=42)
+    hc = _hc_voxel(w)
+    w.drill(hc.x, hc.y, hc.z, "production")
+    w.control_well(w.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
+    # Day 0: yesterday_rate = 0 (drill-day).
+    assert w.state.wells[0].yesterday_rate_bbl_day == 0.0
+    w.step(days=1)
+    # After day 1, current_rate_bbl_day is the day-1 actual; yesterday is
+    # what was current at the start of day-1, which was 0 (the drill-day
+    # value).
+    well = w.state.wells[0]
+    assert well.yesterday_rate_bbl_day == 0.0
+    day1_rate = well.current_rate_bbl_day
+    assert day1_rate > 0.0
+    w.step(days=1)
+    well = w.state.wells[0]
+    # Day 2 starts by snapshotting current (=day1) into yesterday.
+    assert well.yesterday_rate_bbl_day == pytest.approx(day1_rate)
+
+
+def test_state_wells_exposes_yesterday_rate():
+    """/state.wells stamps `yesterday_rate_bbl_day` so agents can audit
+    the rate-based pressure calculation (PRD §"Agent author")."""
+    w = World()
+    w.reset(seed=42)
+    w.drill(10, 10, 8, "production")
+    w.step(days=2)
+    s = w.state_dict()
+    well = s["wells"][0]
+    assert "yesterday_rate_bbl_day" in well
 
 
 # -- /state.wells schema for injection wells -------------------------------
@@ -536,9 +792,13 @@ def test_half_staffed_injection_pool_intersection_still_recovers_pressure_propor
                 v.oil_remaining_bbl = 0.05 * v.oil_in_place_bbl
         w.drill(hc.x, hc.y, hc.z, "production")
         w.control_well(w.state.wells[-1].id, Q_MAX_WELL_BBL_DAY)
-        w.drill(hc.x + 1, hc.y, hc.z, "injection")
+        # Same-reservoir injector at Chebyshev 2 (outside breakthrough gate).
+        # Setpoint is kept low so the half-staffed injection rate keeps
+        # `qualifying_inj / max(prod_yest, 1)` below the 0.5 cap — without
+        # this, both full and half deliver the same capped boost.
+        w.drill(hc.x, hc.y + 2, hc.z, "injection")
         inj = w.state.wells[-1]
-        w.control_well(inj.id, Q_MAX_WELL_BBL_DAY)
+        w.control_well(inj.id, 8.0)
         inj.staffed_jobs = staffed
         return w
 
