@@ -1,15 +1,17 @@
 """End-to-end integration test for `arena.runner`.
 
 Runs the scripted reference agent against `scenarios.baseline` via the
-runner CLI and asserts the result row carries the expected fields. The
-runner shells out to `python evaluate.py ...` for each pair, so the
-test is intentionally slow (~5 s) — fast enough for the default
-suite but slower than the in-process replay tests.
+runner CLI and asserts the result row matches the committed baseline
+under `baselines/arena/`. The runner shells out to `python
+evaluate.py ...` for each pair, so the test is intentionally slow
+(~1 s) — fast enough for the default suite but slower than the
+in-process replay tests.
 
-A byte-match comparison against a committed baseline result file is
-out of scope here (issue 08 commits those files); this test asserts
-that the runner produces a structurally valid result for the public
-scripted × baseline pair on a shortened 30-day game.
+Byte-match against the committed `baselines/arena/<scenario>-<seed>.json`
+files is enforced here. If the scripted agent or scenario semantics
+change in a way that shifts the deterministic outputs, run
+`make baselines` to regenerate the committed files and commit the diff
+in the same change.
 """
 
 from __future__ import annotations
@@ -19,18 +21,19 @@ from pathlib import Path
 
 import pytest
 
+from arena.baselines import BASELINE_GAME_DAYS, baseline_path, to_baseline_dict
 from arena.results import ArenaResult, read_results
 from arena.runner import main, run_pair
 
 
-def _short_game(monkeypatch: pytest.MonkeyPatch, days: int = 30) -> None:
+def _short_game(monkeypatch: pytest.MonkeyPatch, days: int = BASELINE_GAME_DAYS) -> None:
     monkeypatch.setenv("GAME_DAYS", str(days))
     monkeypatch.setenv("MANUAL_GAME_DAYS", str(days))
 
 
 def test_run_pair_scripted_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """run_pair() returns a populated ArenaResult for scripted × baseline."""
-    _short_game(monkeypatch, days=30)
+    _short_game(monkeypatch)
     result = run_pair("agents.scripted", "scenarios.baseline", cwd=tmp_path)
     assert isinstance(result, ArenaResult)
     assert result.agent == "agents.scripted"
@@ -41,6 +44,10 @@ def test_run_pair_scripted_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert result.run_id
     # The recorded run folder exists alongside the runner's cwd.
     assert (tmp_path / "runs" / result.run_id / "final_state.json").exists()
+
+    # Byte-match the deterministic subset against the committed baseline.
+    committed = json.loads(baseline_path(result.scenario, result.seed).read_text())
+    assert to_baseline_dict(result) == committed
 
 
 def test_runner_cli_writes_results_json(
