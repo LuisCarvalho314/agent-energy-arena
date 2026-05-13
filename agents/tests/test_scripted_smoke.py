@@ -101,3 +101,63 @@ def test_scripted_builds_batteries_when_renewables_exist() -> None:
     # later renewable build doesn't tip the test fragile.
     assert n_renewable >= 2, n_renewable
     assert 2 <= n_battery <= 4, n_battery
+
+
+def test_bootstrap_places_park_within_cheb2_of_every_house() -> None:
+    """happiness-population-driver #02 AC: after the bootstrap turn fires,
+    every house placed during bootstrap has at least one park within
+    Chebyshev radius 2 (the same window `world.population.update_population`
+    uses for the spatial park benefit). Scoped to bootstrap because later
+    phases add houses on-demand whose park coverage is the next slice's
+    concern."""
+    world = World()
+    api = ApiClient(transport=_make_client(world))
+    agent = ScriptedAgent(api, seed=42)
+    api.reset(seed=42)
+    state = api.state()
+    agent.act(state)  # single bootstrap turn places the full minimum-viable city
+
+    houses = [t for t in world.state.tiles if t.type == "house"]
+    parks = [t for t in world.state.tiles if t.type == "park"]
+    assert houses, "expected at least one house after bootstrap"
+    assert parks, "expected at least one park after bootstrap"
+    for h in houses:
+        nearby = [p for p in parks if max(abs(h.x - p.x), abs(h.y - p.y)) <= 2]
+        assert nearby, f"house at ({h.x}, {h.y}) has no park within cheb-2"
+
+
+def test_scripted_pop_grows_above_starting_floor() -> None:
+    """AC: P_ref reflects positive population growth over the 10-year game
+    (final pop > starting pop = 100). The bootstrap park rule + velocity
+    model from slice 01 should drive happiness above the 1.0 neutral
+    anchor and unlock real growth. Smoke floor is 0.8 * committed P_ref
+    so a minor calibration shift doesn't break CI."""
+    payload = json.loads(BASELINE_PATH.read_text())
+    p_ref = float(payload["p_ref"])
+    starting_pop = 100.0  # cfg.starting_pop default
+    assert p_ref > starting_pop, (
+        f"committed baseline must show positive growth (p_ref={p_ref}, start={starting_pop})"
+    )
+    world = _play(seed=42)
+    assert float(world.state.population) >= 0.8 * p_ref, (
+        f"pop regression: actual={world.state.population}, floor={0.8 * p_ref}"
+    )
+
+
+def test_baseline_regeneration_byte_identical() -> None:
+    """Two consecutive baseline-regeneration runs produce byte-identical
+    JSON content. Guards the determinism contract that score reproduction
+    rests on."""
+    a = _play(seed=42)
+    b = _play(seed=42)
+    payload_a = {
+        "seed": 42,
+        "p_ref": float(a.state.population),
+        "t_ref": float(a.state.treasury) - float(a.config.starting_cash),
+    }
+    payload_b = {
+        "seed": 42,
+        "p_ref": float(b.state.population),
+        "t_ref": float(b.state.treasury) - float(b.config.starting_cash),
+    }
+    assert json.dumps(payload_a, indent=2) == json.dumps(payload_b, indent=2)

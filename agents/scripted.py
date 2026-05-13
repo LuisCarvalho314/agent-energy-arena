@@ -408,6 +408,11 @@ class ScriptedAgent(BaseAgent):
         # 6 commercial up-front: 2 from PRD baseline + 4 to defeat the
         # int(pop) growth-truncation trap. With pop=100 and only 2
         # commercial, jobs<0.7·pop triggers immediate decline.
+        # Each house is paired with a park on a road-adjacent square within
+        # Chebyshev radius 2 (happiness-population-driver #02) — the same
+        # window `world.population.update_population` uses for the spatial
+        # park benefit. The pair drives happiness above the neutral 1.0
+        # anchor so the velocity model unlocks real growth.
         plan += [
             ("commercial", cx + 1, cy + 1),
             ("commercial", cx - 1, cy - 1),
@@ -416,7 +421,9 @@ class ScriptedAgent(BaseAgent):
             ("commercial", cx + 2, cy + 1),
             ("commercial", cx - 2, cy - 1),
             ("house", cx + 2, cy - 1),
+            ("park", cx + 3, cy - 1),
             ("house", cx - 2, cy + 1),
+            ("park", cx - 3, cy + 1),
         ]
 
         for tile_type, x, y in plan:
