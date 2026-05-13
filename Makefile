@@ -11,7 +11,7 @@ PYTHON ?= $(shell \
 	elif [ -x ".venv/bin/python" ]; then echo ".venv/bin/python"; \
 	else echo python3; fi)
 
-.PHONY: help venv install test typecheck lint format format-check check serve play eval score baselines clean
+.PHONY: help venv install test typecheck lint format format-check check serve play eval score baselines leaderboard clean
 
 help:
 	@echo "Targets:"
@@ -28,6 +28,7 @@ help:
 	@echo "  eval          docker compose --profile eval run agent — score submit/agent.py"
 	@echo "  score         Run the scripted agent on seed 42 and print the score line"
 	@echo "  baselines     Regenerate per-scenario scripted-agent baselines under baselines/arena/"
+	@echo "  leaderboard   Regenerate LEADERBOARD.md from the committed baselines"
 
 venv:
 	@test -d .venv || python3 -m venv .venv
@@ -73,6 +74,12 @@ score:
 # to the scripted agent, scenario definitions, or scoring pipeline.
 baselines:
 	$(PYTHON) -m arena.baselines
+
+# Regenerate LEADERBOARD.md from the committed baselines under
+# baselines/arena/. The output is byte-deterministic given the same
+# baseline inputs, so the regenerated file can be committed verbatim.
+leaderboard:
+	$(PYTHON) -m arena.leaderboard
 
 clean:
 	rm -rf .mypy_cache .ruff_cache .pytest_cache

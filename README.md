@@ -10,9 +10,9 @@ The world is the single source of truth. Two clients consume the same API: a bro
 |---|---|
 | Understand the game so you can build an agent | [RULES.md](RULES.md) |
 | Look up an endpoint or response shape | [API.md](API.md) |
-| Write a stress scenario | [SCENARIOS.md](SCENARIOS.md) (slice 12) |
+| Write a stress scenario | [SCENARIOS.md](SCENARIOS.md) |
 | Submit an agent | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| See how the community ranks | [LEADERBOARD.md](LEADERBOARD.md) (slice 12) |
+| See how the community ranks | [LEADERBOARD.md](LEADERBOARD.md) |
 
 ## 60-second tour
 

@@ -8,8 +8,21 @@ timestamp.
 
 from __future__ import annotations
 
-from arena.leaderboard import build_table, rank_agents
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from arena.baselines import BASELINES_DIR, baseline_path, scenario_short_name
+from arena.leaderboard import (
+    build_table,
+    main,
+    rank_agents,
+    read_baselines_dir,
+    render_leaderboard,
+)
 from arena.results import ArenaResult
+from arena.runner import REPO_ROOT
 
 
 def _r(
@@ -140,3 +153,102 @@ def test_build_table_empty_results() -> None:
     table = build_table([])
     assert "| # | Agent" in table
     assert table.strip().splitlines()[1].startswith("|---")
+
+
+def _write_fake_baseline(directory: Path, agent: str, scenario: str, raw_score: float) -> Path:
+    """Write a deterministic-subset baseline JSON file to `directory`.
+
+    Mirrors `arena.baselines.to_baseline_dict` so the CLI-rendering tests
+    do not depend on the committed baselines (those drift over time).
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "agent": agent,
+        "scenario": scenario,
+        "seed": 42,
+        "population": 100.0,
+        "treasury_delta": -1000.0,
+        "renewable_share": 0.5,
+        "raw_score": raw_score,
+    }
+    path = directory / f"{scenario_short_name(scenario)}-42.json"
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def test_read_baselines_dir_lifts_baseline_json(tmp_path: Path) -> None:
+    """`read_baselines_dir` reads every `*.json` in the dir into ArenaResults."""
+    _write_fake_baseline(tmp_path, "agents.scripted", "scenarios.baseline", 0.30)
+    _write_fake_baseline(tmp_path, "agents.scripted", "scenarios.grid_stress", 0.25)
+
+    results = read_baselines_dir(tmp_path)
+    by_scenario = {r.scenario: r for r in results}
+    assert set(by_scenario) == {"scenarios.baseline", "scenarios.grid_stress"}
+    assert by_scenario["scenarios.baseline"].raw_score == 0.30
+    # `run_id` / `submitted_at` are synthesized — pinning here keeps the
+    # contract explicit for the CLI's downstream rendering.
+    assert by_scenario["scenarios.baseline"].run_id == ""
+    assert by_scenario["scenarios.baseline"].submitted_at == 0.0
+
+
+def test_render_leaderboard_is_deterministic(tmp_path: Path) -> None:
+    """Same baselines → byte-identical rendered Markdown."""
+    _write_fake_baseline(tmp_path, "agents.scripted", "scenarios.baseline", 0.30)
+    _write_fake_baseline(tmp_path, "agents.scripted", "scenarios.grid_stress", 0.25)
+
+    first = render_leaderboard(read_baselines_dir(tmp_path))
+    second = render_leaderboard(read_baselines_dir(tmp_path))
+    assert first == second
+    # Sanity-check the rendered shape — header, table, submission section.
+    assert "# Leaderboard" in first
+    assert "| # | Agent" in first
+    assert "agents.scripted" in first
+    assert "Submitting an agent" in first
+
+
+def test_main_cli_writes_output(tmp_path: Path) -> None:
+    """`python -m arena.leaderboard --baselines-dir X --output Y` writes Y."""
+    _write_fake_baseline(tmp_path, "agents.scripted", "scenarios.baseline", 0.30)
+    out_path = tmp_path / "OUT.md"
+
+    rc = main(["--baselines-dir", str(tmp_path), "--output", str(out_path)])
+    assert rc == 0
+    rendered = out_path.read_text()
+    assert "# Leaderboard" in rendered
+    assert "agents.scripted" in rendered
+
+
+def test_cli_against_committed_baselines_byte_match() -> None:
+    """`python -m arena.leaderboard --stdout` matches the committed file.
+
+    Acts as the regression sentinel for `LEADERBOARD.md`: if the committed
+    baselines drift, this fails until `make leaderboard` is rerun and the
+    refreshed Markdown is committed.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "arena.leaderboard", "--stdout"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=True,
+    )
+    committed = (REPO_ROOT / "LEADERBOARD.md").read_text()
+    assert proc.stdout == committed
+
+
+def test_committed_baselines_render_one_scripted_row() -> None:
+    """The three committed baselines aggregate into one ranked row."""
+    # Don't assume the score values — just shape and presence.
+    for scenario in (
+        "scenarios.baseline",
+        "scenarios.grid_stress",
+        "scenarios.economy_stress",
+    ):
+        assert baseline_path(scenario, 42).exists(), scenario
+
+    results = read_baselines_dir(BASELINES_DIR)
+    rendered = render_leaderboard(results)
+    # One agent (`agents.scripted`) on three scenarios → one ranked row,
+    # mean rank 1.00 (no other agents to rank against).
+    assert rendered.count("| 1 | agents.scripted") == 1
+    assert "1.00" in rendered

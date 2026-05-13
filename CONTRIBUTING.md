@@ -24,6 +24,7 @@ Other useful targets:
 | Target | What it does |
 |---|---|
 | `make baselines` | Regenerate the per-scenario scripted-agent baselines under `baselines/arena/`. Run this after editing the scripted agent or a v1 scenario. |
+| `make leaderboard` | Regenerate `LEADERBOARD.md` from the committed baselines. Run this after `make baselines`. |
 | `make score` | Run the scripted agent on seed 42 and print the score. |
 | `make play` | `docker compose up` — world + UI at `:8000`. |
 | `make eval` | `docker compose --profile eval run agent` — evaluate `submit/agent.py`. |

@@ -14,13 +14,22 @@ The arena's aggregation rule (PRD §"Score formula and arena aggregation"):
 `build_table` returns a Markdown table; `rank_agents` returns the
 structured rows so callers (e.g. a hosted-leaderboard renderer) can
 consume the same aggregation without parsing Markdown.
+
+A CLI (`python -m arena.leaderboard`) reads the committed per-scenario
+baselines under `baselines/arena/` and renders the repo's
+`LEADERBOARD.md`. The CLI is deterministic: same baselines in → byte-
+identical Markdown out, so committing the regenerated file is safe.
 """
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
+import sys
 from collections import defaultdict
 from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 from arena.results import ArenaResult
 
@@ -126,3 +135,120 @@ def build_table(results: Iterable[ArenaResult]) -> str:
             f"{row.mean_raw_score:.4f} | {', '.join(row.scenarios)} |"
         )
     return header + "\n".join(lines) + "\n"
+
+
+def _result_from_baseline_dict(payload: dict[str, Any]) -> ArenaResult:
+    """Lift a baseline JSON payload to an `ArenaResult`.
+
+    Committed baselines under `baselines/arena/` strip `run_id` and
+    `submitted_at` (the two non-deterministic fields). The leaderboard
+    uses `submitted_at` only as the final tie-break; pinning it to 0.0
+    means baselines tie at "earliest submission", which is the right
+    semantics for a reproducible repo-committed leaderboard.
+    """
+    return ArenaResult(
+        agent=str(payload["agent"]),
+        scenario=str(payload["scenario"]),
+        seed=int(payload["seed"]),
+        population=float(payload["population"]),
+        treasury_delta=float(payload["treasury_delta"]),
+        renewable_share=float(payload["renewable_share"]),
+        raw_score=float(payload["raw_score"]),
+        run_id="",
+        submitted_at=0.0,
+    )
+
+
+def read_baselines_dir(directory: Path) -> list[ArenaResult]:
+    """Read every `*.json` baseline under `directory` into `ArenaResult`s.
+
+    The committed baseline shape (see `arena.baselines.to_baseline_dict`)
+    is the canonical input for the repo's leaderboard. Files are sorted
+    by path for stable iteration so a regenerated `LEADERBOARD.md` is
+    byte-identical across machines.
+    """
+    import json
+
+    rows: list[ArenaResult] = []
+    for path in sorted(directory.glob("*.json")):
+        payload: dict[str, Any] = json.loads(path.read_text())
+        rows.append(_result_from_baseline_dict(payload))
+    return rows
+
+
+def render_leaderboard(results: Iterable[ArenaResult]) -> str:
+    """Render the repo's `LEADERBOARD.md` content from arena results.
+
+    Wraps `build_table` with the heading, regeneration note, and the
+    cross-links a docs reader expects. Deterministic: no timestamps or
+    machine-specific paths leak into the output.
+    """
+    table = build_table(results)
+    return (
+        "# Leaderboard\n"
+        "\n"
+        "Mean-rank aggregation across the v1 public scenarios "
+        "(`scenarios.baseline`, `scenarios.grid_stress`, "
+        "`scenarios.economy_stress`) on seed 42.\n"
+        "\n"
+        "See [SCENARIOS.md](SCENARIOS.md) for the scenario taxonomy and "
+        "[RULES.md](RULES.md#scoring) for the score formula. The mean-rank "
+        "tie-break order is mean raw score (higher wins), then earliest "
+        "submission timestamp.\n"
+        "\n"
+        "Regenerate with `python -m arena.leaderboard` after `make baselines`. "
+        "The committed file is byte-identical to the regenerated one given the "
+        "same `baselines/arena/` contents.\n"
+        "\n"
+        f"{table}"
+        "\n"
+        "## Submitting an agent\n"
+        "\n"
+        "Community agents live under `agents/community/<your_handle>.py`. "
+        "See [CONTRIBUTING.md](CONTRIBUTING.md) for the PR-as-submission flow. "
+        "A maintainer regenerates this file on merge.\n"
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--baselines-dir",
+        type=Path,
+        default=None,
+        help="Directory of baseline JSON files (default: <repo>/baselines/arena).",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Write rendered Markdown to this path (default: <repo>/LEADERBOARD.md).",
+    )
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print rendered Markdown to stdout instead of writing a file.",
+    )
+    args = parser.parse_args(argv)
+
+    # Resolve the repo root via `arena.baselines` so callers from any cwd
+    # land on the same path. Imported lazily to avoid a hard dep when the
+    # leaderboard is consumed as a pure function.
+    from arena.baselines import BASELINES_DIR
+    from arena.runner import REPO_ROOT
+
+    baselines_dir = args.baselines_dir or BASELINES_DIR
+    results = read_baselines_dir(baselines_dir)
+    rendered = render_leaderboard(results)
+
+    if args.stdout:
+        sys.stdout.write(rendered)
+        return 0
+
+    output = args.output or (REPO_ROOT / "LEADERBOARD.md")
+    output.write_text(rendered)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
