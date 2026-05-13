@@ -37,7 +37,7 @@ from world.events import (
 )
 from world.grid import has_road_adjacency, in_bounds, road_connected_set
 from world.pipelines import routing_units
-from world.population import update_population
+from world.population import DAILY_TAX_PER_CAPITA, update_population
 from world.power import (
     PLANT_TYPES,
     battery_charge_step,
@@ -46,7 +46,11 @@ from world.power import (
     dispatch,
     total_demand_kw,
 )
-from world.pricing import update_civic_revenue
+from world.pricing import (
+    COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
+    INDUSTRIAL_REVENUE_PER_DAY,
+    update_civic_revenue,
+)
 from world.scenario import NullScenario, Scenario
 from world.state import Tile, Well, WorldState
 from world.subsurface import (
@@ -106,7 +110,7 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     fuel_cost = 0.0
     if t.type == "industrial":
-        revenue = industrial_revenue_for_tile(t)
+        revenue = industrial_revenue_for_tile(world.state, t)
         co2_t = industrial_co2_for_tile(t)
         carbon_cost = co2_t * world.state.carbon_price
         net = revenue - t.opex_per_day - carbon_cost
@@ -118,13 +122,13 @@ def _tile_to_dict(t: Tile, world: World) -> dict[str, Any]:
         extra["residents_in_radius"] = _commercial_residents_in_radius(world.state, t)
     elif t.type in PLANT_TYPES:
         spec = TILE_CATALOG[t.type]
-        revenue = plant_revenue_for_tile(t, world.config)
+        revenue = plant_revenue_for_tile(world.state, t)
         co2_t = plant_co2_for_tile(t, spec)
-        fuel_cost = plant_fuel_cost_for_tile(t, spec)
+        fuel_cost = plant_fuel_cost_for_tile(world.state, t, spec)
         carbon_cost = plant_carbon_cost_for_tile(world.state, t, spec)
         net = revenue - t.opex_per_day - fuel_cost - carbon_cost
     elif t.type == "refinery":
-        revenue = refinery_revenue_for_tile(t)
+        revenue = refinery_revenue_for_tile(world.state, t)
         co2_t = refinery_co2_for_tile(t)
         carbon_cost = refinery_carbon_cost_for_tile(world.state, t)
         net = revenue - t.opex_per_day - carbon_cost
@@ -171,7 +175,7 @@ def _well_to_dict(w: Well, world: World) -> dict[str, Any]:
         well_injection_kwh_per_day,
     )
 
-    revenue = well_gross_crude_value_for_tile(w)
+    revenue = well_gross_crude_value_for_tile(world.state, w)
     injection_kwh = well_injection_kwh_per_day(w)
     # Injection wells: power cost is internalized through plants, so Net is
     # -opex with no $-cost from kWh consumption.
@@ -277,6 +281,21 @@ class World:
             population=float(self.config.starting_pop),
             happiness=1.0,
             carbon_price=CARBON_PRICE_USD_PER_TON,
+            # open-source-arena slice 01: pricing/rate fields flow from the
+            # module-level constants and Config defaults at reset time.
+            # Scenarios mutate them mid-game via `apply(world, day)`.
+            crude_price_usd_per_bbl=CRUDE_PRICE_USD_PER_BBL,
+            refined_price_usd_per_bbl=REFINED_PRICE_USD_PER_BBL,
+            grid_price_retail=self.config.grid_price_retail,
+            grid_price_export=self.config.grid_price_export,
+            industrial_revenue_per_day=INDUSTRIAL_REVENUE_PER_DAY,
+            commercial_revenue_per_resident_per_day=COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
+            daily_tax_per_capita=DAILY_TAX_PER_CAPITA,
+            blackout_penalty_hour=self.config.blackout_penalty_hour,
+            plant_fuel_cost_per_mwh={
+                "coal_plant": TILE_CATALOG["coal_plant"].fuel_cost_per_mwh,
+                "gas_peaker": TILE_CATALOG["gas_peaker"].fuel_cost_per_mwh,
+            },
         )
         # Seed the AR(1) carry-overs at their long-run means so the first
         # hour's update is well-conditioned (no transient from a 0 init).
@@ -725,6 +744,7 @@ class World:
                 self.state.day,
                 hour,
                 solar_derate=solar_derate_multiplier(self.state),
+                fuel_cost_per_mwh=self.state.plant_fuel_cost_per_mwh,
             )
 
             # Battery dispatch (balance-upgrade-p0 slice 02). Charge step
@@ -761,10 +781,10 @@ class World:
             # decrements here would be clobbered by that reassignment
             # anyway (issue 22).
             if balance == "blackout":
-                self.state.treasury -= self.config.blackout_penalty_hour
+                self.state.treasury -= self.state.blackout_penalty_hour
                 self.state.today_summary_so_far["blackout_hours"] += 1.0
                 self.state.today_summary_so_far["blackout_penalty"] += (
-                    self.config.blackout_penalty_hour
+                    self.state.blackout_penalty_hour
                 )
             elif balance == "brownout":
                 self.state.today_summary_so_far["brownout_hours"] += 1.0
@@ -774,11 +794,11 @@ class World:
             # economics". Curtailment exports the post-injection surplus only.
             billable_served_kw = min(supply_kw, civilian_demand_kw)
             self.state.today_summary_so_far["power_revenue"] += (
-                billable_served_kw * self.config.grid_price_retail
+                billable_served_kw * self.state.grid_price_retail
             )
             if balance == "curtailment" and excess_kw > 0:
                 self.state.today_summary_so_far["power_revenue"] += (
-                    excess_kw * self.config.grid_price_export
+                    excess_kw * self.state.grid_price_export
                 )
 
             # Renewable-share accumulator (PRD §"Scoring"). served_kw is the
@@ -846,8 +866,8 @@ class World:
         # Fuel cost (kWh / 1000 = MWh) × $/MWh. Coal+gas only. A
         # fuel_price_shock event (slice 11) doubles both costs while active.
         if coal_kwh or gas_kwh:
-            coal_cost_per_mwh = TILE_CATALOG["coal_plant"].fuel_cost_per_mwh
-            gas_cost_per_mwh = TILE_CATALOG["gas_peaker"].fuel_cost_per_mwh
+            coal_cost_per_mwh = self.state.plant_fuel_cost_per_mwh["coal_plant"]
+            gas_cost_per_mwh = self.state.plant_fuel_cost_per_mwh["gas_peaker"]
             coal_shock = fuel_price_shock_multiplier(self.state, "coal_plant")
             gas_shock = fuel_price_shock_multiplier(self.state, "gas_peaker")
             fuel_total = (coal_kwh / 1000.0) * coal_cost_per_mwh * coal_shock + (
@@ -964,10 +984,12 @@ class World:
         # network absorbed. Orphan producer crude is added on top.
         networked_surplus = max(0.0, total_routed_crude_bbl - total_refined_input)
         crude_direct_bbl = networked_surplus + orphan_producer_crude_bbl
-        crude_revenue = crude_direct_bbl * CRUDE_PRICE_USD_PER_BBL
+        crude_revenue = crude_direct_bbl * self.state.crude_price_usd_per_bbl
         # Yield is applied here (not in route_crude) so the routing remains
         # purely about input allocation; one place owns the 0.85 constant.
-        refined_revenue = total_refined_input * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
+        refined_revenue = (
+            total_refined_input * REFINERY_YIELD * self.state.refined_price_usd_per_bbl
+        )
         oil_revenue = crude_revenue + refined_revenue
         if oil_revenue:
             self.state.today_summary_so_far["oil_revenue"] = oil_revenue

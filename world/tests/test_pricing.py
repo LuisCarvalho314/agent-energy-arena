@@ -27,6 +27,17 @@ from world.sim import World
 from world.state import Tile, Well, WorldState
 
 
+def _default_state() -> WorldState:
+    """Bare WorldState carrying post-refactor default pricing/rate fields.
+
+    Open-source-arena slice 01 promoted pricing constants onto WorldState;
+    the dataclass defaults mirror the old module-level constants exactly,
+    so unit tests that previously called pricing helpers without state can
+    use this stand-in instead of plumbing a full World.
+    """
+    return WorldState(seed=0)
+
+
 def _industrial_tile(staffed: int | None = None) -> Tile:
     spec = TILE_CATALOG["industrial"]
     staffed_jobs = spec.jobs if staffed is None else staffed
@@ -50,7 +61,9 @@ def _industrial_tile(staffed: int | None = None) -> Tile:
 
 def test_industrial_revenue_full_staffing_equals_constant() -> None:
     tile = _industrial_tile()  # staffed = jobs
-    assert industrial_revenue_for_tile(tile) == pytest.approx(INDUSTRIAL_REVENUE_PER_DAY)
+    assert industrial_revenue_for_tile(_default_state(), tile) == pytest.approx(
+        INDUSTRIAL_REVENUE_PER_DAY
+    )
 
 
 def test_industrial_revenue_scales_linearly_with_efficiency() -> None:
@@ -58,18 +71,18 @@ def test_industrial_revenue_scales_linearly_with_efficiency() -> None:
     half_jobs = spec.jobs // 2
     tile = _industrial_tile(staffed=half_jobs)
     expected = INDUSTRIAL_REVENUE_PER_DAY * (half_jobs / spec.jobs)
-    assert industrial_revenue_for_tile(tile) == pytest.approx(expected)
+    assert industrial_revenue_for_tile(_default_state(), tile) == pytest.approx(expected)
 
 
 def test_industrial_revenue_idle_returns_zero() -> None:
     tile = _industrial_tile(staffed=0)
-    assert industrial_revenue_for_tile(tile) == 0.0
+    assert industrial_revenue_for_tile(_default_state(), tile) == 0.0
 
 
 def test_industrial_revenue_zero_when_not_operational() -> None:
     tile = _industrial_tile()
     tile.operational = False
-    assert industrial_revenue_for_tile(tile) == 0.0
+    assert industrial_revenue_for_tile(_default_state(), tile) == 0.0
 
 
 def test_industrial_revenue_zero_for_non_industrial_tile() -> None:
@@ -85,7 +98,7 @@ def test_industrial_revenue_zero_for_non_industrial_tile() -> None:
         staffed_jobs=spec.jobs,
         demand_kw=spec.demand_kw,
     )
-    assert industrial_revenue_for_tile(tile) == 0.0
+    assert industrial_revenue_for_tile(_default_state(), tile) == 0.0
 
 
 # -- industrial_co2_for_tile (delegation contract) -------------------------
@@ -609,38 +622,34 @@ def test_plant_revenue_for_tile_uses_yesterday_times_retail() -> None:
     cfg = load_config()
     t = _coal_plant_tile()
     t.kwh_served_yesterday = 1000.0
-    assert plant_revenue_for_tile(t, cfg) == pytest.approx(1000.0 * cfg.grid_price_retail)
+    assert plant_revenue_for_tile(_default_state(), t) == pytest.approx(
+        1000.0 * cfg.grid_price_retail
+    )
 
 
 def test_plant_revenue_for_tile_zero_when_yesterday_zero() -> None:
-    from world.config import load_config
     from world.pricing import plant_revenue_for_tile
 
-    cfg = load_config()
     t = _coal_plant_tile()
     # Default kwh_served_yesterday == 0 (fresh tile, no /step yet).
-    assert plant_revenue_for_tile(t, cfg) == 0.0
+    assert plant_revenue_for_tile(_default_state(), t) == 0.0
 
 
 def test_plant_revenue_for_tile_zero_when_not_operational() -> None:
-    from world.config import load_config
     from world.pricing import plant_revenue_for_tile
 
-    cfg = load_config()
     t = _coal_plant_tile()
     t.kwh_served_yesterday = 1000.0
     t.operational = False
-    assert plant_revenue_for_tile(t, cfg) == 0.0
+    assert plant_revenue_for_tile(_default_state(), t) == 0.0
 
 
 def test_plant_revenue_for_tile_zero_for_non_plant() -> None:
-    from world.config import load_config
     from world.pricing import plant_revenue_for_tile
 
-    cfg = load_config()
     t = _industrial_tile()
     t.kwh_served_yesterday = 1000.0  # set the field anyway, helper must gate
-    assert plant_revenue_for_tile(t, cfg) == 0.0
+    assert plant_revenue_for_tile(_default_state(), t) == 0.0
 
 
 # -- kwh accumulator behaviour through /step -------------------------------
@@ -826,7 +835,7 @@ def test_plant_fuel_cost_zero_when_no_kwh_served() -> None:
     spec = TILE_CATALOG["coal_plant"]
     t = _coal_plant_tile()
     # Default kwh_served_yesterday == 0 → no fuel burned, no cost.
-    assert plant_fuel_cost_for_tile(t, spec) == 0.0
+    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == 0.0
 
 
 def test_plant_fuel_cost_scales_with_kwh_and_fuel_cost_per_mwh() -> None:
@@ -836,7 +845,9 @@ def test_plant_fuel_cost_scales_with_kwh_and_fuel_cost_per_mwh() -> None:
     t = _coal_plant_tile()
     t.kwh_served_yesterday = 2000.0  # 2 MWh
     # spec.fuel_cost_per_mwh = 20.0 → expected $40/day.
-    assert plant_fuel_cost_for_tile(t, spec) == pytest.approx(2.0 * spec.fuel_cost_per_mwh)
+    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == pytest.approx(
+        2.0 * spec.fuel_cost_per_mwh
+    )
 
 
 def test_plant_fuel_cost_uses_yesterday_not_today() -> None:
@@ -848,7 +859,9 @@ def test_plant_fuel_cost_uses_yesterday_not_today() -> None:
     t = _coal_plant_tile()
     t.kwh_served_today = 9999.0  # today's running total — must be ignored
     t.kwh_served_yesterday = 1000.0
-    assert plant_fuel_cost_for_tile(t, spec) == pytest.approx(1.0 * spec.fuel_cost_per_mwh)
+    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == pytest.approx(
+        1.0 * spec.fuel_cost_per_mwh
+    )
 
 
 def test_plant_fuel_cost_zero_for_renewable() -> None:
@@ -859,7 +872,7 @@ def test_plant_fuel_cost_zero_for_renewable() -> None:
     spec = TILE_CATALOG["solar_farm"]
     t = _solar_tile()
     t.kwh_served_yesterday = 5000.0
-    assert plant_fuel_cost_for_tile(t, spec) == 0.0
+    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == 0.0
 
 
 def test_plant_fuel_cost_zero_when_not_operational() -> None:
@@ -869,7 +882,7 @@ def test_plant_fuel_cost_zero_when_not_operational() -> None:
     t = _coal_plant_tile()
     t.kwh_served_yesterday = 1000.0
     t.operational = False
-    assert plant_fuel_cost_for_tile(t, spec) == 0.0
+    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == 0.0
 
 
 # -- plant_carbon_cost_for_tile unit ---------------------------------------
@@ -1048,7 +1061,7 @@ def _refinery_tile(
 def test_refinery_revenue_zero_when_throughput_zero() -> None:
     from world.pricing import refinery_revenue_for_tile
 
-    assert refinery_revenue_for_tile(_refinery_tile(throughput=0.0)) == 0.0
+    assert refinery_revenue_for_tile(_default_state(), _refinery_tile(throughput=0.0)) == 0.0
 
 
 def test_refinery_revenue_scales_with_throughput() -> None:
@@ -1057,14 +1070,14 @@ def test_refinery_revenue_scales_with_throughput() -> None:
 
     t = _refinery_tile(throughput=400.0)
     expected = 400.0 * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
-    assert refinery_revenue_for_tile(t) == pytest.approx(expected)
+    assert refinery_revenue_for_tile(_default_state(), t) == pytest.approx(expected)
 
 
 def test_refinery_revenue_linear_in_throughput() -> None:
     from world.pricing import refinery_revenue_for_tile
 
-    one = refinery_revenue_for_tile(_refinery_tile(throughput=100.0))
-    two = refinery_revenue_for_tile(_refinery_tile(throughput=200.0))
+    one = refinery_revenue_for_tile(_default_state(), _refinery_tile(throughput=100.0))
+    two = refinery_revenue_for_tile(_default_state(), _refinery_tile(throughput=200.0))
     assert two == pytest.approx(2.0 * one)
 
 
@@ -1073,7 +1086,7 @@ def test_refinery_revenue_zero_for_non_refinery() -> None:
 
     t = _industrial_tile()
     t.current_throughput_bbl_day = 400.0  # spurious — ignored
-    assert refinery_revenue_for_tile(t) == 0.0
+    assert refinery_revenue_for_tile(_default_state(), t) == 0.0
 
 
 def test_refinery_revenue_zero_when_not_operational() -> None:
@@ -1081,7 +1094,7 @@ def test_refinery_revenue_zero_when_not_operational() -> None:
 
     t = _refinery_tile(throughput=400.0)
     t.operational = False
-    assert refinery_revenue_for_tile(t) == 0.0
+    assert refinery_revenue_for_tile(_default_state(), t) == 0.0
 
 
 # -- refinery_carbon_cost_for_tile unit ------------------------------------
@@ -1253,20 +1266,20 @@ def test_well_gross_crude_value_production_uses_rate_times_price() -> None:
 
     well = _production_well(rate=150.0)
     expected = 150.0 * CRUDE_PRICE_USD_PER_BBL
-    assert well_gross_crude_value_for_tile(well) == pytest.approx(expected)
+    assert well_gross_crude_value_for_tile(_default_state(), well) == pytest.approx(expected)
 
 
 def test_well_gross_crude_value_zero_when_rate_zero() -> None:
     from world.pricing import well_gross_crude_value_for_tile
 
-    assert well_gross_crude_value_for_tile(_production_well(rate=0.0)) == 0.0
+    assert well_gross_crude_value_for_tile(_default_state(), _production_well(rate=0.0)) == 0.0
 
 
 def test_well_gross_crude_value_zero_for_injection_well() -> None:
     from world.pricing import well_gross_crude_value_for_tile
 
     well = _injection_well(rate=200.0)
-    assert well_gross_crude_value_for_tile(well) == 0.0
+    assert well_gross_crude_value_for_tile(_default_state(), well) == 0.0
 
 
 # -- well_injection_kwh_per_day unit ---------------------------------------
@@ -1367,3 +1380,161 @@ def test_catalog_economics_exposes_well_constants() -> None:
     eco = cat["economics"]
     assert eco["crude_price_usd_per_bbl"] == pytest.approx(CRUDE_PRICE_USD_PER_BBL)
     assert eco["injection_kwh_per_bbl"] == pytest.approx(INJECTION_KWH_PER_BBL)
+
+
+# -- open-source-arena #01: pricing constants → state-fields regression ----
+
+
+def test_state_carries_pricing_default_fields() -> None:
+    """A reset World must initialise the ten promoted pricing/rate fields on
+    state from their pre-refactor constant defaults so a default game is
+    byte-identical to the legacy constants-only code path."""
+    from world.economy import REFINED_PRICE_USD_PER_BBL
+    from world.population import DAILY_TAX_PER_CAPITA
+    from world.pricing import (
+        COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
+        INDUSTRIAL_REVENUE_PER_DAY,
+    )
+    from world.subsurface import CRUDE_PRICE_USD_PER_BBL
+
+    w = World()
+    w.reset(seed=42)
+    s = w.state
+    assert s.crude_price_usd_per_bbl == pytest.approx(CRUDE_PRICE_USD_PER_BBL)
+    assert s.refined_price_usd_per_bbl == pytest.approx(REFINED_PRICE_USD_PER_BBL)
+    assert s.grid_price_retail == pytest.approx(w.config.grid_price_retail)
+    assert s.grid_price_export == pytest.approx(w.config.grid_price_export)
+    assert s.industrial_revenue_per_day == pytest.approx(INDUSTRIAL_REVENUE_PER_DAY)
+    assert s.commercial_revenue_per_resident_per_day == pytest.approx(
+        COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY
+    )
+    assert s.daily_tax_per_capita == pytest.approx(DAILY_TAX_PER_CAPITA)
+    assert s.blackout_penalty_hour == pytest.approx(w.config.blackout_penalty_hour)
+    assert s.plant_fuel_cost_per_mwh == {
+        "coal_plant": TILE_CATALOG["coal_plant"].fuel_cost_per_mwh,
+        "gas_peaker": TILE_CATALOG["gas_peaker"].fuel_cost_per_mwh,
+    }
+
+
+def test_pricing_state_fields_drive_default_accruals() -> None:
+    """With default state values, per-day fuel-cost, refinery revenue,
+    industrial revenue, commercial revenue, tax revenue, and blackout-
+    penalty accrual all read through state and match the pre-refactor
+    figures derived from the old module-level constants. Asserts on
+    helper outputs against a hand-built fixture so a future scenario can
+    flip a state field and observe an isolated accrual change."""
+    from world.economy import REFINED_PRICE_USD_PER_BBL
+    from world.population import DAILY_TAX_PER_CAPITA
+    from world.pricing import (
+        COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
+        INDUSTRIAL_REVENUE_PER_DAY,
+        commercial_revenue_for_tile,
+        industrial_revenue_for_tile,
+        plant_fuel_cost_for_tile,
+        plant_revenue_for_tile,
+        refinery_revenue_for_tile,
+        well_gross_crude_value_for_tile,
+    )
+    from world.subsurface import CRUDE_PRICE_USD_PER_BBL
+
+    state = _default_state()
+
+    # Industrial revenue: fully staffed → flat $/day from state.
+    ind = _industrial_tile()
+    assert industrial_revenue_for_tile(state, ind) == pytest.approx(
+        state.industrial_revenue_per_day
+    )
+    assert state.industrial_revenue_per_day == pytest.approx(INDUSTRIAL_REVENUE_PER_DAY)
+
+    # Commercial revenue: a single house in radius, fully staffed commercial.
+    house = Tile(
+        id="house",
+        type="house",
+        x=0,
+        y=0,
+        built_day=0,
+        operational=True,
+        housing_capacity=TILE_CATALOG["house"].housing_capacity,
+    )
+    com_spec = TILE_CATALOG["commercial"]
+    com = Tile(
+        id="com",
+        type="commercial",
+        x=0,
+        y=1,  # cheb distance 1 to house
+        built_day=0,
+        operational=True,
+        jobs=com_spec.jobs,
+        demand_kw=com_spec.demand_kw,
+        staffed_jobs=com_spec.jobs,
+    )
+    state.tiles = [house, com]
+    state.population = float(house.housing_capacity)  # 100% occupancy
+    expected_com = house.housing_capacity * state.commercial_revenue_per_resident_per_day
+    assert commercial_revenue_for_tile(state, com) == pytest.approx(expected_com)
+    assert state.commercial_revenue_per_resident_per_day == pytest.approx(
+        COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY
+    )
+    state.tiles = []
+
+    # Plant revenue: 1000 kWh served × state.grid_price_retail.
+    plant = _coal_plant_tile()
+    plant.kwh_served_yesterday = 1000.0
+    assert plant_revenue_for_tile(state, plant) == pytest.approx(1000.0 * state.grid_price_retail)
+
+    # Plant fuel cost: 1000 kWh = 1 MWh × state.plant_fuel_cost_per_mwh[coal].
+    expected_fuel = 1.0 * state.plant_fuel_cost_per_mwh["coal_plant"]
+    coal_spec = TILE_CATALOG["coal_plant"]
+    assert plant_fuel_cost_for_tile(state, plant, coal_spec) == pytest.approx(expected_fuel)
+
+    # Refinery revenue: throughput × yield × state.refined_price.
+    refinery = Tile(
+        id="ref",
+        type="refinery",
+        x=0,
+        y=0,
+        built_day=0,
+        operational=True,
+        current_throughput_bbl_day=100.0,
+    )
+    expected_ref = 100.0 * 0.85 * state.refined_price_usd_per_bbl
+    assert refinery_revenue_for_tile(state, refinery) == pytest.approx(expected_ref)
+    assert state.refined_price_usd_per_bbl == pytest.approx(REFINED_PRICE_USD_PER_BBL)
+
+    # Well crude value: rate × state.crude_price.
+    well = Well(
+        id="w1",
+        type="production",
+        x=0,
+        y=0,
+        target_z=5,
+        drilled_day=0,
+        current_rate_bbl_day=50.0,
+    )
+    assert well_gross_crude_value_for_tile(state, well) == pytest.approx(
+        50.0 * state.crude_price_usd_per_bbl
+    )
+    assert state.crude_price_usd_per_bbl == pytest.approx(CRUDE_PRICE_USD_PER_BBL)
+
+    # Tax: state.daily_tax_per_capita × int(pop) accumulates inside
+    # update_population. Verify the constant equality (DAILY_TAX_PER_CAPITA).
+    assert state.daily_tax_per_capita == pytest.approx(DAILY_TAX_PER_CAPITA)
+
+
+def test_default_state_blackout_penalty_matches_pre_refactor_accrual() -> None:
+    """A 24-hour blackout in a no-plant world accrues
+    24 × state.blackout_penalty_hour, which equals the Config default
+    (the legacy read site). This pins the blackout-penalty read site to
+    state, not Config, so a scenario can scale the penalty without
+    rebuilding the world."""
+    w = World()
+    w.reset(seed=42)
+    assert w.state.blackout_penalty_hour == pytest.approx(w.config.blackout_penalty_hour)
+    treasury_before = w.state.treasury
+    w.step(days=1)
+    expected_penalty = 24 * w.state.blackout_penalty_hour
+    assert w.state.today_summary_so_far["blackout_penalty"] == pytest.approx(expected_penalty)
+    # Confirms the read path went through state, not Config: a mutation
+    # to state mid-run would change the accrual, but a default-state run
+    # is byte-identical to the legacy constants-only path.
+    assert w.state.treasury < treasury_before

@@ -18,16 +18,14 @@ from typing import TYPE_CHECKING
 from world import workforce
 from world.economy import (
     INDUSTRIAL_PROCESS_CO2_T_PER_DAY,
-    REFINED_PRICE_USD_PER_BBL,
     REFINERY_CO2_PER_BBL,
     REFINERY_YIELD,
 )
 from world.power import PLANT_TYPES
-from world.subsurface import CRUDE_PRICE_USD_PER_BBL, INJECTION_KWH_PER_BBL
+from world.subsurface import INJECTION_KWH_PER_BBL
 
 if TYPE_CHECKING:
     from world.catalog import TileSpec
-    from world.config import Config
     from world.sim import World
     from world.state import Tile, Well, WorldState
 
@@ -46,15 +44,15 @@ COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY: float = 1.0
 COMMERCIAL_RADIUS: int = 2
 
 
-def industrial_revenue_for_tile(tile: Tile) -> float:
+def industrial_revenue_for_tile(state: WorldState, tile: Tile) -> float:
     """Daily revenue for one industrial tile at its current staffing.
 
     Zero when the tile is non-operational or not an industrial. Otherwise
-    ``INDUSTRIAL_REVENUE_PER_DAY × workforce.efficiency(tile)``.
+    ``state.industrial_revenue_per_day × workforce.efficiency(tile)``.
     """
     if tile.type != "industrial" or not tile.operational:
         return 0.0
-    return INDUSTRIAL_REVENUE_PER_DAY * workforce.efficiency(tile)
+    return state.industrial_revenue_per_day * workforce.efficiency(tile)
 
 
 def industrial_co2_for_tile(tile: Tile) -> float:
@@ -108,15 +106,15 @@ def commercial_revenue_for_tile(state: WorldState, tile: Tile) -> float:
     return (
         capacity_in_radius
         * occupancy
-        * COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY
+        * state.commercial_revenue_per_resident_per_day
         * workforce.efficiency(tile)
     )
 
 
-def plant_revenue_for_tile(tile: Tile, config: Config) -> float:
+def plant_revenue_for_tile(state: WorldState, tile: Tile) -> float:
     """Daily revenue estimate for one plant tile at its current operating state.
 
-    Returns ``kwh_served_yesterday × config.grid_price_retail`` for plant
+    Returns ``kwh_served_yesterday × state.grid_price_retail`` for plant
     tiles (solar / wind / coal / gas). Day 0 has no completed dispatch yet
     so ``kwh_served_yesterday == 0`` and revenue is 0; from day 1 onwards
     the value reflects the just-completed day's gross dispatch output.
@@ -128,19 +126,23 @@ def plant_revenue_for_tile(tile: Tile, config: Config) -> float:
     """
     if tile.type not in PLANT_TYPES or not tile.operational:
         return 0.0
-    return tile.kwh_served_yesterday * config.grid_price_retail
+    return tile.kwh_served_yesterday * state.grid_price_retail
 
 
-def plant_fuel_cost_for_tile(tile: Tile, spec: TileSpec) -> float:
+def plant_fuel_cost_for_tile(state: WorldState, tile: Tile, spec: TileSpec) -> float:
     """Daily fuel cost for one plant tile, based on yesterday's served kWh.
 
-    Returns ``kwh_served_yesterday / 1000 × spec.fuel_cost_per_mwh``. Renewables
-    have ``fuel_cost_per_mwh == 0`` so the result is 0; non-plant tiles and
-    non-operational plants also return 0.
+    Returns ``kwh_served_yesterday / 1000 × cost_per_mwh`` where
+    ``cost_per_mwh`` is sourced from ``state.plant_fuel_cost_per_mwh`` for
+    coal/gas (the mutable per-type dict scenarios can override) and falls
+    back to ``spec.fuel_cost_per_mwh`` for tiles outside the dict
+    (renewables, which have 0 there anyway). Non-plant tiles and
+    non-operational plants return 0.
     """
     if tile.type not in PLANT_TYPES or not tile.operational:
         return 0.0
-    return (tile.kwh_served_yesterday / 1000.0) * spec.fuel_cost_per_mwh
+    cost_per_mwh = state.plant_fuel_cost_per_mwh.get(tile.type, spec.fuel_cost_per_mwh)
+    return (tile.kwh_served_yesterday / 1000.0) * cost_per_mwh
 
 
 def plant_co2_for_tile(tile: Tile, spec: TileSpec) -> float:
@@ -165,18 +167,18 @@ def plant_carbon_cost_for_tile(state: WorldState, tile: Tile, spec: TileSpec) ->
     return plant_co2_for_tile(tile, spec) * state.carbon_price
 
 
-def refinery_revenue_for_tile(tile: Tile) -> float:
+def refinery_revenue_for_tile(state: WorldState, tile: Tile) -> float:
     """Daily revenue estimate for one refinery tile at its current throughput.
 
     Returns ``current_throughput_bbl_day × REFINERY_YIELD ×
-    REFINED_PRICE_USD_PER_BBL``. Non-refinery and non-operational tiles
-    return 0. The throughput pinned on the tile is the previous day's actual
-    refining input (set by ``_advance_one_day`` via ``route_crude``), so the
-    popup row reflects yesterday's accounting window.
+    state.refined_price_usd_per_bbl``. Non-refinery and non-operational
+    tiles return 0. The throughput pinned on the tile is the previous day's
+    actual refining input (set by ``_advance_one_day`` via ``route_crude``),
+    so the popup row reflects yesterday's accounting window.
     """
     if tile.type != "refinery" or not tile.operational:
         return 0.0
-    return tile.current_throughput_bbl_day * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
+    return tile.current_throughput_bbl_day * REFINERY_YIELD * state.refined_price_usd_per_bbl
 
 
 def refinery_co2_for_tile(tile: Tile) -> float:
@@ -199,15 +201,16 @@ def refinery_carbon_cost_for_tile(state: WorldState, tile: Tile) -> float:
     return refinery_co2_for_tile(tile) * state.carbon_price
 
 
-def well_gross_crude_value_for_tile(well: Well) -> float:
+def well_gross_crude_value_for_tile(state: WorldState, well: Well) -> float:
     """Daily gross crude value estimate for one production well.
 
-    Returns ``current_rate_bbl_day × CRUDE_PRICE_USD_PER_BBL`` for production
-    wells. Injection wells return 0 (they consume bbl/day, not produce it).
+    Returns ``current_rate_bbl_day × state.crude_price_usd_per_bbl`` for
+    production wells. Injection wells return 0 (they consume bbl/day, not
+    produce it).
     """
     if well.type != "production":
         return 0.0
-    return well.current_rate_bbl_day * CRUDE_PRICE_USD_PER_BBL
+    return well.current_rate_bbl_day * state.crude_price_usd_per_bbl
 
 
 def well_injection_kwh_per_day(well: Well) -> float:
@@ -260,7 +263,7 @@ def update_civic_revenue(world: World) -> None:
     industrial = 0.0
     commercial = 0.0
     for tile in state.tiles:
-        industrial += industrial_revenue_for_tile(tile)
+        industrial += industrial_revenue_for_tile(state, tile)
         commercial += commercial_revenue_for_tile(state, tile)
     if industrial:
         state.today_summary_so_far["industrial_revenue"] = (

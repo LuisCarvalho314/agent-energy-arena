@@ -94,6 +94,7 @@ def preview_next_day(world: World) -> dict[str, Any]:
             weather_proj,
             state.day,
             h,
+            fuel_cost_per_mwh=state.plant_fuel_cost_per_mwh,
         )
         balance, _served, _excess, _R = compute_balance_state(supply_kw, demand_kw)
 

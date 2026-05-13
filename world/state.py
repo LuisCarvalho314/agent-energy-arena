@@ -118,6 +118,24 @@ class WorldState:
     # cumulative occurrences per game).
     carbon_price: float = 25.0
 
+    # Mutable pricing/rate fields (open-source-arena slice 01). Defaults
+    # mirror the module-level constants so a default-state world is
+    # byte-identical to the pre-refactor behavior; World.reset is the
+    # single point where defaults flow from constants/Config into state.
+    # Scenarios mutate these in their `apply(world, day)` body to simulate
+    # price shocks (crude collapse, fuel-cost spike, tax hike, ...).
+    crude_price_usd_per_bbl: float = 40.0
+    refined_price_usd_per_bbl: float = 90.0
+    grid_price_retail: float = 0.08
+    grid_price_export: float = 0.04
+    industrial_revenue_per_day: float = 500.0
+    commercial_revenue_per_resident_per_day: float = 1.0
+    daily_tax_per_capita: float = 4.0
+    blackout_penalty_hour: float = 5000.0
+    plant_fuel_cost_per_mwh: dict[str, float] = field(
+        default_factory=lambda: {"coal_plant": 12.0, "gas_peaker": 30.0}
+    )
+
     # Lifetime served-kWh accumulators for the renewable share term in the
     # scoring formula (PRD §"Scoring"). Both are reset on /reset and updated
     # at the end of each hour; curtailed kWh (the post-demand surplus exported

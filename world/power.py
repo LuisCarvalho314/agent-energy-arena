@@ -133,6 +133,7 @@ def dispatch(
     D: int,
     h: int,
     solar_derate: float = 1.0,
+    fuel_cost_per_mwh: dict[str, float] | None = None,
 ) -> tuple[dict[str, float], float, dict[str, float]]:
     """Run the merit-order dispatch for one hour.
 
@@ -143,22 +144,33 @@ def dispatch(
 
     `solar_derate` (default 1.0) multiplies the per-solar-plant output
     cap to model heatwave panel-temperature losses; wind unaffected.
+
+    `fuel_cost_per_mwh` (default None) supplies the per-plant-type fuel
+    costs that drive the merit-order key for coal/gas. When None the
+    catalog defaults are used so unit tests calling `dispatch()` directly
+    keep their semantics. Production callers pass `state.plant_fuel_cost_per_mwh`
+    so a scenario can flip the merit order via a fuel-price shock.
     """
     outputs: dict[str, float] = {p.id: 0.0 for p in plants}
 
     cloud = float(weather.get("cloud_factor", 0.85))
     wind_v = float(weather.get("wind_speed_mps", 0.0))
 
+    def _cost(plant_type: str) -> float:
+        if fuel_cost_per_mwh is not None and plant_type in fuel_cost_per_mwh:
+            return fuel_cost_per_mwh[plant_type]
+        return TILE_CATALOG[plant_type].fuel_cost_per_mwh
+
     operational = [p for p in plants if p.operational]
     solar = [p for p in operational if p.type == "solar_farm"]
     wind = [p for p in operational if p.type == "wind_turbine"]
     coal = sorted(
         (p for p in operational if p.type == "coal_plant"),
-        key=lambda x: (TILE_CATALOG[x.type].fuel_cost_per_mwh, x.id),
+        key=lambda x: (_cost(x.type), x.id),
     )
     gas = sorted(
         (p for p in operational if p.type == "gas_peaker"),
-        key=lambda x: (TILE_CATALOG[x.type].fuel_cost_per_mwh, x.id),
+        key=lambda x: (_cost(x.type), x.id),
     )
 
     # Per-PRD: an N%-staffed plant behaves like an N%-sized plant. Every

@@ -144,6 +144,6 @@ def update_population(world: World) -> None:
 
     state.happiness = happiness
 
-    tax = DAILY_TAX_PER_CAPITA * int(state.population)
+    tax = state.daily_tax_per_capita * int(state.population)
     state.treasury += tax
     state.today_summary_so_far["tax_revenue"] = tax
