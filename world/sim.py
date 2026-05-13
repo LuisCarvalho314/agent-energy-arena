@@ -210,15 +210,19 @@ def _well_to_dict(w: Well, world: World) -> dict[str, Any]:
     }
 
 
-def _scenario_dotted_path(scenario: Scenario) -> str | None:
+def _scenario_dotted_path(scenario: Scenario, override: str | None = None) -> str | None:
     """Best-effort dotted-path for a Scenario instance for metadata.json.
 
-    Returns `None` for the default `NullScenario`; otherwise returns
-    `"module.ClassName"`. Issue 04 will plumb the actual dotted path
-    used by `load_scenario` through World so this fallback is bypassed
-    for API-attached scenarios — until then, the class lookup is the
-    best we can do.
+    `override` wins when the caller (e.g. the API loader, evaluate.py
+    `--scenario` flag) knows the exact dotted path supplied by the user
+    — that path is authoritative because the loader walks the module
+    for any matching subclass, so the class-derived fallback may be
+    `module.ClassName` while the user wrote `module`. Returns `None`
+    for the default `NullScenario`; otherwise returns either the
+    override or `"module.ClassName"`.
     """
+    if override is not None:
+        return override
     if isinstance(scenario, NullScenario):
         return None
     cls = type(scenario)
@@ -245,6 +249,13 @@ class World:
         self.config: Config = config or load_config()
         self.session: str = session
         self.scenario: Scenario = scenario if scenario is not None else NullScenario()
+        # open-source-arena slice 04: user-supplied dotted path captured
+        # by `POST /scenario` / `POST /reset {"scenario": ...}` /
+        # `evaluate.py --scenario`. When non-None it is preferred over
+        # the class-derived fallback in `_scenario_dotted_path`, so
+        # `metadata.json` records the path the caller actually wrote
+        # rather than the loader's resolved class location.
+        self.scenario_dotted_path: str | None = None
         # open-source-arena slice 03: optional per-game state log. When
         # `runs_root` is set, every reset allocates a fresh `Recorder`
         # and the in-progress one (if any) is finalized first — no run
@@ -281,10 +292,20 @@ class World:
 
     # -- Lifecycle ---------------------------------------------------------
 
-    def reset(self, seed: int | None = None, *, scenario: Scenario | None = None) -> None:
+    def reset(
+        self,
+        seed: int | None = None,
+        *,
+        scenario: Scenario | None = None,
+        scenario_dotted_path: str | None = None,
+    ) -> None:
         seed_used = self.config.world_seed if seed is None else int(seed)
         if scenario is not None:
             self.scenario = scenario
+            # When the caller passes a scenario instance, the dotted path
+            # is reset alongside it — None means "use class-derived
+            # fallback", a non-None override pins the user-supplied path.
+            self.scenario_dotted_path = scenario_dotted_path
         # open-source-arena slice 03: close out any in-progress recorder
         # before allocating a fresh one. Calling finalize on a recorder
         # that has been finalized already is a no-op (idempotent).
@@ -294,7 +315,7 @@ class World:
             self.recorder = Recorder(
                 root=self.runs_root,
                 seed=seed_used,
-                scenario_name=_scenario_dotted_path(self.scenario),
+                scenario_name=_scenario_dotted_path(self.scenario, self.scenario_dotted_path),
                 session=self.session,
             )
         master = np.random.SeedSequence(seed_used)

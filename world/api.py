@@ -20,6 +20,7 @@ from starlette.types import Scope
 
 from world.action_log import ActionLog
 from world.catalog import build_catalog
+from world.scenario import NullScenario, load_scenario
 from world.scoring import score as score_world
 from world.sim import World
 from world.subsurface import SEISMIC_DEFAULT_SIZE
@@ -41,6 +42,14 @@ BASELINES_DIR: Path = Path(__file__).resolve().parent.parent / "baselines"
 
 class ResetBody(BaseModel):
     seed: int | None = None
+    # open-source-arena slice 04: optional scenario dotted path. When
+    # present, the reset attaches the resolved scenario to the new
+    # world; absent, the world's existing scenario is preserved.
+    scenario: str | None = None
+
+
+class ScenarioBody(BaseModel):
+    dotted_path: str
 
 
 class StepBody(BaseModel):
@@ -128,6 +137,38 @@ def create_app(
     def get_state() -> dict[str, Any]:
         return app.state.world.state_dict()
 
+    @app.get("/scenario")
+    def get_scenario() -> dict[str, Any]:
+        world = app.state.world
+        # NullScenario surfaces as None for downstream consumers (UI,
+        # evaluate.py replay) so they can distinguish "no scenario
+        # attached" from a real dotted path.
+        if isinstance(world.scenario, NullScenario):
+            return {"dotted_path": None}
+        return {"dotted_path": world.scenario_dotted_path}
+
+    @app.post("/scenario")
+    def post_scenario(body: ScenarioBody) -> dict[str, Any]:
+        params = body.model_dump()
+        try:
+            scenario = load_scenario(body.dotted_path)
+        except (ImportError, ValueError) as exc:
+            app.state.action_log.append("/scenario", params, ok=False, error=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        world = app.state.world
+        world.scenario = scenario
+        world.scenario_dotted_path = body.dotted_path
+        result: dict[str, Any] = {"ok": True, "dotted_path": body.dotted_path}
+        app.state.action_log.append("/scenario", params, ok=True, result=result)
+        return result
+
+    @app.get("/run")
+    def get_run() -> dict[str, Any]:
+        recorder = app.state.world.recorder
+        if recorder is None:
+            return {"run_id": None, "dir": None}
+        return {"run_id": recorder.run_id, "dir": str(recorder.dir)}
+
     @app.get("/events")
     def get_events() -> dict[str, Any]:
         s = app.state.world.state
@@ -157,8 +198,19 @@ def create_app(
     @app.post("/reset")
     def post_reset(body: ResetBody) -> dict[str, Any]:
         params = body.model_dump()
+        scenario_instance = None
+        if body.scenario is not None:
+            try:
+                scenario_instance = load_scenario(body.scenario)
+            except (ImportError, ValueError) as exc:
+                app.state.action_log.append("/reset", params, ok=False, error=str(exc))
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            app.state.world.reset(seed=body.seed)
+            app.state.world.reset(
+                seed=body.seed,
+                scenario=scenario_instance,
+                scenario_dotted_path=body.scenario if scenario_instance else None,
+            )
             result = {
                 "ok": True,
                 "treasury_after": app.state.world.state.treasury,

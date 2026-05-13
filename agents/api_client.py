@@ -80,8 +80,20 @@ class ApiClient:
 
     # -- Mutating endpoints -----------------------------------------------
 
-    def reset(self, seed: int | None = None) -> dict[str, Any]:
-        return self._post("/reset", {"seed": seed})
+    def reset(self, seed: int | None = None, *, scenario: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"seed": seed}
+        if scenario is not None:
+            body["scenario"] = scenario
+        return self._post("/reset", body)
+
+    def attach_scenario(self, dotted_path: str) -> dict[str, Any]:
+        return self._post("/scenario", {"dotted_path": dotted_path})
+
+    def scenario(self) -> dict[str, Any]:
+        return self._get("/scenario")
+
+    def run(self) -> dict[str, Any]:
+        return self._get("/run")
 
     def step(self, days: int = 7) -> dict[str, Any]:
         return self._post("/step", {"days": days})

@@ -57,7 +57,7 @@ def _load_agent_class(module_name: str) -> type[BaseAgent]:
                 break
     if cls is None or not isinstance(cls, type):
         raise ValueError(f"{module_name} does not expose an `Agent` class or BaseAgent subclass")
-    return cls  # type: ignore[no-any-return]
+    return cls
 
 
 def _make_inprocess_client(
@@ -120,7 +120,9 @@ def _score_breakdown(final_state: dict[str, Any], seed: int) -> dict[str, Any] |
 def _dispatch(api: ApiClient, endpoint: str, params: dict[str, Any]) -> Any:
     """Re-issue a logged action against the fresh ApiClient."""
     if endpoint == "/reset":
-        return api.reset(seed=params.get("seed"))
+        return api.reset(seed=params.get("seed"), scenario=params.get("scenario"))
+    if endpoint == "/scenario":
+        return api.attach_scenario(str(params["dotted_path"]))
     if endpoint == "/step":
         return api.step(days=int(params.get("days", 1)))
     if endpoint == "/build":
