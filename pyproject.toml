@@ -26,11 +26,11 @@ llm = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["world*", "agents*"]
-exclude = ["world.tests*", "agents.tests*", "tests*", "submit*"]
+include = ["world*", "agents*", "scenarios*"]
+exclude = ["world.tests*", "agents.tests*", "scenarios.tests*", "tests*", "submit*"]
 
 [tool.pytest.ini_options]
-testpaths = ["world/tests", "agents/tests", "tests"]
+testpaths = ["world/tests", "agents/tests", "scenarios/tests", "tests"]
 addopts = "-q"
 
 [tool.ruff]
@@ -56,7 +56,7 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.11"
-files = ["world", "agents"]
+files = ["world", "agents", "scenarios"]
 strict_optional = true
 warn_unused_ignores = true
 warn_redundant_casts = true
