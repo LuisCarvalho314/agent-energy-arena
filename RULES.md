@@ -1,0 +1,441 @@
+# Rules
+
+The full mechanics of the simulation. Every formula here has a 1:1 named-function counterpart in `world/` (see the file references). Numbers are configurable through `world/config.py` and the environment variables it reads; the defaults shown are what ships.
+
+If you're after API shapes, see [API.md](API.md). If you're writing a stress scenario, see [SCENARIOS.md](SCENARIOS.md).
+
+## Table of contents
+
+- [Time and map](#time-and-map)
+- [Starting conditions](#starting-conditions)
+- [Build catalog](#build-catalog)
+- [Weather (solar, wind, forecasts)](#weather-solar-wind-forecasts)
+- [Demand](#demand)
+- [Dispatch and grid balance](#dispatch-and-grid-balance)
+- [Batteries](#batteries)
+- [Subsurface and wells](#subsurface-and-wells)
+- [Pipelines and crude routing](#pipelines-and-crude-routing)
+- [Refinery](#refinery)
+- [Carbon and emissions](#carbon-and-emissions)
+- [Population and happiness](#population-and-happiness)
+- [Revenue, taxes, and finance](#revenue-taxes-and-finance)
+- [Events](#events)
+- [Scoring](#scoring)
+- [Determinism contract](#determinism-contract)
+
+## Time and map
+
+| Symbol | Default | Env var | Notes |
+|---|---|---|---|
+| Tick | 24/day | `TICKS_PER_DAY` | One simulated hour. |
+| Game length | 3650 days | `GAME_DAYS` | Agent eval default. |
+| Manual game length | 365 days | `MANUAL_GAME_DAYS` | UI default. |
+| Surface width | 32 | `WORLD_W` | tiles |
+| Surface height | 32 | `WORLD_H` | tiles |
+| Subsurface depth | 16 | `WORLD_D` | voxels; z=0 is top |
+| Step cadence | 1–7 days/call | argued | `POST /step` accepts `days ∈ [1,7]`. |
+
+The agent decides at hour 0 of each day. Build/demolish/survey/drill actions submitted before `POST /step` apply at the start of the first stepped day. Well/refinery/plant/battery setpoints apply for the duration of subsequent days until changed.
+
+## Starting conditions
+
+| Field | Default | Env var |
+|---|---|---|
+| Treasury | $500,000 | `STARTING_CASH` |
+| Population | 100 | `STARTING_POP` |
+| Town hall | center, +100 housing, +30 jobs | hardcoded |
+
+The town hall is immutable, counts as a road for adjacency, and provides housing + jobs at no cost. All other tiles start empty. The subsurface is hidden until surveyed.
+
+## Build catalog
+
+CAPEX is paid up-front at build time; OPEX is deducted daily as long as the tile exists. Demolition refunds 25% of the original CAPEX. The full machine-readable catalog ships through `GET /catalog`; the source of truth is `world/catalog.py`.
+
+| Tile | CAPEX | OPEX/day | Spec |
+|---|---:|---:|---|
+| `road` | 500 | 0 | Connectivity for civilian tiles. |
+| `house` | 3,000 | 20 | +8 housing capacity. Road-adjacent. |
+| `commercial` | 8,000 | 50 | +12 jobs. 50 kW peak (8–20h), 20% otherwise. Earns commercial revenue per nearby resident. Road-adjacent. |
+| `industrial` | 20,000 | 200 | +30 jobs. 300 kW continuous. Earns `industrial_revenue_per_day` per staffed slot. Emits CO₂. Road-adjacent. |
+| `park` | 5,000 | 30 | Boosts happiness with radius-2 effect. |
+| `solar_farm` | 25,000 | 50 | Up to 150 kW (sun + cloud-dependent). |
+| `wind_turbine` | 40,000 | 80 | Up to 200 kW (wind-dependent). |
+| `gas_peaker` | 80,000 | 150 | 0–500 kW. Ramp 50%/h. Fuel $30/MWh. 0.4 t CO₂/MWh. |
+| `coal_plant` | 200,000 | 400 | 375–1500 kW. Min run 25%. Ramp 10%/h. Fuel $12/MWh. 0.9 t CO₂/MWh. |
+| `battery` | 60,000 | 40 | 200 kW rated, 800 kWh storage, 85% round-trip. |
+| `oil_well` | 50,000 | 100 | Production well. Setpoint 0–200 bbl/day. Drilled via `/drill`. |
+| `injection_well` | 30,000 | 50 | Injection well. Setpoint 0–200 bbl/day. Power 50 kWh/bbl. Drilled via `/drill`. |
+| `refinery` | 150,000 | 300 | +25 jobs. Up to 500 bbl/day. 200 kWh/bbl. 0.3 t CO₂/bbl. Road-adjacent. |
+| `pipeline` | 2,000 | 5 | Crude transport. Routes producer→refinery on the 4-connected component. |
+| `town_hall` | n/a | 0 | Placed at start. Immutable. +100 housing, +30 jobs. |
+
+Adjacency rules:
+
+- `house`, `commercial`, `industrial`, `refinery` must be orthogonally adjacent to a road tile or to another civilian tile that is itself road-connected via 4-connected flood-fill from any road. The town hall counts as a road.
+- Plants, batteries, and wells do not require road adjacency. Pipelines define their own 4-connected crude-transport network.
+- Wells are placed via `/drill`, not `/build`; the call specifies `target_z`. Two wells cannot share the same surface tile.
+
+Validity errors returned by mutating endpoints: `insufficient_funds`, `tile_occupied`, `out_of_bounds`, `no_road_adjacency`, `voxel_out_of_bounds`, `unknown_tile_type`, and a handful of endpoint-specific cases (see [API.md](API.md)).
+
+## Weather (solar, wind, forecasts)
+
+Implementation: `world/weather.py`. Both processes consume the `sim_rng` stream; values can be clipped by `state.weather_overrides[...]` written by a scenario.
+
+### Solar
+
+```
+sunrise(D)    = 6  - 2·sin(2π·D/365)        # 4..8
+sunset(D)     = 18 + 2·sin(2π·D/365)        # 16..20
+day_length(D) = sunset(D) - sunrise(D)
+
+irradiance(D, h) =
+    0                                            if h < sunrise(D) or h > sunset(D)
+    sin(π·(h - sunrise(D))/day_length(D)) · cloud_factor(t)   otherwise
+
+cloud_factor(t+1) = clip(0.7·cloud_factor(t) + 0.3·0.85 + N(0, 0.10), 0.1, 1.0)
+P_solar_kw(t)     = SOLAR_PEAK_KW · irradiance(D, h)              # SOLAR_PEAK_KW = 150
+```
+
+### Wind
+
+```
+v_mean(D)  = 7 + 2·sin(2π·D/365 + φ_seed)        # m/s, seasonal
+v(t+1)     = clip(0.85·v(t) + 0.15·v_mean(D) + N(0, 1.5), 0, 30)
+θ(t+1)     = (θ(t) + N(0, 5°)) mod 360°
+
+turbine_kw(v) =
+    0                                       if v < 3.0 or v > 25.0
+    WIND_RATED_KW                           if v ≥ 12.0          # 200
+    WIND_RATED_KW · ((v - 3.0)/9.0)³        otherwise
+```
+
+Direction `θ` is reported in `state.weather_now` but does not affect output (turbines auto-yaw in v1).
+
+### Forecasts
+
+```
+forecast(world, hours=24):
+  for i in [0..hours):
+    σ = 0.05 + 0.25·(i/hours)              # 0.05 → 0.30
+    yield {
+      hour_offset:     i,
+      solar_irradiance: clip(true·(1 + N(0, σ)),     0, 1),
+      wind_speed_mps:   max(0, true + N(0, σ·5)),
+      demand_factor:    true·(1 + N(0, σ·0.3)),
+    }
+```
+
+Forecasts are independently sampled per call from a dedicated `forecast_rng` stream — re-querying the same hours yields different noise. Averaging across calls reduces variance.
+
+## Demand
+
+Implementation: `world/power.py`.
+
+```
+PER_CAPITA_KW = 0.333                          # 8 kWh/day/person ≈ 0.333 kW continuous
+
+residential_kw(h, pop) = pop · PER_CAPITA_KW · hourly_factor(h)
+
+hourly_factor(h):
+    h < 5:  0.6     # late night
+    h < 9:  1.0     # morning
+    h < 17: 0.8     # midday
+    h < 22: 1.5     # evening peak
+    else:   0.7
+```
+
+Industrial tiles draw their full `demand_kw` continuously. Commercial tiles draw full `demand_kw` between 08:00 and 20:00, 20% otherwise. Injection wells and refineries add their process load (computed from yesterday's throughput so dispatch is causal).
+
+Multipliers (state-mutable, scenario-targetable):
+
+- Heatwave multiplies residential demand by 1.40 while `heatwave` is active.
+- Demand surprise multiplies commercial+industrial demand by 1.30 while `demand_surprise` is active.
+
+## Dispatch and grid balance
+
+Implementation: `world/power.py`.
+
+Each hour, dispatch fires in order:
+
+1. **Must-take renewables.** Solar and wind at their weather-modulated `available_kw`.
+2. **Battery charge/discharge.** Auto: charge when `R = supply/demand > 1.05`, discharge when `R < 0.95`; manual override via `charge_setpoint_kw` clamps the band. Round-trip efficiency 85%.
+3. **Coal must-run.** Each coal plant runs at ≥25% of capacity.
+4. **Coal ramp-up by merit order.** Cheapest fuel cost first; per-hour ramp room is `capacity · COAL_RAMP_PER_HOUR` (0.10).
+5. **Gas peakers.** Cheapest fuel cost first; ramp room `capacity · GAS_RAMP_PER_HOUR` (0.50).
+6. **Per-plant overrides.** `POST /control/plant` setpoints (when wired) clamp Step 4/5 outcomes.
+
+With `R = supply / max(demand, 1)`:
+
+```
+R ≥ 1.15:   state = "curtailment"  served = demand   surplus exported at grid_price_export
+R ≥ 0.95:   state = "balanced"     served = demand
+R ≥ 0.70:   state = "brownout"     served = supply   happiness -= 0.05·(1-R)
+R <  0.70:  state = "blackout"     served = supply   happiness -= 0.20
+                                                     treasury  -= state.blackout_penalty_hour
+```
+
+Curtailed kWh sold to the external grid (`grid_price_export`, default $0.04/kWh) does **not** contribute to the renewable share denominator — only kWh actually served to local load count toward `R` in the score formula.
+
+Per-source dispatch totals land in `state.power_now.by_source_kw` and the hourly arrays `last_day_supply_kw_by_hour`, `last_day_demand_kw_by_hour`, and `last_day_balance_state_by_hour`.
+
+## Batteries
+
+`battery` tile fields: `soc_kwh` (state of charge, kWh), `charge_setpoint_kw` (>0 charge, <0 discharge, 0 = auto).
+
+```
+rated     = TILE_CATALOG["battery"].capacity_kw          # 200
+store_cap = TILE_CATALOG["battery"].storage_kwh          # 800
+η         = TILE_CATALOG["battery"].round_trip_efficiency # 0.85
+
+cmd = clip(charge_setpoint_kw, -rated, +rated)    if override
+    = +rated  if auto and R > 1.05
+    = -rated  if auto and R < 0.95
+    = 0       otherwise
+
+if cmd > 0:  soc_kwh += cmd · √η         # charging stores √η of input
+if cmd < 0:  soc_kwh += cmd / √η         # discharging burns √η of output
+```
+
+API knob: `POST /control/battery {tile_id, charge_kw}`. `charge_kw = 0` returns to auto.
+
+## Subsurface and wells
+
+Implementation: `world/subsurface.py`. Voxel coordinates are `(x, y, z)` with `z=0` at the top, `z=WORLD_D-1` at the bottom.
+
+### Reservoir generation per seed
+
+At reset, the world generates 3–7 reservoir blobs (`reservoir_rng` stream):
+
+1. Center voxel `(x, y, z)` with `z ∈ [4, WORLD_D-2]`.
+2. Radius `r ∈ [3, 6]`.
+3. Within Manhattan distance `r` of center, mark a voxel hydrocarbon-bearing with probability `0.6·(1 - dist/r)`.
+4. Per HC voxel: porosity `φ ~ U(0.10, 0.30)`, permeability `k ~ LogU(10, 1000)` mD, oil saturation `S_o ~ U(0.55, 0.80)`, `oil_in_place_bbl = φ · S_o · VOXEL_VOLUME_BBL`. `VOXEL_VOLUME_BBL = 100,000`.
+5. Total OOIP varies by seed; expected 5–15 million bbl on default size.
+
+### Surveys
+
+`SEISMIC_BASE_COST = 15_000` (size 8 column); cost scales quadratically with size. Each surveyed voxel returns a noisy estimate of `oil_in_place` and `permeability` (σ ≈ 0.25 / 0.30). Re-surveying is allowed and reduces variance via averaging.
+
+### Production
+
+```
+def well_production_bbl_day(w, world):
+    pool = voxels_in_3x3x3(w.x, w.y, w.target_z)
+    V_init   = sum(v.oil_in_place_bbl    for v in pool)
+    V_remain = sum(v.oil_remaining_bbl   for v in pool)
+    if V_init == 0: return 0
+
+    fraction = V_remain / V_init
+    k_eff    = mean_perm(pool) / 500.0
+
+    # Injection support from same-reservoir injectors (rate-based)
+    inj_total      = same_reservoir_injection_rate(w, world)
+    pressure_boost = min(0.5, inj_total / V_init)
+    effective      = min(1.0, fraction + pressure_boost)
+
+    q_potential = Q_MAX_WELL_BBL_DAY · k_eff · effective    # Q_MAX = 200
+    q_actual    = min(w.setpoint_rate_bbl_day, q_potential)
+
+    drain pool by weights (k · v.oil_remaining)
+    return q_actual
+```
+
+### Injection
+
+```
+def well_injection(iw):
+    q = min(iw.setpoint_rate_bbl_day, Q_MAX_WELL_BBL_DAY)
+    iw.cumulative_injected_bbl += q
+    iw.power_kw = q · INJECTION_KWH_PER_BBL / 24       # 50 kWh/bbl
+    return q
+```
+
+Notes:
+
+- The 3×3×3 pool is clipped at grid boundaries.
+- Multiple wells targeting overlapping pools share the resource; order is deterministic by `well.id`.
+- A well targeting non-HC rock (`V_init = 0`) is wasted CAPEX — it sits silent forever.
+
+## Pipelines and crude routing
+
+Pipelines are a 4-connected network. At end-of-day routing (`world/pipelines.py`):
+
+- Each connected component aggregates the crude produced by wells touching it.
+- Refineries on the same component pull crude in priority of setpoint, capped by their throughput.
+- Orphan producers (no pipeline component) sell at `state.crude_price_usd_per_bbl`.
+- Orphan refineries (component with no wells) starve and produce nothing.
+
+`state.pipeline_networks`, `state.orphan_well_ids`, `state.orphan_refinery_ids` surface the routing decisions in `/state`.
+
+## Refinery
+
+```
+def refine(refinery, available_crude_bbl_day):
+    actual = min(refinery.setpoint_rate, available_crude_bbl_day, REFINERY_MAX_BBL_DAY)
+    refined_bbl       = actual · REFINERY_YIELD            # 0.85
+    refinery.power_kw = actual · REFINERY_KWH_PER_BBL / 24 # 200 kWh/bbl
+    refinery.co2_t_day= actual · REFINERY_CO2_PER_BBL      # 0.30 t/bbl
+    return refined_bbl, actual
+```
+
+Daily oil revenue:
+
+```
+total_crude  = Σ well_production_bbl_day
+crude_to_ref = routed crude consumed by refineries
+crude_direct = total_crude - crude_to_ref
+
+revenue_oil = crude_direct · state.crude_price_usd_per_bbl   # default 40
+            + refined     · state.refined_price_usd_per_bbl  # default 90
+```
+
+## Carbon and emissions
+
+```
+state.carbon_price (default 25 $/t, mutable; regulatory_tightening events scale it)
+
+COAL_CO2_T_PER_MWH       = 0.90
+GAS_CO2_T_PER_MWH        = 0.40
+INDUSTRIAL_CO2_T_PER_MWH = 0.30      # tied to industrial tiles' consumed power
+REFINERY_CO2_PER_BBL     = 0.30
+
+daily_emissions_t  = Σ coal_mwh_today · 0.90
+                   + Σ gas_mwh_today  · 0.40
+                   + Σ industrial_mwh_consumed · 0.30
+                   + Σ refined_bbl_today · 0.30
+
+daily_carbon_cost = daily_emissions_t · state.carbon_price
+```
+
+`regulatory_tightenings_applied` increments each time a regulatory tightening event fires; the carbon price multiplies by 1.5 per increment (cumulative, permanent).
+
+## Population and happiness
+
+Implementation: `world/population.py`. Each day:
+
+```
+capacity  = Σ housing_capacity over housing + town hall
+jobs      = Σ jobs over job-providing tiles
+
+happiness  = 1.0
+            + 0.05 · park_count
+            + 0.10 · parks_within_radius_2_of_houses / max(1, house_count)
+            - 0.10 · yesterday_blackout_hours / 24
+            - 0.03 · industrial_or_refinery_within_radius_2_of_house / max(1, house_count)
+            (park-between halves the noise penalty)
+happiness  = clip(happiness, 0.0, 1.5)
+
+growth_multiplier = max(0.0, (happiness - 0.3) / 1.2)
+                       # 0.3→0%, 0.5→17%, 1.0→58%, 1.5→100%
+
+pop = world.population
+
+if jobs ≥ pop and capacity > pop:
+    growth = BASE_GROWTH_RATE · pop · growth_multiplier        # 0.012
+    growth = min(growth, capacity - pop, jobs - pop)
+    pop   += growth
+
+elif capacity < pop:
+    pop = max(capacity, pop - 5)               # housing exodus
+elif jobs < 0.7·pop:
+    pop = max(jobs/0.7, pop · 0.99)            # job-driven decline
+elif happiness < 0.3:
+    pop = pop · 0.99                            # unhappy decline
+
+world.population = max(0, pop)                  # population is a float
+world.happiness  = happiness
+```
+
+Population is stored as a float so sub-1/day deltas accumulate; `/state` reports `int(population)`.
+
+## Revenue, taxes, and finance
+
+State-mutable rates (`world/state.py`):
+
+| Field | Default | Effect |
+|---|---|---|
+| `daily_tax_per_capita` | 4.0 | `tax_revenue = population · rate` |
+| `industrial_revenue_per_day` | 500.0 | per staffed industrial slot |
+| `commercial_revenue_per_resident_per_day` | 1.0 | per resident in 5×5 area × occupancy × staffing |
+| `crude_price_usd_per_bbl` | 40.0 | unrouted crude sale price |
+| `refined_price_usd_per_bbl` | 90.0 | refined product sale price |
+| `grid_price_retail` | 0.08 $/kWh | local power served price |
+| `grid_price_export` | 0.04 $/kWh | curtailment export price |
+| `blackout_penalty_hour` | 5000 | $/hour deducted while balance_state = blackout |
+| `plant_fuel_cost_per_mwh` | `{coal:12, gas:30}` | fuel cost paid against served MWh |
+
+Daily P&L (see `state.today_summary_so_far` and the `/step` summary):
+
+```
+tax_revenue        = pop · daily_tax_per_capita
+power_revenue      = served_local_kwh · grid_price_retail
+                   + curtailed_exported_kwh · grid_price_export
+oil_revenue        = crude_direct·crude_price + refined·refined_price
+industrial_revenue = staffed_industrial_slots · industrial_revenue_per_day
+commercial_revenue = Σ over commercial tiles
+opex               = Σ tile.opex_per_day
+fuel_cost          = Σ plant.kwh_served_yesterday · fuel_cost_per_mwh[type] / 1000
+carbon_cost        = daily_emissions_t · carbon_price
+blackout_penalty   = blackout_hours · blackout_penalty_hour
+
+delta              = tax + power + oil + industrial + commercial
+                   - opex - fuel - carbon - blackout - capex_today
+```
+
+## Events
+
+Implementation: `world/events.py`. Probabilities are checked once per day, before the daily simulation runs.
+
+| Event | Daily P | Duration | Effect |
+|---|---:|---|---|
+| `heatwave` | 0.003 | 5 days | residential demand × 1.40 |
+| `plant_failure` | 0.001 per fossil plant, gas-weighted 0.7/0.3 | 3–7 days | affected plant outputs 0 |
+| `fuel_price_shock` | 0.002 | 30 days | gas fuel × 2.5, coal fuel × 1.3 |
+| `demand_surprise` | 0.003 | 10 days | industrial+commercial demand × 1.30 |
+| `regulatory_tightening` | 0.001 | permanent | carbon price × 1.5 (cumulative) |
+
+Active events surface in `state.active_events`. Expired events move to `state.historical_events`. Scenarios can inject events directly into `active_events` using the same shape (see [SCENARIOS.md](SCENARIOS.md)); the day-loop's "is this event type already active?" guard prevents double-firing.
+
+## Scoring
+
+Implementation: `world/scoring.py`. The score is a weighted sum of three independent terms over a finished game:
+
+```
+P     = final population
+T     = treasury_end - starting_cash                     # may be negative
+R     = cumulative_renewable_served_kwh
+      / max(cumulative_total_served_kwh, 1)
+
+P_ref = scripted-agent final population on same seed
+T_ref = scripted-agent treasury delta on same seed
+
+p_term = 0.5 · min(P / max(P_ref, 1), 3.0)               # cap at 1.5
+t_term = 0.4 · 0.5 · (1 + tanh(T / max(T_ref, 1)))       # in [0, 0.4]
+r_term = 0.1 · R                                          # in [0, 0.1]
+
+score  = p_term + t_term + r_term
+```
+
+Properties:
+
+- Bankruptcy is punished: very negative `T` collapses `t_term` toward 0.
+- Cash-hoarding saturates: very large `T` plateaus `t_term` near 0.4.
+- The renewable share is the tie-breaker (0–10% of total).
+- An agent matching the scripted baseline exactly scores ≈ `0.5 + 0.2 + R`.
+
+`P_ref`/`T_ref` for the dev seed (42) live in `baselines/seed_42.json` and are read by `GET /score`. Per-`(scenario, seed)` arena baselines live under `baselines/arena/` and are consumed by the leaderboard tool; both files are regenerated by `make baselines`.
+
+## Determinism contract
+
+A run is fully determined by `(seed, action log)`. The world threads four `numpy.random.Generator` streams from a single seed sequence:
+
+- `sim_rng` — weather AR(1), per-hour noise.
+- `event_rng` — daily event sampling.
+- `forecast_rng` — `GET /forecast` noise.
+- `reservoir_rng` — one-shot reservoir generation at reset.
+
+Scenarios consume zero RNG draws in v1; introducing the scenario hook does not change the byte trace of a baseline-seed run.
+
+Every API call is appended to `runs/{run_id}/actions.jsonl`; every end-of-day state is appended to `runs/{run_id}/states.jsonl`. `python evaluate.py --replay runs/{run_id}` re-runs the action log against a fresh world and asserts byte-identical final state. `tests/test_determinism.py` pins this contract for the scripted agent on seed 42.
+
+If your agent introduces non-determinism (e.g., wall-clock time, threading), be aware that the arena's regression baselines will not be reproducible against it. Use the RNG you control and pass the seed through.
