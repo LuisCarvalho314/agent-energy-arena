@@ -35,19 +35,25 @@
   </nav>
   <main>
     <section id="tab-map" class="tabpanel active">
-      <aside id="powerpanel" class="side-panel">
-        <h2>Supply vs demand — next 24h (projected)</h2>
-        <div id="power-margin" class="power-margin"></div>
-        <svg id="powerchart" viewBox="0 0 480 200" preserveAspectRatio="none"></svg>
-        <div id="powerlegend">
-          <span class="legend-item"><span class="legend-swatch swatch-supply"></span>Supply (proj.)</span>
-          <span class="legend-item"><span class="legend-swatch swatch-demand"></span>Demand (proj.)</span>
-          <span class="legend-item"><span class="legend-swatch swatch-supply legend-dashed"></span>Supply (yesterday)</span>
-          <span class="legend-item"><span class="legend-swatch swatch-demand legend-dashed"></span>Demand (yesterday)</span>
-        </div>
-        <h2>Plants — current output</h2>
-        <ul id="plantlist"></ul>
-      </aside>
+      <div id="leftcol">
+        <aside id="powerpanel" class="side-panel">
+          <h2>Supply vs demand — next 24h (projected)</h2>
+          <div id="power-margin" class="power-margin"></div>
+          <svg id="powerchart" viewBox="0 0 480 200" preserveAspectRatio="none"></svg>
+          <div id="powerlegend">
+            <span class="legend-item"><span class="legend-swatch swatch-supply"></span>Supply (proj.)</span>
+            <span class="legend-item"><span class="legend-swatch swatch-demand"></span>Demand (proj.)</span>
+            <span class="legend-item"><span class="legend-swatch swatch-supply legend-dashed"></span>Supply (yesterday)</span>
+            <span class="legend-item"><span class="legend-swatch swatch-demand legend-dashed"></span>Demand (yesterday)</span>
+          </div>
+          <h2>Plants — current output</h2>
+          <ul id="plantlist"></ul>
+        </aside>
+        <aside id="actionspanel" class="side-panel">
+          <h2>Actions — <span id="actions-day-range">day —</span></h2>
+          <ul id="actionslist" class="actions-list"></ul>
+        </aside>
+      </div>
       <div id="canvascol">
         <div id="canvasrow">
           <canvas id="grid" width="640" height="640"></canvas>

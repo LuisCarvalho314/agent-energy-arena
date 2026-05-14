@@ -213,17 +213,22 @@ main {
   color: #8b8f9a;
 }
 
-/* Map tab — 3-column layout: power | canvas+subsurface | build menu. */
+/* Map tab — 3-column layout: power+actions | canvas+subsurface | build menu. */
 #tab-map.active {
   align-items: flex-start;
   justify-content: center;
   gap: 1rem;
 }
-#powerpanel {
+#leftcol {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
   width: 280px;
   max-height: calc(100vh - 8rem);
   overflow-y: auto;
 }
+#powerpanel { width: 100%; }
+#actionspanel { width: 100%; }
 #canvascol {
   display: flex;
   flex-direction: column;
@@ -432,6 +437,37 @@ main {
 .plantrow.gas_peaker .pl-bar-fill { background: #d09bff; }
 .plantrow.battery .pl-bar-fill { background: #7be0a3; }
 .plantrow .pl-val { text-align: right; color: #8b8f9a; font-variant-numeric: tabular-nums; grid-column: 2; }
+
+/* Actions widget (lives in #actionspanel under the power panel on Map
+   tab). Shows the slice of `actions.jsonl` between the last successful
+   /step or /reset and the next one — i.e., what the agent has submitted
+   "this day". Failed (ok=false) entries are filtered out at slicing time. */
+.actions-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  max-height: 180px;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.2rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.72rem;
+}
+.actions-list .actionrow {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.4rem;
+  align-items: baseline;
+  padding: 0.15rem 0.3rem;
+  background: #1a1c22;
+  border-left: 2px solid #2a2d34;
+  border-radius: 2px;
+}
+.actions-list .actionrow.ok { border-left-color: #4ea3ff; }
+.actions-list .actionrow.terminator { border-left-color: #7be0a3; opacity: 0.75; }
+.actions-list .ar-ep { color: #c9cad0; }
+.actions-list .ar-params { color: #8b8f9a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.actions-list .ar-empty { color: #6a6e78; font-style: italic; padding: 0.2rem 0.3rem; }
 
 /* Subsurface widget (lives in #subsurfacepanel below the canvas on Map tab). */
 #subsurfacepanel { width: 640px; }

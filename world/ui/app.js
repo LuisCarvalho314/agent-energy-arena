@@ -39,6 +39,7 @@
   const replay = {
     mode: "live",   // "live" | "replay"
     states: [],     // parsed states.jsonl entries
+    actions: [],    // parsed actions.jsonl entries (replay mode only)
     metadata: null, // parsed metadata.json (or null if missing)
     cursor: 0,
   };
@@ -1895,6 +1896,100 @@
       _lastRevealedCount = revealedCount;
       _lastWellsCount = wellsCount;
     }
+    // Actions panel: re-pull on every snapshot so live/peek/replay all
+    // render the slice matching the rendered day.
+    refreshActions(s.day);
+  }
+
+  // Actions widget. Mirror of `world/api._slice_actions_for_day`; the
+  // fixture at `world/tests/fixtures/actions_slicing.jsonl` is the
+  // shared ground truth — keep this in sync with the server helper.
+  const actionsListEl = document.getElementById("actionslist");
+  const actionsDayRangeEl = document.getElementById("actions-day-range");
+
+  function sliceActionsForDay(entries, day) {
+    const slices = [];
+    let currentDay = 0;
+    let buffer = [];
+    for (const entry of entries) {
+      if (!entry || !entry.ok) continue;
+      buffer.push(entry);
+      const ep = entry.endpoint;
+      if (ep === "/step") {
+        const days = Number((entry.params || {}).days ?? 7);
+        slices.push({ day_start: currentDay, day_end: currentDay + days - 1, entries: buffer });
+        currentDay += days;
+        buffer = [];
+      } else if (ep === "/reset") {
+        slices.push({ day_start: currentDay, day_end: currentDay, entries: buffer });
+        currentDay = 0;
+        buffer = [];
+      }
+    }
+    slices.push({ day_start: currentDay, day_end: currentDay, entries: buffer });
+    for (let i = slices.length - 1; i >= 0; i -= 1) {
+      const s = slices[i];
+      if (s.day_start <= day && day <= s.day_end) return s;
+    }
+    return { day_start: day, day_end: day, entries: [] };
+  }
+
+  function renderActions(slice) {
+    if (!actionsListEl || !actionsDayRangeEl) return;
+    const a = slice.day_start;
+    const b = slice.day_end;
+    actionsDayRangeEl.textContent = a === b ? `day ${a}` : `days ${a}–${b}`;
+    actionsListEl.innerHTML = "";
+    const entries = slice.entries || [];
+    if (entries.length === 0) {
+      const li = document.createElement("li");
+      li.className = "ar-empty";
+      li.textContent = "no actions submitted yet";
+      actionsListEl.appendChild(li);
+      return;
+    }
+    for (const entry of entries) {
+      const li = document.createElement("li");
+      const isTerminator = entry.endpoint === "/step" || entry.endpoint === "/reset";
+      li.className = `actionrow ${isTerminator ? "terminator" : "ok"}`;
+      const ep = document.createElement("span");
+      ep.className = "ar-ep";
+      ep.textContent = entry.endpoint;
+      const params = document.createElement("span");
+      params.className = "ar-params";
+      params.textContent = compactParams(entry.params);
+      li.appendChild(ep);
+      li.appendChild(params);
+      actionsListEl.appendChild(li);
+    }
+    // Pin to bottom so the latest action is visible.
+    actionsListEl.scrollTop = actionsListEl.scrollHeight;
+  }
+
+  function compactParams(params) {
+    if (!params || typeof params !== "object") return "";
+    const parts = [];
+    for (const [k, v] of Object.entries(params)) {
+      const sv = typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v);
+      parts.push(`${k}=${sv}`);
+    }
+    return parts.join(" ");
+  }
+
+  async function refreshActions(day) {
+    if (!actionsListEl) return;
+    if (isReplay()) {
+      renderActions(sliceActionsForDay(replay.actions, day));
+      return;
+    }
+    try {
+      const res = await fetch(`/actions?day=${day}`);
+      if (!res.ok) return;
+      const slice = await res.json();
+      renderActions(slice);
+    } catch (err) {
+      // tolerant: panel keeps its last render
+    }
   }
 
   async function tick() {
@@ -2029,6 +2124,7 @@
 
   function closeReplay() {
     replay.states = [];
+    replay.actions = [];
     replay.metadata = null;
     replay.cursor = 0;
     setReplayMode("live");
@@ -2052,6 +2148,7 @@
     });
     const statesFile = findByName("states.jsonl");
     const metadataFile = findByName("metadata.json");
+    const actionsFile = findByName("actions.jsonl");
     if (!statesFile) {
       showToast("no states.jsonl in selected folder", "error");
       return;
@@ -2085,7 +2182,21 @@
         badCount += 1;
       }
     }
+    const actionsParsed = [];
+    if (actionsFile) {
+      try {
+        const text = await actionsFile.text();
+        for (const line of text.split("\n")) {
+          const t = line.trim();
+          if (!t) continue;
+          try { actionsParsed.push(JSON.parse(t)); } catch (err) { /* skip */ }
+        }
+      } catch (err) {
+        showToast("could not read actions.jsonl — actions panel will be empty", "error");
+      }
+    }
     replay.states = parsed;
+    replay.actions = actionsParsed;
     replay.metadata = metadata;
     replay.cursor = parsed.length > 0 ? parsed.length - 1 : 0;
     setReplayMode("replay");

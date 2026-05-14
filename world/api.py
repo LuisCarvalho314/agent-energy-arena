@@ -95,6 +95,54 @@ class BatteryControlBody(BaseModel):
     charge_kw: float
 
 
+def _slice_actions_for_day(entries: list[dict[str, Any]], day: int) -> dict[str, Any]:
+    """Slice `actions.jsonl` entries by successful `/step` / `/reset` boundaries.
+
+    Walks forward maintaining `current_day` and a buffer. A successful
+    `/step` terminates a slice spanning `[current_day, current_day + days - 1]`
+    and advances `current_day += days`. A successful `/reset` terminates a
+    slice and resets `current_day` to 0. Anything past the last terminator
+    is the in-flight slice at the final `current_day`.
+
+    Failed entries (`ok=false`) are dropped entirely — the widget only
+    surfaces actions that mutated world state. A failed `/step` therefore
+    also does not terminate the slice.
+
+    Returns the latest slice whose day-range contains `day`. If no slice
+    matches, returns an empty in-flight slice at `day`. Mirrored in
+    `world/ui/app.js` for replay mode; the shared fixture in
+    `world/tests/test_actions_endpoint.py` asserts parity.
+    """
+    slices: list[dict[str, Any]] = []
+    current_day = 0
+    buffer: list[dict[str, Any]] = []
+    for entry in entries:
+        if not entry.get("ok"):
+            continue
+        buffer.append(entry)
+        ep = entry.get("endpoint")
+        if ep == "/step":
+            days = int(entry.get("params", {}).get("days", 7))
+            slices.append(
+                {
+                    "day_start": current_day,
+                    "day_end": current_day + days - 1,
+                    "entries": buffer,
+                }
+            )
+            current_day += days
+            buffer = []
+        elif ep == "/reset":
+            slices.append({"day_start": current_day, "day_end": current_day, "entries": buffer})
+            current_day = 0
+            buffer = []
+    slices.append({"day_start": current_day, "day_end": current_day, "entries": buffer})
+    for s in reversed(slices):
+        if s["day_start"] <= day <= s["day_end"]:
+            return s
+    return {"day_start": day, "day_end": day, "entries": []}
+
+
 def create_app(
     world: World | None = None,
     action_log: ActionLog | None = None,
@@ -157,6 +205,23 @@ def create_app(
                 if entry.get("day") == day:
                     return entry
         raise HTTPException(status_code=404, detail=f"day {day} not in recorded history")
+
+    @app.get("/actions")
+    def get_actions(day: int) -> dict[str, Any]:
+        # Line-scans the in-progress run's `actions.jsonl` and slices it
+        # at every successful `/step` or `/reset` entry. Returns the slice
+        # whose day-range contains `day` (latest sequence wins after a
+        # mid-run /reset). The UI's Actions panel calls this with
+        # `day=state.day` to render "actions submitted since the last
+        # step/reset". Replay mode runs the same algorithm client-side
+        # against the loaded `actions.jsonl` (see `world/ui/app.js`).
+        path = app.state.action_log.path
+        if not path.exists():
+            return {"day_start": day, "day_end": day, "entries": []}
+        with path.open("r", encoding="utf-8") as fh:
+            entries = [json.loads(line) for line in fh if line.strip()]
+        slice_ = _slice_actions_for_day(entries, day)
+        return slice_
 
     @app.get("/scenario")
     def get_scenario() -> dict[str, Any]:

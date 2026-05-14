@@ -1,0 +1,10 @@
+{"ts": 1.0, "endpoint": "/reset", "params": {"seed": 42}, "ok": true, "result": {"seed": 42, "day": 0}}
+{"ts": 2.0, "endpoint": "/build", "params": {"tile_type": "house", "x": 1, "y": 1}, "ok": true}
+{"ts": 3.0, "endpoint": "/build", "params": {"tile_type": "road", "x": 2, "y": 1}, "ok": false, "error": "no_adjacent_road"}
+{"ts": 4.0, "endpoint": "/step", "params": {"days": 1}, "ok": true, "result": {"day_completed": 0}}
+{"ts": 5.0, "endpoint": "/build", "params": {"tile_type": "solar_farm", "x": 3, "y": 1}, "ok": true}
+{"ts": 6.0, "endpoint": "/step", "params": {"days": 7}, "ok": true, "result": {"day_completed": 7}}
+{"ts": 7.0, "endpoint": "/step", "params": {"days": 1}, "ok": false, "error": "synthetic"}
+{"ts": 8.0, "endpoint": "/control/well", "params": {"well_id": "w-0", "rate_bbl_day": 50}, "ok": true}
+{"ts": 9.0, "endpoint": "/reset", "params": {"seed": 7}, "ok": true, "result": {"seed": 7, "day": 0}}
+{"ts": 10.0, "endpoint": "/build", "params": {"tile_type": "battery", "x": 5, "y": 5}, "ok": true}
