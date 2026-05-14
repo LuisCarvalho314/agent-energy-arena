@@ -492,13 +492,23 @@ def create_app(
     @app.post("/step")
     def post_step(body: StepBody) -> dict[str, Any]:
         params = body.model_dump()
-        # Agent Play (slice 01): when an agent is attached, give it the
-        # chance to mutate the world before the day(s) advance. Slice #4
-        # wraps this in act-raised-exception handling; slice #1 just lets
-        # any error propagate to the existing /step failure branch.
+        # Agent Play (slice 01 + 04): when an agent is attached, give it the
+        # chance to mutate the world before the day(s) advance. Any exception
+        # raised by `act()` surfaces as a 500 whose detail names the cause
+        # verbatim — the developer reads the proximate error in the UI toast
+        # without grepping server logs. The agent stays attached and the day
+        # does not advance, so the edit-fix-retry loop stays cheap. This is
+        # also the path that catches `RuntimeError` from `UiAgentApiClient`'s
+        # clock-method guards (agent calling `self.api.step()` from `act()`).
         attached_agent = getattr(app.state, "attached_agent", None)
         if attached_agent is not None:
-            attached_agent.act(app.state.world.state_dict())
+            try:
+                attached_agent.act(app.state.world.state_dict())
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"agent.act raised: {exc!r}",
+                ) from exc
         try:
             summary = app.state.world.step(days=body.days)
             result = {

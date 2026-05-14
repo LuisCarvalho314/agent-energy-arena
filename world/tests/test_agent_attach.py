@@ -18,6 +18,16 @@ ACs covered:
   * `POST /reset` auto-detaches.
   * A scenario attached before the agent attach survives the agent
     attach (`GET /scenario` still reports it).
+
+Slice #4 adds:
+  * `UiAgentApiClient.{step, reset, attach_scenario}` raise RuntimeError
+    client-side (before any TestClient call).
+  * `POST /step` returns 500 with `detail` containing `"agent.act raised:"`
+    when the attached agent's `act()` raises; day unchanged; agent stays
+    attached.
+  * An agent that accidentally calls `self.api.step()` from `act()` hits
+    the same 500 path via the client-side guard — the action log never
+    sees the rejected request.
 """
 
 from __future__ import annotations
@@ -27,9 +37,11 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agents.api_client import UiAgentApiClient
 from world.action_log import ActionLog
 from world.api import create_app
 from world.sim import World
@@ -378,3 +390,149 @@ def test_scenario_persists_through_agent_attach(tmp_path: Path) -> None:
     r = client.post("/agent/attach", json={"folder": "myagent"})
     assert r.status_code == 200, r.text
     assert client.get("/scenario").json() == {"dotted_path": SCENARIO_FIXTURE_PATH}
+
+
+# -- Slice #4: act() crash safety + clock-violation guard -----------------
+
+
+class _RecordingTransport:
+    """Asserts the transport is never touched.
+
+    Used to prove the `UiAgentApiClient` clock-method guards raise
+    *before* the TestClient call, so no row can land in `actions.jsonl`.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, Any]] = []
+
+    def get(self, url: str, *, params: dict[str, Any] | None = None) -> Any:
+        self.calls.append(("GET", url, params))
+        raise AssertionError("transport should not be reached")
+
+    def post(self, url: str, *, json: dict[str, Any] | None = None) -> Any:
+        self.calls.append(("POST", url, json))
+        raise AssertionError("transport should not be reached")
+
+
+def test_uiagentapiclient_step_raises_client_side() -> None:
+    transport = _RecordingTransport()
+    client = UiAgentApiClient(transport=transport)
+    with pytest.raises(RuntimeError, match="human drives"):
+        client.step(days=1)
+    assert transport.calls == []
+
+
+def test_uiagentapiclient_reset_raises_client_side() -> None:
+    transport = _RecordingTransport()
+    client = UiAgentApiClient(transport=transport)
+    with pytest.raises(RuntimeError, match="human"):
+        client.reset(seed=42)
+    assert transport.calls == []
+
+
+def test_uiagentapiclient_attach_scenario_raises_client_side() -> None:
+    transport = _RecordingTransport()
+    client = UiAgentApiClient(transport=transport)
+    with pytest.raises(RuntimeError, match="human"):
+        client.attach_scenario("some.dotted.path")
+    assert transport.calls == []
+
+
+def test_step_returns_500_when_act_raises(tmp_path: Path) -> None:
+    """An attached agent whose `act()` raises must surface a 500 whose
+    detail contains both `agent.act raised:` and the exception's repr —
+    so the developer reads the proximate cause in the UI toast."""
+    _write_agent(
+        tmp_path / "crasher",
+        """
+        from agents.base import BaseAgent
+        class Agent(BaseAgent):
+            def act(self, state):
+                raise RuntimeError("boom: kapow")
+        """,
+    )
+    client, _app, _world, _log = _client(tmp_path, agent_repo_root=tmp_path)
+    client.post("/reset", json={"seed": 42})
+    assert client.post("/agent/attach", json={"folder": "crasher"}).status_code == 200
+
+    r = client.post("/step", json={"days": 1})
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "agent.act raised:" in detail
+    assert "RuntimeError" in detail
+    assert "boom: kapow" in detail
+
+
+def test_act_raise_does_not_advance_day(tmp_path: Path) -> None:
+    _write_agent(
+        tmp_path / "crasher",
+        """
+        from agents.base import BaseAgent
+        class Agent(BaseAgent):
+            def act(self, state):
+                raise RuntimeError("nope")
+        """,
+    )
+    client, _app, _world, _log = _client(tmp_path, agent_repo_root=tmp_path)
+    client.post("/reset", json={"seed": 42})
+    day_before = client.get("/state").json()["day"]
+    client.post("/agent/attach", json={"folder": "crasher"})
+
+    r = client.post("/step", json={"days": 1})
+    assert r.status_code == 500
+    assert client.get("/state").json()["day"] == day_before
+
+
+def test_act_raise_keeps_agent_attached(tmp_path: Path) -> None:
+    _write_agent(
+        tmp_path / "crasher",
+        """
+        from agents.base import BaseAgent
+        class Agent(BaseAgent):
+            def act(self, state):
+                raise RuntimeError("nope")
+        """,
+    )
+    client, _app, _world, _log = _client(tmp_path, agent_repo_root=tmp_path)
+    client.post("/agent/attach", json={"folder": "crasher"})
+
+    client.post("/step", json={"days": 1})
+    assert client.get("/agent").json() == {"folder": "crasher"}
+
+
+def test_agent_calling_api_step_returns_500_and_stays_attached(tmp_path: Path) -> None:
+    """`act()` that calls `self.api.step(days=1)` hits the
+    `UiAgentApiClient` client-side guard; the RuntimeError propagates
+    through the /step handler's act-wrapper, returning 500. The day
+    does not advance; the agent stays attached; nothing from the
+    agent's `api.step()` reaches the action log (the transport guard
+    raises before the TestClient call).
+    """
+    _write_agent(
+        tmp_path / "clockcheater",
+        """
+        from agents.base import BaseAgent
+        class Agent(BaseAgent):
+            def act(self, state):
+                self.api.step(days=1)
+        """,
+    )
+    client, app, _world, _log = _client(tmp_path, agent_repo_root=tmp_path)
+    client.post("/reset", json={"seed": 42})
+    day_before = client.get("/state").json()["day"]
+    client.post("/agent/attach", json={"folder": "clockcheater"})
+
+    r = client.post("/step", json={"days": 1})
+    assert r.status_code == 500
+    detail = r.json()["detail"]
+    assert "agent.act raised:" in detail
+    assert "RuntimeError" in detail
+
+    assert client.get("/state").json()["day"] == day_before
+    assert client.get("/agent").json() == {"folder": "clockcheater"}
+
+    # The agent's rejected api.step() must not have left a row in the
+    # action log — the UiAgentApiClient guard raises before transport.
+    active_log: ActionLog = app.state.action_log
+    step_entries = [e for e in _entries(active_log) if e["endpoint"] == "/step" and e["ok"]]
+    assert step_entries == []

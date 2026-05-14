@@ -136,10 +136,31 @@ class ApiClient:
 class UiAgentApiClient(ApiClient):
     """ApiClient variant handed to agents attached via the UI's Agent Play
     mode. The human owns the clock and the scenario; the agent owns world
-    mutations. Slice #4 fills in the clock-violation overrides (`step`,
-    `reset`, `attach_scenario` will raise client-side); this slice ships
-    the type only so the wiring is in place.
+    mutations.
+
+    `step`, `reset`, and `attach_scenario` raise `RuntimeError` client-side
+    — *before* the transport call — so the action log never sees a rejected
+    request. An agent that calls these from inside `act()` gets a loud,
+    immediate failure attributable to its own code, not a silent corrupt
+    state.
     """
+
+    def step(self, days: int = 7) -> dict[str, Any]:
+        raise RuntimeError(
+            "in Agent Play, the human drives /step; call api.build / api.drill / "
+            "api.control_* from act() and let the human advance the clock"
+        )
+
+    def reset(self, seed: int | None = None, *, scenario: str | None = None) -> dict[str, Any]:
+        raise RuntimeError(
+            "in Agent Play, the human drives /reset; do not call api.reset() from act()"
+        )
+
+    def attach_scenario(self, dotted_path: str) -> dict[str, Any]:
+        raise RuntimeError(
+            "in Agent Play, the human owns the scenario; do not call "
+            "api.attach_scenario() from act()"
+        )
 
 
 def _parse(response: Any) -> Any:
