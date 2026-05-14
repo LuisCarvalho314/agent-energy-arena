@@ -55,6 +55,18 @@
 
   function isReplay() { return replay.mode === "replay"; }
 
+  // Agent Play attach state (agent-play slice 03). The mutation lock is
+  // load-bearing: while an agent is attached, the human owns the clock and
+  // the agent owns world mutations. `isMutationLocked()` is the helper that
+  // expresses that invariant — replay mode and an attached agent both lock
+  // out world mutations, while clock controls (Play, Fast, Next Day, Prev
+  // Day) keep running on `isReplay()` so the human can advance turns.
+  // Hoisted here so mutation-guard sites earlier in the file (canvas
+  // click/right-click, refinery/well slider rendering) can reference it.
+  let attachedAgentFolder = null;
+  function isAgentAttached() { return attachedAgentFolder !== null; }
+  function isMutationLocked() { return isReplay() || isAgentAttached(); }
+
   // Live-mode "peek backward" (chess-style review). The recorder writes
   // `runs/<run-id>/states.jsonl` for every live session; `GET
   // /state/history?day=N` returns the entry for day N. While `peekDay`
@@ -992,7 +1004,7 @@
   }
 
   canvas.addEventListener("click", async (ev) => {
-    if (isReplay()) return;
+    if (isMutationLocked()) return;
     const { x, y } = gridCellFromEvent(ev);
     if (mode === "survey") {
       await handleSurveyClick(x, y);
@@ -1020,7 +1032,7 @@
 
   canvas.addEventListener("contextmenu", async (ev) => {
     ev.preventDefault();
-    if (isReplay()) return;
+    if (isMutationLocked()) return;
     // While a subsurface mode is active, right-click cancels the mode and
     // does NOT fall through to /demolish.
     if (mode === "survey" || mode === "drill") {
@@ -1511,7 +1523,7 @@
   const financeListEl = document.getElementById("financelist");
 
   async function setRefineryRate(refineryId, rate) {
-    if (isReplay()) return;
+    if (isMutationLocked()) return;
     try {
       await fetch("/control/refinery", {
         method: "POST",
@@ -1553,7 +1565,7 @@
           <td>${idCell}</td>
           <td>(${r.x}, ${r.y})</td>
           <td>
-            <input type="range" min="0" max="${REFINERY_MAX_BBL_DAY}" step="10" value="${setpoint}" data-id="${r.id}" ${isReplay() ? "disabled" : ""} />
+            <input type="range" min="0" max="${REFINERY_MAX_BBL_DAY}" step="10" value="${setpoint}" data-id="${r.id}" ${isMutationLocked() ? "disabled" : ""} />
             <span class="setpoint-val">${Math.round(setpoint)}</span>
           </td>
           <td class="actual">${throughput.toFixed(1)}</td>
@@ -1602,7 +1614,7 @@
   }
 
   async function setWellRate(wellId, rate) {
-    if (isReplay()) return;
+    if (isMutationLocked()) return;
     try {
       await fetch("/control/well", {
         method: "POST",
@@ -1671,7 +1683,7 @@
           <td>${w.type}</td>
           <td>(${w.x}, ${w.y}, ${w.target_z})</td>
           <td>
-            <input type="range" min="0" max="200" step="5" value="${setpoint}" data-id="${w.id}" ${isReplay() ? "disabled" : ""} />
+            <input type="range" min="0" max="200" step="5" value="${setpoint}" data-id="${w.id}" ${isMutationLocked() ? "disabled" : ""} />
             <span class="setpoint-val">${Math.round(setpoint)}</span>
           </td>
           <td class="actual">${(w.current_rate_bbl_day || 0).toFixed(1)}</td>
@@ -2402,7 +2414,7 @@
 
   if (scenarioAttachBtn && scenarioInputEl) {
     scenarioAttachBtn.addEventListener("click", async () => {
-      if (isReplay()) return;
+      if (isMutationLocked()) return;
       const val = (scenarioInputEl.value || "").trim();
       if (!val) {
         showToast("enter a dotted path first", "error");
@@ -2417,7 +2429,7 @@
   }
   if (scenarioDetachBtn) {
     scenarioDetachBtn.addEventListener("click", async () => {
-      if (isReplay()) return;
+      if (isMutationLocked()) return;
       const ok = await attachScenario(DETACH_DOTTED_PATH);
       if (ok) showToast("scenario detached", "ok");
     });
@@ -2481,11 +2493,9 @@
   const agentFolderInput = document.getElementById("agent-folder-input");
   const agentAttachConfirm = document.getElementById("agent-attach-confirm");
   const agentAttachCancel = document.getElementById("agent-attach-cancel");
-  let attachedAgentFolder = null;
-
-  function isAgentAttached() {
-    return attachedAgentFolder !== null;
-  }
+  // `attachedAgentFolder` and `isAgentAttached()` are hoisted to the top of
+  // this IIFE alongside `isMutationLocked()` so mutation-guard sites earlier
+  // in the file (canvas handlers, slider rendering) can reference them.
 
   function renderAgentButton() {
     if (!agentPlayBtn) return;
@@ -2513,8 +2523,12 @@
       const res = await fetch("/agent");
       if (!res.ok) return;
       const body = await res.json();
+      const wasAttached = isAgentAttached();
       attachedAgentFolder = body.folder == null ? null : body.folder;
       renderAgentButton();
+      // If the lock state flipped (e.g. boot after a reload found a still-
+      // attached agent), re-tick so slider rows reflect the new lock.
+      if (wasAttached !== isAgentAttached()) tick();
     } catch (err) {
       // ignore — boot race
     }
@@ -2554,6 +2568,9 @@
       const body = await res.json();
       attachedAgentFolder = body.folder;
       renderAgentButton();
+      // Refresh well/refinery tables so their slider `disabled` flags pick
+      // up the mutation lock without waiting for the next /step.
+      tick();
       showToast(`agent attached: ${body.folder}`, "ok");
       return true;
     } catch (err) {
@@ -2575,6 +2592,8 @@
       }
       attachedAgentFolder = null;
       renderAgentButton();
+      // Re-render slider rows so they re-enable now that the lock is gone.
+      tick();
       showToast("agent detached", "ok");
     } catch (err) {
       showToast(`network error: ${err}`, "error");
