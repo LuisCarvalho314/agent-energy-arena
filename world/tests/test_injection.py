@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from world.api import create_app
 from world.sim import World
+from world.snapshots import BalanceState
 from world.subsurface import (
     INJECTION_KWH_PER_BBL,
     PRESSURE_BOOST_MAX,
@@ -275,7 +276,9 @@ def test_injection_sheds_when_prev_balance_brownout():
     w.reset(seed=42)
     # No plants → blackout for civilian load. But we want to test brownout
     # specifically, so manually pin prev_balance.
-    w.state.power_now["balance_state"] = "brownout"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BROWNOUT}
+    )
     # No injection-well-on-hour-0 power — so demand stays civilian only.
     w.drill(10, 10, 8, "injection")
     w.control_well(w.state.wells[0].id, 100.0)
@@ -285,13 +288,15 @@ def test_injection_sheds_when_prev_balance_brownout():
     # gives blackout, so hour 1 prev=blackout → power=0. And so on. No bbl
     # injected at any hour.
     assert iw.cumulative_injected_bbl == 0.0
-    assert w.state.today_summary_so_far["injection_kw"] == 0.0
+    assert w.state.today.injection_kw == 0.0
 
 
 def test_injection_sheds_when_prev_balance_blackout():
     w = World()
     w.reset(seed=42)
-    w.state.power_now["balance_state"] = "blackout"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BLACKOUT}
+    )
     w.drill(10, 10, 8, "injection")
     w.control_well(w.state.wells[0].id, 100.0)
     w.step(days=1)
@@ -314,7 +319,9 @@ def test_injection_ramps_at_curtailment():
     w.build("coal_plant", 5, 5)  # forces some baseline
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs  # pop=0; force-staff so plant dispatches
-    w.state.power_now["balance_state"] = "curtailment"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.CURTAILMENT}
+    )
     w.drill(10, 10, 8, "injection")
     iw = w.state.wells[0]
     iw.staffed_jobs = 2  # injection_well jobs=2; force-staff under pop=0
@@ -339,7 +346,9 @@ def test_injection_ramp_capped_at_hardware_max():
     w = World()
     w.reset(seed=42)
     w.state.population = 0
-    w.state.power_now["balance_state"] = "curtailment"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.CURTAILMENT}
+    )
     w.drill(10, 10, 8, "injection")
     w.control_well(w.state.wells[0].id, 200.0)
     # First-hour power should be exactly cap: 200 × 50 / 24 = 416.67 kW.
@@ -366,7 +375,9 @@ def test_prev_hour_lag_one_hour():
     # supply with civilian load → blackout. Hours 1-23: prev=blackout,
     # inj sheds; civilian demand still > 0 with zero supply → blackout
     # holds, so injection stays shed for the rest of the day.
-    w.state.power_now["balance_state"] = "balanced"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BALANCED}
+    )
     w.drill(10, 10, 8, "injection")
     setpoint = 100.0
     w.control_well(w.state.wells[0].id, setpoint)
@@ -382,7 +393,7 @@ def test_fresh_world_hour_0_treats_prev_as_balanced():
     is 'balanced'. Hour 0 should therefore run baseline injection."""
     w = World()
     w.reset(seed=42)
-    assert w.state.power_now["balance_state"] == "balanced"
+    assert w.state.power_now.balance_state == "balanced"
 
 
 # -- injection_kw daily summary --------------------------------------------
@@ -403,7 +414,9 @@ def test_injection_kw_summary_accumulates_hourly_power():
     # module's max(0, pop-employed) clamp keeps the inconsistency benign.
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs
-    w.state.power_now["balance_state"] = "balanced"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BALANCED}
+    )
     w.drill(10, 10, 8, "injection")
     inj = w.state.wells[0]
     inj.staffed_jobs = 2  # injection_well jobs=2
@@ -414,7 +427,7 @@ def test_injection_kw_summary_accumulates_hourly_power():
     # (setpoint × 50 / 24) = setpoint × 50 = 5000 kWh.
     # If dispatch flips to curtailment partway, kWh climbs further.
     # Lower bound: baseline-only delivery.
-    assert w.state.today_summary_so_far["injection_kw"] >= setpoint * INJECTION_KWH_PER_BBL - 1e-6
+    assert w.state.today.injection_kw >= setpoint * INJECTION_KWH_PER_BBL - 1e-6
 
 
 # -- Pressure-boost integration: production capacity rises with injection --
@@ -786,7 +799,9 @@ def test_half_staffed_injection_baseline_halves():
     w.build("coal_plant", 5, 5)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs
-    w.state.power_now["balance_state"] = "balanced"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BALANCED}
+    )
     w.drill(10, 10, 8, "injection")
     inj = w.state.wells[0]
     inj.staffed_jobs = 1  # injection_well jobs=2
@@ -819,14 +834,16 @@ def test_idle_injection_draws_zero_baseline():
     w.build("coal_plant", 5, 5)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs
-    w.state.power_now["balance_state"] = "balanced"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BALANCED}
+    )
     w.drill(10, 10, 8, "injection")
     inj = w.state.wells[0]
     inj.staffed_jobs = 0
     w.control_well(inj.id, 200.0)
     w.step(days=1)
     assert inj.cumulative_injected_bbl == 0.0
-    assert w.state.today_summary_so_far["injection_kw"] == 0.0
+    assert w.state.today.injection_kw == 0.0
 
 
 def test_idle_injection_offers_zero_dr_headroom():
@@ -839,7 +856,9 @@ def test_idle_injection_offers_zero_dr_headroom():
     w.build("coal_plant", 5, 5)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs
-    w.state.power_now["balance_state"] = "curtailment"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.CURTAILMENT}
+    )
     w.drill(10, 10, 8, "injection")
     inj = w.state.wells[0]
     inj.staffed_jobs = 0

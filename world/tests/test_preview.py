@@ -78,13 +78,13 @@ def test_preview_does_not_mutate_state_or_consume_rng() -> None:
 
     sim_state_before = w.sim_rng.bit_generator.state
     fc_state_before = w.forecast_rng.bit_generator.state
-    weather_before = dict(w.state.weather_now)
+    weather_before = w.state.weather_now
     power_before = {
-        "demand_kw": w.state.power_now.get("demand_kw"),
-        "supply_kw": w.state.power_now.get("supply_kw"),
-        "balance_state": w.state.power_now.get("balance_state"),
+        "demand_kw": w.state.power_now.demand_kw,
+        "supply_kw": w.state.power_now.supply_kw,
+        "balance_state": w.state.power_now.balance_state,
     }
-    prev_outputs_before = dict(w._prev_plant_outputs)
+    plant_outputs_before = {t.id: t.current_output_kw for t in w.state.tiles}
 
     preview_next_day(w)
     preview_next_day(w)  # idempotent
@@ -92,10 +92,13 @@ def test_preview_does_not_mutate_state_or_consume_rng() -> None:
     assert w.sim_rng.bit_generator.state == sim_state_before
     assert w.forecast_rng.bit_generator.state == fc_state_before
     assert w.state.weather_now == weather_before
-    assert w.state.power_now.get("demand_kw") == power_before["demand_kw"]
-    assert w.state.power_now.get("supply_kw") == power_before["supply_kw"]
-    assert w.state.power_now.get("balance_state") == power_before["balance_state"]
-    assert w._prev_plant_outputs == prev_outputs_before
+    assert w.state.power_now.demand_kw == power_before["demand_kw"]
+    assert w.state.power_now.supply_kw == power_before["supply_kw"]
+    assert w.state.power_now.balance_state == power_before["balance_state"]
+    # Preview never calls commit_tick, so per-plant ramp memory
+    # (tile.current_output_kw — the prev_outputs source for the next
+    # tick) is preserved across preview calls.
+    assert {t.id: t.current_output_kw for t in w.state.tiles} == plant_outputs_before
 
 
 def test_preview_returns_finite_peaks_and_margin() -> None:

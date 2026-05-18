@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from world.api import create_app
 from world.sim import World
+from world.snapshots import BalanceState
 from world.subsurface import (
     CRUDE_PRICE_USD_PER_BBL,
     PERM_NORMALIZATION_MD,
@@ -396,9 +397,7 @@ def test_crude_revenue_accrues_to_summary_and_treasury():
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
     w.step(days=1)
     rate = w.state.wells[0].current_rate_bbl_day
-    assert w.state.today_summary_so_far["oil_revenue"] == pytest.approx(
-        rate * CRUDE_PRICE_USD_PER_BBL
-    )
+    assert w.state.today.oil_revenue == pytest.approx(rate * CRUDE_PRICE_USD_PER_BBL)
     assert rate > 0.0  # seed-42 first HC voxel has non-zero perm
 
 
@@ -412,7 +411,7 @@ def test_well_opex_in_daily_summary():
     w.drill(hc.x, hc.y, hc.z, "production")  # +100/day OPEX
     w.step(days=1)
     # Town hall opex is 0; only the well contributes.
-    assert w.state.today_summary_so_far["opex"] == pytest.approx(100.0)
+    assert w.state.today.opex == pytest.approx(100.0)
 
 
 # -- /state.wells schema ---------------------------------------------------
@@ -708,7 +707,7 @@ def test_production_baseline_when_grid_balanced_full_day():
     # Grid stayed off-brownout/off-blackout, so all 24 hours allocated
     # baseline power. Daily kWh = setpoint × KWH × eff.
     expected_daily_kwh = Q_MAX_WELL_BBL_DAY * PRODUCTION_KWH_PER_BBL * eff
-    assert w.state.today_summary_so_far["production_kw"] == pytest.approx(expected_daily_kwh)
+    assert w.state.today.production_kw == pytest.approx(expected_daily_kwh)
     # Power budget (kWh / KWH) = setpoint × eff ≫ seed-42 geology cap, so
     # throughput is geology-bound and strictly less than the setpoint.
     assert 0.0 < well.current_rate_bbl_day < Q_MAX_WELL_BBL_DAY * eff
@@ -720,7 +719,9 @@ def test_production_sheds_when_prev_balance_brownout():
     cumulative_produced_bbl ends at 0."""
     w = World()
     w.reset(seed=42)
-    w.state.power_now["balance_state"] = "brownout"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BROWNOUT}
+    )
     hc = _hc_voxel(w)
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
@@ -728,13 +729,15 @@ def test_production_sheds_when_prev_balance_brownout():
     well = w.state.wells[0]
     assert well.cumulative_produced_bbl == 0.0
     assert well.current_rate_bbl_day == 0.0
-    assert w.state.today_summary_so_far["production_kw"] == 0.0
+    assert w.state.today.production_kw == 0.0
 
 
 def test_production_sheds_when_prev_balance_blackout():
     w = World()
     w.reset(seed=42)
-    w.state.power_now["balance_state"] = "blackout"
+    w.state.power_now = w.state.power_now.model_copy(
+        update={"balance_state": BalanceState.BLACKOUT}
+    )
     hc = _hc_voxel(w)
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
@@ -763,7 +766,7 @@ def test_undersupplied_throughput_equals_power_over_kwh_per_bbl():
     expected_hour_0_bbl = expected_hour_0_kw / PRODUCTION_KWH_PER_BBL  # = setpoint/24
     assert well.current_rate_bbl_day == pytest.approx(expected_hour_0_bbl)
     # Daily production_kw aggregate reflects the single allocated hour.
-    assert w.state.today_summary_so_far["production_kw"] == pytest.approx(expected_hour_0_kw)
+    assert w.state.today.production_kw == pytest.approx(expected_hour_0_kw)
 
 
 def test_full_supply_runs_at_setpoint_when_geology_unbounded():
@@ -820,7 +823,7 @@ def test_full_supply_runs_at_setpoint_when_geology_unbounded():
 def test_production_power_demand_appears_in_hourly_demand():
     """The hourly demand_kw consumed by dispatch includes the producer's
     baseline power. With a single producer at setpoint 200, baseline_kw =
-    200 × 15 / 24 = 125 kW. The day-1 dispatch.last_day_demand_kw_by_hour
+    200 × 15 / 24 = 125 kW. The day-1 dispatch.last_day_trace.demand_kw_by_hour
     trace reflects this addition."""
     w = World()
     w.reset(seed=42)
@@ -841,9 +844,9 @@ def test_production_power_demand_appears_in_hourly_demand():
     # Hour 0 demand_kw should include the producer's baseline (well at full
     # efficiency draws setpoint × KWH / 24 kW).
     baseline_kw = setpoint * PRODUCTION_KWH_PER_BBL / 24.0
-    assert w.state.last_day_demand_kw_by_hour[0] >= baseline_kw - 1e-6
+    assert w.state.last_day_trace.demand_kw_by_hour[0] >= baseline_kw - 1e-6
     # Total daily kWh equals 24 × baseline (every hour stayed off-shed).
-    assert w.state.today_summary_so_far["production_kw"] == pytest.approx(24.0 * baseline_kw)
+    assert w.state.today.production_kw == pytest.approx(24.0 * baseline_kw)
 
 
 def test_half_staffed_producer_baseline_halves():
@@ -873,7 +876,7 @@ def test_half_staffed_producer_baseline_halves():
     # production_kw aggregate must reflect efficiency scaling. With grid
     # balanced for all 24 hours, total kWh = setpoint × KWH × efficiency.
     expected_total_kwh = setpoint * PRODUCTION_KWH_PER_BBL * eff
-    assert w.state.today_summary_so_far["production_kw"] == pytest.approx(expected_total_kwh)
+    assert w.state.today.production_kw == pytest.approx(expected_total_kwh)
 
 
 def test_injection_kwh_per_bbl_unchanged_by_slice_07():

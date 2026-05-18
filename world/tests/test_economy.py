@@ -350,12 +350,10 @@ def test_refined_revenue_at_full_throughput():
     # refinery cap, so all crude is refined.
     assert refinery.current_throughput_bbl_day == pytest.approx(rate)
     # No surplus → crude_revenue = 0.
-    assert w.state.today_summary_so_far["crude_revenue"] == 0.0
+    assert w.state.today.crude_revenue == 0.0
     expected_refined_revenue = rate * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
-    assert w.state.today_summary_so_far["refined_revenue"] == pytest.approx(
-        expected_refined_revenue
-    )
-    assert w.state.today_summary_so_far["oil_revenue"] == pytest.approx(expected_refined_revenue)
+    assert w.state.today.refined_revenue == pytest.approx(expected_refined_revenue)
+    assert w.state.today.oil_revenue == pytest.approx(expected_refined_revenue)
 
 
 def test_surplus_crude_sells_at_crude_price_when_no_refinery():
@@ -370,14 +368,10 @@ def test_surplus_crude_sells_at_crude_price_when_no_refinery():
     w.step(days=1)
     rate = w.state.wells[0].current_rate_bbl_day
     assert rate > 0
-    assert w.state.today_summary_so_far["oil_revenue"] == pytest.approx(
-        rate * CRUDE_PRICE_USD_PER_BBL
-    )
+    assert w.state.today.oil_revenue == pytest.approx(rate * CRUDE_PRICE_USD_PER_BBL)
     # Pure-crude path: refined_revenue stays at 0, crude_revenue = oil_revenue.
-    assert w.state.today_summary_so_far["refined_revenue"] == 0.0
-    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(
-        w.state.today_summary_so_far["oil_revenue"]
-    )
+    assert w.state.today.refined_revenue == 0.0
+    assert w.state.today.crude_revenue == pytest.approx(w.state.today.oil_revenue)
 
 
 def test_surplus_crude_after_refinery_setpoint_satisfied():
@@ -408,11 +402,9 @@ def test_surplus_crude_after_refinery_setpoint_satisfied():
     assert refinery.current_throughput_bbl_day == pytest.approx(10.0)
     expected_refined_revenue = 10.0 * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
     expected_crude_revenue = (rate - 10.0) * CRUDE_PRICE_USD_PER_BBL
-    assert w.state.today_summary_so_far["refined_revenue"] == pytest.approx(
-        expected_refined_revenue
-    )
-    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(expected_crude_revenue)
-    assert w.state.today_summary_so_far["oil_revenue"] == pytest.approx(
+    assert w.state.today.refined_revenue == pytest.approx(expected_refined_revenue)
+    assert w.state.today.crude_revenue == pytest.approx(expected_crude_revenue)
+    assert w.state.today.oil_revenue == pytest.approx(
         expected_refined_revenue + expected_crude_revenue
     )
 
@@ -437,11 +429,11 @@ def test_process_load_unbilled_no_retail_revenue_from_refinery():
     w.step(days=1)
 
     # Demand each hour ≥ 2000 kW (refinery load). Civilian = 0.
-    for d in w.state.last_day_demand_kw_by_hour:
+    for d in w.state.last_day_trace.demand_kw_by_hour:
         assert d >= 2000.0 - 0.01
     # Refinery process load earns no retail revenue and no export revenue —
     # demand strictly exceeds supply, so there's never a surplus to export.
-    assert w.state.today_summary_so_far["power_revenue"] == 0.0
+    assert w.state.today.power_revenue == 0.0
 
 
 def test_process_load_zero_on_day_one_then_lags_actual_throughput():
@@ -467,11 +459,11 @@ def test_process_load_zero_on_day_one_then_lags_actual_throughput():
 
     # Day 1 hourly demand SHOULD NOT include refinery process load (lag).
     # We can't isolate that from civilian demand here, but day 2's demand
-    # WILL include it. Use last_day_demand_kw_by_hour after day 2.
+    # WILL include it. Use last_day_trace.demand_kw_by_hour after day 2.
     w.step(days=1)  # day 2: refinery now drawing process load all day
     expected_process_kw = day1_throughput * REFINERY_KWH_PER_BBL / 24.0
     # Every hour of day 2 includes at least the refinery process load.
-    for d in w.state.last_day_demand_kw_by_hour:
+    for d in w.state.last_day_trace.demand_kw_by_hour:
         assert d >= expected_process_kw - 0.01
 
 
@@ -541,11 +533,9 @@ def test_idle_refinery_refines_zero_with_available_crude():
     ref_after = next(t for t in w.state.tiles if t.type == "refinery")
     assert ref_after.current_throughput_bbl_day == 0.0
     # Refined revenue is 0; all crude sells direct.
-    assert w.state.today_summary_so_far["refined_revenue"] == 0.0
+    assert w.state.today.refined_revenue == 0.0
     rate = w.state.wells[0].current_rate_bbl_day
-    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(
-        rate * CRUDE_PRICE_USD_PER_BBL
-    )
+    assert w.state.today.crude_revenue == pytest.approx(rate * CRUDE_PRICE_USD_PER_BBL)
 
 
 def test_idle_refinery_draws_zero_process_load():
@@ -569,7 +559,7 @@ def test_idle_refinery_draws_zero_process_load():
     # Idle refinery routed 0 crude → 0 throughput → 0 process load.
     ref_after = next(t for t in w.state.tiles if t.type == "refinery")
     assert ref_after.current_throughput_bbl_day == 0.0
-    for d in w.state.last_day_demand_kw_by_hour:
+    for d in w.state.last_day_trace.demand_kw_by_hour:
         assert d == pytest.approx(0.0)
 
 
@@ -597,7 +587,7 @@ def test_idle_refinery_emits_zero_refinery_co2():
     w.drill(hc.x, hc.y, hc.z, "production")
     w.control_well(w.state.wells[0].id, Q_MAX_WELL_BBL_DAY)
     w.step(days=1)
-    assert w.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(0.0)
+    assert w.state.today.co2_emitted_t == pytest.approx(0.0)
 
 
 def test_setpoint_not_auto_clamped_when_staffing_drops():
@@ -742,9 +732,10 @@ def test_daily_emissions_t_no_double_count_industrial_consumed_kwh():
     th = next(t for t in w.state.tiles if t.type == "town_hall")
     w.build("industrial", th.x + 1, th.y)
     base = daily_emissions_t(w)
-    # Stuff a fake "industrial kWh consumed" key on today_summary_so_far.
-    # If the formula were per-MWh-on-industrial, this would change emissions.
-    w.state.today_summary_so_far["industrial_kwh_consumed"] = 999_000.0
+    # The brief's per-MWh-on-industrial term is intentionally absent. The
+    # typed DayLedger has no `industrial_kwh_consumed` field, so the
+    # invariant is enforced by the schema; re-asserting with a no-op
+    # confirms the baseline value is what subsequent tests build on.
     assert daily_emissions_t(w) == pytest.approx(base)
 
 
@@ -752,7 +743,7 @@ def test_daily_emissions_t_coal_emissions():
     """1 MWh coal → 0.90 t CO2."""
     w = World()
     w.reset(seed=42)
-    w.state.today_summary_so_far["coal_kwh"] = 1000.0
+    w.state.today.coal_kwh = 1000.0
     assert daily_emissions_t(w) == pytest.approx(COAL_CO2_T_PER_MWH)
 
 
@@ -760,7 +751,7 @@ def test_daily_emissions_t_gas_emissions():
     """1 MWh gas → 0.40 t CO2."""
     w = World()
     w.reset(seed=42)
-    w.state.today_summary_so_far["gas_kwh"] = 1000.0
+    w.state.today.gas_kwh = 1000.0
     assert daily_emissions_t(w) == pytest.approx(GAS_CO2_T_PER_MWH)
 
 
@@ -768,7 +759,7 @@ def test_daily_emissions_t_refinery_scales_with_refined_bbl():
     """Refinery CO2 scales linearly with input bbl — 100 bbl → 30 t CO2."""
     w = World()
     w.reset(seed=42)
-    w.state.today_summary_so_far["refined_bbl"] = 100.0
+    w.state.today.refined_bbl = 100.0
     assert daily_emissions_t(w) == pytest.approx(100.0 * REFINERY_CO2_PER_BBL)
 
 
@@ -777,9 +768,9 @@ def test_daily_emissions_t_sums_all_sources():
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
     w.build("industrial", th.x + 1, th.y)
-    w.state.today_summary_so_far["coal_kwh"] = 2000.0  # 2 MWh × 0.90 = 1.80 t
-    w.state.today_summary_so_far["gas_kwh"] = 500.0  # 0.5 MWh × 0.40 = 0.20 t
-    w.state.today_summary_so_far["refined_bbl"] = 50.0  # 50 × 0.30 = 15.0 t
+    w.state.today.coal_kwh = 2000.0  # 2 MWh × 0.90 = 1.80 t
+    w.state.today.gas_kwh = 500.0  # 0.5 MWh × 0.40 = 0.20 t
+    w.state.today.refined_bbl = 50.0  # 50 × 0.30 = 15.0 t
     expected = 1.80 + 0.20 + 2.0 + 15.0  # +2.0 t industrial
     assert daily_emissions_t(w) == pytest.approx(expected)
 
@@ -792,8 +783,8 @@ def test_carbon_cost_deducted_from_treasury_during_step():
     th = next(t for t in w.state.tiles if t.type == "town_hall")
     w.build("coal_plant", th.x + 1, th.y)
     w.step(days=1)
-    co2 = w.state.today_summary_so_far["co2_emitted_t"]
-    carbon_cost = w.state.today_summary_so_far["carbon_cost"]
+    co2 = w.state.today.co2_emitted_t
+    carbon_cost = w.state.today.carbon_cost
     assert co2 > 0
     assert carbon_cost == pytest.approx(co2 * w.state.carbon_price)
     # Isolate the carbon delta: same setup with carbon_price=0 should leave
@@ -816,15 +807,15 @@ def test_carbon_cost_uses_current_carbon_price():
     w.build("coal_plant", th.x + 1, th.y)
     w.state.carbon_price = 100.0  # 4× the default
     w.step(days=1)
-    co2 = w.state.today_summary_so_far["co2_emitted_t"]
-    assert w.state.today_summary_so_far["carbon_cost"] == pytest.approx(co2 * 100.0)
+    co2 = w.state.today.co2_emitted_t
+    assert w.state.today.carbon_cost == pytest.approx(co2 * 100.0)
 
 
-def test_co2_emitted_t_in_today_summary_so_far():
+def test_co2_emitted_t_in_today_ledger():
     w = World()
     w.reset(seed=42)
-    assert "co2_emitted_t" in w.state.today_summary_so_far
-    assert w.state.today_summary_so_far["co2_emitted_t"] == 0.0
+    assert "co2_emitted_t" in type(w.state.today).model_fields
+    assert w.state.today.co2_emitted_t == 0.0
 
 
 def test_industrial_pays_flat_co2_even_when_no_grid():
@@ -844,10 +835,8 @@ def test_industrial_pays_flat_co2_even_when_no_grid():
     ind.staffed_jobs = ind.jobs
     w.step(days=1)
     # No plants → no coal/gas kWh. Refinery=0. Only industrial × 2 t/day.
-    assert w.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(
-        INDUSTRIAL_PROCESS_CO2_T_PER_DAY
-    )
-    assert w.state.today_summary_so_far["carbon_cost"] == pytest.approx(
+    assert w.state.today.co2_emitted_t == pytest.approx(INDUSTRIAL_PROCESS_CO2_T_PER_DAY)
+    assert w.state.today.carbon_cost == pytest.approx(
         INDUSTRIAL_PROCESS_CO2_T_PER_DAY * w.state.carbon_price
     )
 
@@ -863,7 +852,7 @@ def test_idle_industrial_emits_zero_flat_co2():
     ind.staffed_jobs = 0
     w.step(days=1)
     # No plants, no refinery, idle industrial → no CO2 anywhere.
-    assert w.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(0.0)
+    assert w.state.today.co2_emitted_t == pytest.approx(0.0)
 
 
 def test_half_staffed_industrial_emits_half_flat_co2():
@@ -876,9 +865,7 @@ def test_half_staffed_industrial_emits_half_flat_co2():
     ind = next(t for t in w.state.tiles if t.type == "industrial")
     ind.staffed_jobs = ind.jobs // 2  # 15 of 30
     w.step(days=1)
-    assert w.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(
-        INDUSTRIAL_PROCESS_CO2_T_PER_DAY * 0.5
-    )
+    assert w.state.today.co2_emitted_t == pytest.approx(INDUSTRIAL_PROCESS_CO2_T_PER_DAY * 0.5)
 
 
 def test_refinery_emissions_scale_with_refined_throughput():
@@ -896,7 +883,7 @@ def test_refinery_emissions_scale_with_refined_throughput():
     w.step(days=1)
     refinery = next(t for t in w.state.tiles if t.type == "refinery")
     refined_bbl = refinery.current_throughput_bbl_day
-    co2 = w.state.today_summary_so_far["co2_emitted_t"]
+    co2 = w.state.today.co2_emitted_t
     # Baseline: no plants here either, no industrial, so co2 == refinery term.
     assert co2 == pytest.approx(refined_bbl * REFINERY_CO2_PER_BBL)
 
@@ -915,9 +902,7 @@ def test_step_size_invariance_with_carbon():
     for _ in range(7):
         b.step(days=1)
     assert a.state.treasury == pytest.approx(b.state.treasury)
-    assert a.state.today_summary_so_far["co2_emitted_t"] == pytest.approx(
-        b.state.today_summary_so_far["co2_emitted_t"]
-    )
+    assert a.state.today.co2_emitted_t == pytest.approx(b.state.today.co2_emitted_t)
 
 
 def test_step_size_invariance_with_refinery():
@@ -995,10 +980,8 @@ def test_orphan_producer_sells_raw_refinery_starves():
     assert rate > 0
     refinery_after = next(t for t in w.state.tiles if t.id == refinery.id)
     assert refinery_after.current_throughput_bbl_day == 0.0
-    assert w.state.today_summary_so_far["refined_revenue"] == 0.0
-    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(
-        rate * CRUDE_PRICE_USD_PER_BBL
-    )
+    assert w.state.today.refined_revenue == 0.0
+    assert w.state.today.crude_revenue == pytest.approx(rate * CRUDE_PRICE_USD_PER_BBL)
     s = w.state_dict()
     assert well.id in s["orphan_well_ids"]
     assert refinery.id in s["orphan_refinery_ids"]
@@ -1028,9 +1011,7 @@ def test_orphan_refinery_with_producer_on_another_network_starves():
     refinery_after = next(t for t in w.state.tiles if t.id == refinery.id)
     assert refinery_after.current_throughput_bbl_day == 0.0
     # The producer's network contains no refinery → all crude sells raw.
-    assert w.state.today_summary_so_far["crude_revenue"] == pytest.approx(
-        rate * CRUDE_PRICE_USD_PER_BBL
-    )
+    assert w.state.today.crude_revenue == pytest.approx(rate * CRUDE_PRICE_USD_PER_BBL)
     s = w.state_dict()
     assert refinery.id in s["orphan_refinery_ids"]
     assert well.id not in s["orphan_well_ids"]

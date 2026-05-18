@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from world.snapshots import DayLedger, LastDayTrace, PowerNow, WeatherNow
+
 
 @dataclass
 class Tile:
@@ -143,27 +145,13 @@ class WorldState:
     cumulative_renewable_served_kwh: float = 0.0
     cumulative_total_served_kwh: float = 0.0
 
-    weather_now: dict[str, float] = field(
-        default_factory=lambda: {
-            "solar_irradiance": 0.0,
-            "wind_speed_mps": 0.0,
-            "wind_direction_deg": 0.0,
-            "cloud_factor": 0.0,
-        }
-    )
-    power_now: dict[str, Any] = field(
-        default_factory=lambda: {
-            "demand_kw": 0.0,
-            "supply_kw": 0.0,
-            "balance_state": "balanced",
-            "by_source_kw": {"solar": 0.0, "wind": 0.0, "coal": 0.0, "gas": 0.0},
-        }
-    )
-    # 24-element trace of the most recently completed day's hourly dispatch,
-    # for the UI power tab. Empty until the first /step finishes.
-    last_day_supply_kw_by_hour: list[float] = field(default_factory=list)
-    last_day_demand_kw_by_hour: list[float] = field(default_factory=list)
-    last_day_balance_state_by_hour: list[str] = field(default_factory=list)
+    # Hourly snapshots. Both are whole-value replaced per tick; never
+    # mutated in place. See world/snapshots.py and ADR-0003.
+    weather_now: WeatherNow = field(default_factory=WeatherNow)
+    power_now: PowerNow = field(default_factory=PowerNow)
+    # 24-element traces of the most recently completed day, for the UI
+    # power tab. Empty until the first /step finishes.
+    last_day_trace: LastDayTrace = field(default_factory=LastDayTrace)
 
     # Scenario hook (open-source-arena slice 02). `weather_overrides` is a
     # transient per-hour dict consulted by `world.weather.step_weather_one_hour`
@@ -175,27 +163,6 @@ class WorldState:
     weather_overrides: dict[str, float] = field(default_factory=dict)
     scenario_trace: list[dict[str, Any]] = field(default_factory=list)
 
-    today_summary_so_far: dict[str, float] = field(
-        default_factory=lambda: {
-            "tax_revenue": 0.0,
-            "power_revenue": 0.0,
-            "oil_revenue": 0.0,
-            "crude_revenue": 0.0,
-            "refined_revenue": 0.0,
-            "opex": 0.0,
-            "fuel_cost": 0.0,
-            "carbon_cost": 0.0,
-            "co2_emitted_t": 0.0,
-            "coal_kwh": 0.0,
-            "gas_kwh": 0.0,
-            "refined_bbl": 0.0,
-            "blackout_hours": 0.0,
-            "brownout_hours": 0.0,
-            "blackout_penalty": 0.0,
-            "renewable_share": 0.0,
-            "injection_kw": 0.0,
-            "production_kw": 0.0,
-            "industrial_revenue": 0.0,
-            "commercial_revenue": 0.0,
-        }
-    )
+    # Per-day accumulator. Reset at the top of each day; surfaced on
+    # the wire as `today` (was `today_summary_so_far`).
+    today: DayLedger = field(default_factory=DayLedger)

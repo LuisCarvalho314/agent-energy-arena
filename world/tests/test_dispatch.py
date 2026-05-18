@@ -23,6 +23,7 @@ from world.power import (
     dispatch,
 )
 from world.sim import World
+from world.snapshots import WeatherNow
 from world.state import Tile
 
 
@@ -119,7 +120,7 @@ def test_coal_plant_catalog_labor_and_road_requirements() -> None:
 
 def test_dispatch_solar_only_at_noon() -> None:
     p = _plant("solar_farm")
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     outputs, supply, by_source = dispatch(
         [p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=80, h=12
     )
@@ -133,7 +134,7 @@ def test_dispatch_solar_only_at_noon() -> None:
 
 def test_dispatch_wind_at_rated_speed() -> None:
     p = _plant("wind_turbine")
-    weather = {"cloud_factor": 0.0, "wind_speed_mps": 12.0}
+    weather = WeatherNow(cloud_factor=0.0, wind_speed_mps=12.0)
     outputs, supply, by_source = dispatch(
         [p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=0, h=0
     )
@@ -143,7 +144,7 @@ def test_dispatch_wind_at_rated_speed() -> None:
 
 def test_dispatch_solar_zero_at_night() -> None:
     p = _plant("solar_farm")
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     outputs, _supply, _by = dispatch(
         [p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=80, h=0
     )
@@ -158,7 +159,7 @@ def test_solar_derate_during_heatwave() -> None:
     plant at 80% of its effective capacity.
     """
     p = _plant("solar_farm")
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     base_out, _, base_by = dispatch(
         [p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=80, h=12
     )
@@ -180,7 +181,7 @@ def test_solar_derate_during_heatwave() -> None:
 def test_solar_derate_does_not_affect_wind() -> None:
     """Wind output is unchanged when `solar_derate < 1.0`."""
     p = _plant("wind_turbine")
-    weather = {"cloud_factor": 0.0, "wind_speed_mps": 12.0}
+    weather = WeatherNow(cloud_factor=0.0, wind_speed_mps=12.0)
     outputs, _supply, by_source = dispatch(
         [p],
         demand_kw=10_000.0,
@@ -197,7 +198,7 @@ def test_solar_derate_does_not_affect_wind() -> None:
 def test_solar_derate_defaults_to_one() -> None:
     """No-arg dispatch yields the same solar output as `solar_derate=1.0`."""
     p = _plant("solar_farm")
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     default_out, _, _ = dispatch(
         [p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=80, h=12
     )
@@ -220,7 +221,7 @@ def test_coal_must_run_at_25_percent_when_demand_low() -> None:
     """A coal plant always runs at >= 25% capacity when operational."""
     p = _plant("coal_plant")
     cap = TILE_CATALOG["coal_plant"].capacity_kw
-    outputs, _s, _b = dispatch([p], demand_kw=0.0, prev_outputs={}, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch([p], demand_kw=0.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12)
     assert outputs[p.id] == pytest.approx(cap * COAL_MIN_RUN)
 
 
@@ -230,7 +231,9 @@ def test_coal_ramp_limit_per_hour() -> None:
     cap = TILE_CATALOG["coal_plant"].capacity_kw
     prev = {p.id: cap * COAL_MIN_RUN}  # last hour at must-run (200 kW).
     # Demand far above must-run; coal would want to ramp to capacity.
-    outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs=prev, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=10_000.0, prev_outputs=prev, weather=WeatherNow(), D=0, h=12
+    )
     expected_max = cap * COAL_MIN_RUN + cap * COAL_RAMP_PER_HOUR  # 200 + 80 = 280
     assert outputs[p.id] == pytest.approx(expected_max)
     # And not higher than prev + ramp_room.
@@ -243,7 +246,9 @@ def test_coal_can_ramp_down_to_must_run_freely() -> None:
     cap = TILE_CATALOG["coal_plant"].capacity_kw
     prev = {p.id: cap}  # last hour at full capacity.
     # Demand collapses to zero — coal drops straight to must-run.
-    outputs, _s, _b = dispatch([p], demand_kw=0.0, prev_outputs=prev, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=0.0, prev_outputs=prev, weather=WeatherNow(), D=0, h=12
+    )
     assert outputs[p.id] == pytest.approx(cap * COAL_MIN_RUN)
 
 
@@ -252,7 +257,9 @@ def test_coal_holds_output_when_prev_above_must_run() -> None:
     p = _plant("coal_plant")
     cap = TILE_CATALOG["coal_plant"].capacity_kw
     prev = {p.id: 600.0}  # last hour at 600 kW (above must-run = cap × 0.25).
-    outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs=prev, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=10_000.0, prev_outputs=prev, weather=WeatherNow(), D=0, h=12
+    )
     # Should ramp to min(cap, prev + ramp_room) where ramp_room = cap × 0.10.
     expected = min(cap, 600.0 + cap * COAL_RAMP_PER_HOUR)
     assert outputs[p.id] == pytest.approx(expected)
@@ -266,7 +273,9 @@ def test_gas_ramp_limit_per_hour() -> None:
     p = _plant("gas_peaker")
     cap = TILE_CATALOG["gas_peaker"].capacity_kw
     prev = {p.id: 100.0}
-    outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs=prev, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=10_000.0, prev_outputs=prev, weather=WeatherNow(), D=0, h=12
+    )
     expected_max = min(cap, 100.0 + cap * GAS_RAMP_PER_HOUR)  # 100 + 250 = 350
     assert outputs[p.id] == pytest.approx(expected_max)
 
@@ -275,7 +284,9 @@ def test_gas_starts_at_zero_with_no_prev_output() -> None:
     """Newly built gas peaker ramps from 0 — first hour limited to 50% cap."""
     p = _plant("gas_peaker")
     cap = TILE_CATALOG["gas_peaker"].capacity_kw
-    outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs={}, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=10_000.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12
+    )
     assert outputs[p.id] == pytest.approx(cap * GAS_RAMP_PER_HOUR)
 
 
@@ -287,7 +298,7 @@ def test_unsupplied_peaker_zeroed_like_plant_failure() -> None:
         [p],
         demand_kw=10_000.0,
         prev_outputs={},
-        weather={},
+        weather=WeatherNow(),
         D=0,
         h=12,
         unsupplied_peaker_ids=frozenset({p.id}),
@@ -304,13 +315,13 @@ def test_unsupplied_peaker_matches_non_operational_peaker_outputs() -> None:
     failed.operational = False
     unsupplied = _plant("gas_peaker", idx=2)
     failed_out, failed_supply, failed_by = dispatch(
-        [failed], demand_kw=10_000.0, prev_outputs={}, weather={}, D=0, h=12
+        [failed], demand_kw=10_000.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12
     )
     unsupplied_out, unsupplied_supply, unsupplied_by = dispatch(
         [unsupplied],
         demand_kw=10_000.0,
         prev_outputs={},
-        weather={},
+        weather=WeatherNow(),
         D=0,
         h=12,
         unsupplied_peaker_ids=frozenset({unsupplied.id}),
@@ -324,13 +335,13 @@ def test_supplied_peaker_dispatches_normally_when_demand_present() -> None:
     """An empty unsupplied set is a no-op; gas dispatches per ramp."""
     p = _plant("gas_peaker")
     outputs_default, _, _ = dispatch(
-        [p], demand_kw=10_000.0, prev_outputs={}, weather={}, D=0, h=12
+        [p], demand_kw=10_000.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12
     )
     outputs_empty, _, _ = dispatch(
         [p],
         demand_kw=10_000.0,
         prev_outputs={},
-        weather={},
+        weather=WeatherNow(),
         D=0,
         h=12,
         unsupplied_peaker_ids=frozenset(),
@@ -348,7 +359,7 @@ def test_unsupplied_filter_does_not_affect_coal_or_renewables() -> None:
         [coal],
         demand_kw=10_000.0,
         prev_outputs={},
-        weather={},
+        weather=WeatherNow(),
         D=0,
         h=12,
         unsupplied_peaker_ids=frozenset({coal.id}),
@@ -361,7 +372,7 @@ def test_gas_does_not_dispatch_when_demand_already_met() -> None:
     """If renewables + coal cover demand, gas stays at zero."""
     solar = _plant("solar_farm", idx=1)
     gas = _plant("gas_peaker", idx=2)
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     outputs, _s, by_source = dispatch(
         [solar, gas], demand_kw=100.0, prev_outputs={}, weather=weather, D=80, h=12
     )
@@ -378,7 +389,7 @@ def test_merit_order_renewables_first_then_coal_then_gas() -> None:
     solar = _plant("solar_farm", idx=1)
     coal = _plant("coal_plant", idx=2)
     gas = _plant("gas_peaker", idx=3)
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     # Demand = 250 kW. Solar at noon ≈ 150. Coal must-run = 200. Sum=350 > 250.
     # Gas should remain idle.
     outputs, supply, by_source = dispatch(
@@ -520,11 +531,14 @@ def test_state_power_now_by_source_kw_populated() -> None:
     _build_at(w, "solar_farm", 5, 5)
     _build_at(w, "coal_plant", 6, 5)
     w.step(days=1)
-    bs = w.state.power_now["by_source_kw"]
-    for key in ("solar", "wind", "coal", "gas"):
-        assert key in bs
-    # Coal at must-run is 200 kW; some hour should reflect that.
-    assert bs["coal"] >= 0.0
+    bs = w.state.power_now.by_source_kw
+    # All four canonical sources are present as attributes by construction
+    # (BySourceKw model). Coal at must-run is 200 kW; some hour should
+    # reflect that.
+    assert bs.coal >= 0.0
+    assert bs.solar >= 0.0
+    assert bs.wind >= 0.0
+    assert bs.gas >= 0.0
 
 
 def test_blackout_decrements_treasury_per_hour() -> None:
@@ -534,9 +548,9 @@ def test_blackout_decrements_treasury_per_hour() -> None:
     treasury_before = w.state.treasury
     w.step(days=1)
     # 24 blackout hours expected.
-    assert w.state.today_summary_so_far["blackout_hours"] == pytest.approx(24.0)
+    assert w.state.today.blackout_hours == pytest.approx(24.0)
     expected_penalty = 24 * w.config.blackout_penalty_hour
-    assert w.state.today_summary_so_far["blackout_penalty"] == pytest.approx(expected_penalty)
+    assert w.state.today.blackout_penalty == pytest.approx(expected_penalty)
     # Net treasury delta = -penalty + tax_revenue (no plants → no opex/fuel/
     # power_revenue). Pop drops under the happiness-velocity model:
     # h=0 (24h blackout clipped) → velocity = 0.012·100·-1 = -1.2 → 98.8.
@@ -557,7 +571,7 @@ def test_curtailment_revenue_includes_export_component() -> None:
     _build_at(w, "coal_plant", 8, 5)  # 3 plants × 200 must-run = 600 kW; cap headroom
     w.step(days=1)
     # Some power_revenue should accrue (served retail at minimum).
-    pr = w.state.today_summary_so_far["power_revenue"]
+    pr = w.state.today.power_revenue
     assert pr > 0.0
 
 
@@ -696,7 +710,7 @@ def test_full_day_blackout_pins_happiness_at_zero() -> None:
     from world.power import compute_balance_state, dispatch, total_demand_kw
 
     demand = total_demand_kw(w.state, 0)
-    _o, supply, _b = dispatch([], demand, {}, {}, 0, 0)
+    _o, supply, _b = dispatch([], demand, {}, WeatherNow(), 0, 0)
     state, _s, _e, _r = compute_balance_state(supply, demand)
     assert state == "blackout"
 
@@ -716,7 +730,9 @@ def test_half_staffed_coal_ceiling_is_half_capacity() -> None:
     eff_cap = cap * 0.5
     # Big prior to skip the ramp constraint — pin the ceiling alone.
     prev = {p.id: eff_cap}
-    outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs=prev, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=10_000.0, prev_outputs=prev, weather=WeatherNow(), D=0, h=12
+    )
     assert outputs[p.id] == pytest.approx(eff_cap)
 
 
@@ -724,7 +740,7 @@ def test_half_staffed_coal_must_run_is_half_floor() -> None:
     """Half-staffed coal's must-run floor scales with efficiency."""
     p = _plant("coal_plant", staffed_jobs=15)
     cap = TILE_CATALOG["coal_plant"].capacity_kw
-    outputs, _s, _b = dispatch([p], demand_kw=0.0, prev_outputs={}, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch([p], demand_kw=0.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12)
     assert outputs[p.id] == pytest.approx(cap * 0.5 * COAL_MIN_RUN)
 
 
@@ -734,7 +750,9 @@ def test_half_staffed_coal_ramp_scales() -> None:
     cap = TILE_CATALOG["coal_plant"].capacity_kw
     eff_cap = cap * 0.5
     # No prior output → warm-start at effective must-run.
-    outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs={}, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=10_000.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12
+    )
     expected = eff_cap * COAL_MIN_RUN + eff_cap * COAL_RAMP_PER_HOUR
     assert outputs[p.id] == pytest.approx(expected)
 
@@ -743,7 +761,7 @@ def test_idle_coal_plant_produces_no_output() -> None:
     """A 0-staffed coal plant: no output, no must-run, no ramp."""
     p = _plant("coal_plant", staffed_jobs=0)
     outputs, _s, by_source = dispatch(
-        [p], demand_kw=10_000.0, prev_outputs={}, weather={}, D=0, h=12
+        [p], demand_kw=10_000.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12
     )
     assert outputs[p.id] == 0.0
     assert by_source["coal"] == 0.0
@@ -752,7 +770,7 @@ def test_idle_coal_plant_produces_no_output() -> None:
 def test_idle_solar_farm_produces_no_output() -> None:
     """0-staffed solar farm under full sun produces 0 kW."""
     p = _plant("solar_farm", staffed_jobs=0)
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     outputs, _s, by_source = dispatch(
         [p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=80, h=12
     )
@@ -763,7 +781,7 @@ def test_idle_solar_farm_produces_no_output() -> None:
 def test_idle_wind_turbine_produces_no_output() -> None:
     """0-staffed wind turbine at rated speed produces 0 kW."""
     p = _plant("wind_turbine", staffed_jobs=0)
-    weather = {"cloud_factor": 0.0, "wind_speed_mps": 12.0}
+    weather = WeatherNow(cloud_factor=0.0, wind_speed_mps=12.0)
     outputs, _s, by_source = dispatch(
         [p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=0, h=0
     )
@@ -775,7 +793,7 @@ def test_half_staffed_wind_caps_at_half_capacity() -> None:
     """A 1/2-staffed wind turbine at rated speed produces half of catalog."""
     p = _plant("wind_turbine", staffed_jobs=1)  # jobs=2 → efficiency=0.5
     cap = TILE_CATALOG["wind_turbine"].capacity_kw
-    weather = {"cloud_factor": 0.0, "wind_speed_mps": 12.0}
+    weather = WeatherNow(cloud_factor=0.0, wind_speed_mps=12.0)
     outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=0, h=0)
     assert outputs[p.id] == pytest.approx(cap * 0.5)
 
@@ -784,7 +802,7 @@ def test_half_staffed_solar_caps_at_half_capacity() -> None:
     """A 1/2-staffed solar farm at noon produces half of full-staff output."""
     full = _plant("solar_farm", idx=1)
     half = _plant("solar_farm", idx=2, staffed_jobs=1)
-    weather = {"cloud_factor": 1.0, "wind_speed_mps": 0.0}
+    weather = WeatherNow(cloud_factor=1.0, wind_speed_mps=0.0)
     out_full, _s, _b = dispatch(
         [full], demand_kw=10_000.0, prev_outputs={}, weather=weather, D=80, h=12
     )
@@ -798,7 +816,9 @@ def test_half_staffed_gas_ramp_scales() -> None:
     """A 1/4-staffed gas peaker (1/4 jobs) has 1/4 ramp and ceiling."""
     p = _plant("gas_peaker", staffed_jobs=1)  # jobs=4 → efficiency=0.25
     cap = TILE_CATALOG["gas_peaker"].capacity_kw
-    outputs, _s, _b = dispatch([p], demand_kw=10_000.0, prev_outputs={}, weather={}, D=0, h=12)
+    outputs, _s, _b = dispatch(
+        [p], demand_kw=10_000.0, prev_outputs={}, weather=WeatherNow(), D=0, h=12
+    )
     # Cold-start: prev=0, eff_cap = 0.25 × 500 = 125, ramp room = 50% × 125 = 62.5.
     assert outputs[p.id] == pytest.approx(cap * 0.25 * GAS_RAMP_PER_HOUR)
 
@@ -816,12 +836,12 @@ def test_idle_coal_plant_zero_fuel_and_co2_through_sim() -> None:
     # Restore population so demand exists and would normally trigger coal.
     w.state.population = 100
     w.step(days=1)
-    summary = w.state.today_summary_so_far
+    summary = w.state.today
     # Coal contributed 0 → fuel cost from coal = 0, CO2 from coal = 0.
     # The gas peaker doesn't exist; only the idle coal plant. Any fuel/CO2
     # would be from coal — both must be zero.
-    assert summary.get("fuel_cost", 0.0) == pytest.approx(0.0)
-    assert summary.get("co2_emitted_t", 0.0) == pytest.approx(0.0)
+    assert summary.fuel_cost == pytest.approx(0.0)
+    assert summary.co2_emitted_t == pytest.approx(0.0)
 
 
 # -- Battery charge/discharge step (slice 02) -------------------------------

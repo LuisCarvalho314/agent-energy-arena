@@ -65,7 +65,7 @@ def _project_truth(world: World, D: int, h: int) -> tuple[float, float, float]:
     the *current* state, so any active heatwave / demand_surprise
     multipliers are reflected in the projection.
     """
-    cloud = float(world.state.weather_now.get("cloud_factor", 0.85))
+    cloud = world.state.weather_now.cloud_factor
     true_solar = irradiance(D, h, cloud)
     true_wind = v_mean(D, world.wind_phi_seed)
     true_demand = total_demand_kw(world.state, h)

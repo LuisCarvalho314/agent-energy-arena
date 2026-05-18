@@ -233,7 +233,7 @@ def test_step_size_invariance_with_weather() -> None:
 
     assert a.state.day == b.state.day == 7
     assert a.state.weather_now == b.state.weather_now
-    assert a.state.power_now["demand_kw"] == b.state.power_now["demand_kw"]
+    assert a.state.power_now.demand_kw == b.state.power_now.demand_kw
     assert a.sim_rng.standard_normal() == b.sim_rng.standard_normal()
 
 
@@ -243,14 +243,14 @@ def test_weather_now_populated_after_step() -> None:
     w.step(days=1)
     wn = w.state.weather_now
     # Every brief field must be present and numeric.
-    assert isinstance(wn["solar_irradiance"], float)
-    assert isinstance(wn["wind_speed_mps"], float)
-    assert isinstance(wn["wind_direction_deg"], float)
-    assert isinstance(wn["cloud_factor"], float)
+    assert isinstance(wn.solar_irradiance, float)
+    assert isinstance(wn.wind_speed_mps, float)
+    assert isinstance(wn.wind_direction_deg, float)
+    assert isinstance(wn.cloud_factor, float)
     # AR(1) bounds.
-    assert 0.1 <= wn["cloud_factor"] <= 1.0
-    assert 0.0 <= wn["wind_speed_mps"] <= 30.0
-    assert 0.0 <= wn["wind_direction_deg"] < 360.0
+    assert 0.1 <= wn.cloud_factor <= 1.0
+    assert 0.0 <= wn.wind_speed_mps <= 30.0
+    assert 0.0 <= wn.wind_direction_deg < 360.0
 
 
 def test_state_dict_exposes_weather_now() -> None:
@@ -266,7 +266,7 @@ def test_forecast_does_not_perturb_weather_state() -> None:
     w = World()
     w.reset(seed=42)
     w.step(days=2)
-    snapshot = dict(w.state.weather_now)
+    snapshot = w.state.weather_now
 
     for _ in range(50):
         w.forecast(hours=24)

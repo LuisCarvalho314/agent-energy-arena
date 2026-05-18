@@ -13,8 +13,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from world.catalog import TILE_CATALOG
-from world.power import PLANT_TYPES
-from world.pricing import (
+from world.economy import (
     COMMERCIAL_RADIUS,
     commercial_revenue_for_tile,
     industrial_co2_for_tile,
@@ -30,6 +29,7 @@ from world.pricing import (
     well_gross_crude_value_for_tile,
     well_injection_kwh_per_day,
 )
+from world.power import PLANT_TYPES
 from world.subsurface import injector_supports
 
 if TYPE_CHECKING:
@@ -41,7 +41,7 @@ def tile_view(t: Tile, world: World) -> dict[str, Any]:
     """Wire-format dict for one ``Tile`` at its current operating state.
 
     Includes the per-tile economics rows (revenue, CO2, fuel/carbon cost,
-    net) the hover popup surfaces, computed via the public ``pricing``
+    net) the hover popup surfaces, computed via the public ``economy``
     helpers so the popup row and the city-wide aggregator share a source
     of truth. ``residents_in_radius`` on commercial tiles is the
     capacity-in-radius × city occupancy figure the popup needs and is
@@ -152,10 +152,10 @@ def well_view(w: Well, world: World) -> dict[str, Any]:
 def _residents_in_radius(state: Any, tile: Tile) -> float:
     """Capacity-in-radius × city occupancy for the commercial popup row.
 
-    Lives here (not in ``pricing``) because it serves only this dict —
+    Lives here (not in ``economy``) because it serves only this dict —
     it's a UI-facing convenience derived from the same data
     ``commercial_revenue_for_tile`` uses, but without the rate and
-    workforce-efficiency multipliers. Inlining keeps ``pricing``'s public
+    workforce-efficiency multipliers. Inlining keeps ``economy``'s public
     surface focused on per-tile economics rather than popup helpers.
     """
     capacity_in_radius = 0

@@ -319,7 +319,7 @@ def test_daily_tax_uses_post_update_integer_population():
     update_population(w)
     # h=1.0 (no penalties), velocity=0 → pop stays at 500.7 → tax = $4 × 500.
     assert int(w.state.population) == 500
-    assert w.state.today_summary_so_far["tax_revenue"] == pytest.approx(500 * 4.0)
+    assert w.state.today.tax_revenue == pytest.approx(500 * 4.0)
     assert w.state.treasury == pytest.approx(treasury_before + 500 * 4.0)
 
 

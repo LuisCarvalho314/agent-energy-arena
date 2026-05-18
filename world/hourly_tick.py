@@ -17,15 +17,15 @@ without mutating). It computes:
      step against any residual demand.
   7. The bus-level balance state from the post-battery supply.
 
-The function reads `state.plant_fuel_cost_per_mwh` for the dispatch merit
-order. It does NOT mutate `state` — every value the caller might want to
-commit comes back on `TickResult`. The caller is responsible for applying
-SoC deltas, accumulating per-day kWh, recording per-plant outputs, etc.
-
-This shape (Shape A from the design grill) makes drift impossible:
-preview and sim see exactly the same hour because they call the same
-function with the same signature. A change to any of the seven steps
-above lands in both callers at once.
+`hourly_tick` is **pure** — every value the caller might want to commit
+comes back on ``TickResult``. ``commit_tick(state, result)`` is the
+sim-only mutating peer: it writes the hour's mutations to ``state``
+(battery SoC, outage bookkeeping, revenue accrual, renewable share,
+injection/production accumulators, by-source running totals, per-plant
+outputs, ``PowerNow`` snapshot, hourly traces). Preview calls
+``hourly_tick`` but never ``commit_tick`` — the two-function split is
+what makes preview/sim drift-impossible: both run the same projection,
+only one commits.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from world import workforce
+from world.catalog import TILE_CATALOG
 from world.economy import refinery_process_kw
 from world.pipelines import peaker_supply
 from world.power import (
@@ -44,6 +45,7 @@ from world.power import (
     dispatch,
     total_demand_kw,
 )
+from world.snapshots import BalanceState, BySourceKw, PowerNow, WeatherNow
 from world.subsurface import INJECTION_KWH_PER_BBL, PRODUCTION_KWH_PER_BBL, Q_MAX_WELL_BBL_DAY
 from world.weather import solar_derate_multiplier
 
@@ -77,7 +79,7 @@ class TickResult:
     civilian_demand_kw: float  # for billable-served split: power revenue
     # bills civilian kWh only.
     supply_kw: float  # net of battery charge/discharge.
-    balance: str  # "balanced" | "brownout" | "blackout" | "curtailment"
+    balance: BalanceState
     served_kw: float
     excess_kw: float
     # Plant-side
@@ -98,8 +100,8 @@ def hourly_tick(
     state: WorldState,
     hour: int,
     prev_outputs: dict[str, float],
-    prev_balance: str,
-    weather: dict[str, float],
+    prev_balance: BalanceState,
+    weather: WeatherNow,
 ) -> TickResult:
     """Project one hour of bus-level state without mutating ``state``.
 
@@ -112,7 +114,7 @@ def hourly_tick(
         prev_outputs: The previous hour's `outputs` dict; warm-starts
             coal at must-run and cold-starts gas at 0 for plants absent
             from the dict.
-        prev_balance: The previous hour's `balance` string; gates
+        prev_balance: The previous hour's `balance` state; gates
             injection-well DR shedding (brownout/blackout → 0 kW) and
             ramping (curtailment → up to 2× baseline capped at hardware).
         weather: The hour's weather snapshot — `cloud_factor` and
@@ -137,9 +139,9 @@ def hourly_tick(
         eff = workforce.efficiency(iw)
         baseline_kw = iw.setpoint_rate_bbl_day * INJECTION_KWH_PER_BBL / 24.0 * eff
         cap_kw = Q_MAX_WELL_BBL_DAY * INJECTION_KWH_PER_BBL / 24.0 * eff
-        if prev_balance in ("brownout", "blackout"):
+        if prev_balance in (BalanceState.BROWNOUT, BalanceState.BLACKOUT):
             power_kw = 0.0
-        elif prev_balance == "curtailment":
+        elif prev_balance is BalanceState.CURTAILMENT:
             power_kw = min(2.0 * baseline_kw, cap_kw)
         else:
             power_kw = baseline_kw
@@ -158,7 +160,9 @@ def hourly_tick(
             continue
         eff = workforce.efficiency(pw)
         baseline_kw = pw.setpoint_rate_bbl_day * PRODUCTION_KWH_PER_BBL / 24.0 * eff
-        power_kw = 0.0 if prev_balance in ("brownout", "blackout") else baseline_kw
+        power_kw = (
+            0.0 if prev_balance in (BalanceState.BROWNOUT, BalanceState.BLACKOUT) else baseline_kw
+        )
         prod_hour_kwh[pw.id] = power_kw
         prod_total_kw += power_kw
 
@@ -229,4 +233,99 @@ def hourly_tick(
         renewable_supply_after_battery=renewable_supply_after_battery,
         inj_hour_assignments=inj_hour_assignments,
         prod_hour_kwh=prod_hour_kwh,
+    )
+
+
+def commit_tick(state: WorldState, result: TickResult) -> None:
+    """Apply one ``TickResult`` to ``state`` — the sim-only mutating peer
+    of ``hourly_tick``. Preview discards ``result`` instead.
+
+    Every mutation the day used to inline in ``_advance_one_day``'s hourly
+    loop lives here. The order matters: ``PowerNow`` is the last write,
+    because the next hour reads ``state.power_now.balance_state`` to drive
+    DR-on-injection and producer shedding.
+
+    Treasury is *not* touched here. Per-hour outage penalties accumulate
+    in ``state.today.blackout_penalty`` and are settled once at end of day
+    alongside ``power_revenue`` (same pattern: accumulate during the day,
+    credit/debit treasury once when the day completes).
+    """
+    today = state.today
+
+    # Battery SoC delta + clamp at storage bounds (absorbs float jitter).
+    for b in state.tiles:
+        if b.type != "battery":
+            continue
+        spec = TILE_CATALOG[b.type]
+        delta = result.charge_socs.get(b.id, 0.0) + result.discharge_socs.get(b.id, 0.0)
+        b.soc_kwh = max(0.0, min(spec.storage_kwh, b.soc_kwh + delta))
+
+    # Outage bookkeeping. The penalty is *accumulated* here; treasury
+    # debit happens once at end of day. The legacy per-hour decrement
+    # produced the same daily total but made mid-day treasury observable
+    # — no caller relies on that observability (World.step runs the whole
+    # day before returning).
+    if result.balance is BalanceState.BLACKOUT:
+        today.blackout_hours += 1.0
+        today.blackout_penalty += state.blackout_penalty_hour
+    elif result.balance is BalanceState.BROWNOUT:
+        today.brownout_hours += 1.0
+
+    # Power revenue. Process loads (injection wells, refinery) are
+    # unbilled; only civilian kWh × retail. Curtailment exports the
+    # post-injection surplus at the export tariff.
+    billable_served_kw = min(result.supply_kw, result.civilian_demand_kw)
+    today.power_revenue += billable_served_kw * state.grid_price_retail
+    if result.balance is BalanceState.CURTAILMENT and result.excess_kw > 0:
+        today.power_revenue += result.excess_kw * state.grid_price_export
+
+    # Renewable-share accumulator (PRD §"Scoring"). Battery accounting:
+    # charged kWh subtracted from renewable supply (charge step happens
+    # before discharge), discharged kWh added back as 100% renewable —
+    # round-trip losses vanish from both numerator and denominator.
+    renewable_served_kw = min(result.renewable_supply_after_battery, result.served_kw)
+    state.cumulative_total_served_kwh += result.served_kw
+    state.cumulative_renewable_served_kwh += renewable_served_kw
+
+    # DR injection commits — bbl actually delivered and total kWh drawn.
+    # If supply collapsed mid-hour, injectors still contributed their
+    # pre-set baseline to this hour's demand; DR sheds the *next* hour,
+    # when prev_balance reflects the bad state.
+    for iw_id, (power_kw, bbl_this_hour) in result.inj_hour_assignments.items():
+        today.inj_bbl_by_well[iw_id] = today.inj_bbl_by_well.get(iw_id, 0.0) + bbl_this_hour
+        today.injection_kw += power_kw
+
+    # Per-production-well kWh accumulator. Summed across 24 hours; the
+    # end-of-day production loop divides by PRODUCTION_KWH_PER_BBL to get
+    # the day's power-allocated bbl budget per well.
+    for pw_id, power_kw in result.prod_hour_kwh.items():
+        today.prod_kwh_by_well[pw_id] = today.prod_kwh_by_well.get(pw_id, 0.0) + power_kw
+        today.production_kw += power_kw
+
+    today.coal_kwh += result.by_source["coal"]
+    today.gas_kwh += result.by_source["gas"]
+
+    # Per-plant outputs feed the next hour's ramp-limit accounting AND
+    # the day's per-plant served-energy total. ``current_output_kw`` IS
+    # the prev_outputs source for the next tick — no parallel structure.
+    for p in state.tiles:
+        if p.type not in PLANT_TYPES:
+            continue
+        out_kw = result.outputs.get(p.id, 0.0)
+        p.current_output_kw = out_kw
+        p.kwh_served_today += out_kw
+
+    # Hourly traces (24-element by end-of-day). Pinned to
+    # ``state.last_day_trace`` once the day completes.
+    today.supply_kw_by_hour.append(result.supply_kw)
+    today.demand_kw_by_hour.append(result.demand_kw)
+    today.balance_state_by_hour.append(result.balance)
+
+    # PowerNow last — the next hour reads ``state.power_now.balance_state``
+    # at the top of its tick to drive DR and producer shedding.
+    state.power_now = PowerNow(
+        demand_kw=result.demand_kw,
+        supply_kw=result.supply_kw,
+        balance_state=result.balance,
+        by_source_kw=BySourceKw(**result.by_source),
     )

@@ -15,14 +15,16 @@ into code review:
 
 `step_weather_one_hour(world)` is the single integration point: it consumes
 exactly three draws from `world.sim_rng` per hour (cloud → wind speed →
-wind direction, in that order) and writes the four observed fields into
-`world.state.weather_now`.
+wind direction, in that order) and returns a new ``WeatherNow``. The
+caller assigns it to ``world.state.weather_now``.
 """
 
 from __future__ import annotations
 
 import math
 from typing import TYPE_CHECKING
+
+from world.snapshots import WeatherNow
 
 if TYPE_CHECKING:
     import numpy as np
@@ -121,22 +123,22 @@ def derive_phi_seed(world_seed: int) -> float:
     return (world_seed % 1000) / 1000.0 * 2.0 * math.pi
 
 
-def step_weather_one_hour(world: World) -> None:
-    """Advance the four weather observables by one hour.
+def step_weather_one_hour(world: World) -> WeatherNow:
+    """Advance the four weather observables by one hour and return a new snapshot.
 
     Consumes three sim_rng draws per call, in order: cloud_factor,
     wind_speed, wind_direction. The order is part of the determinism
-    contract — do not reorder.
+    contract — do not reorder. The caller is responsible for assigning
+    the returned snapshot to ``world.state.weather_now``.
     """
     state = world.state
     D = state.day
     h = state.hour
+    prev = state.weather_now
 
-    cloud = update_cloud_factor(state.weather_now["cloud_factor"], world.sim_rng)
-    wind_v = update_wind_speed(
-        state.weather_now["wind_speed_mps"], D, world.wind_phi_seed, world.sim_rng
-    )
-    wind_dir = update_wind_direction(state.weather_now["wind_direction_deg"], world.sim_rng)
+    cloud = update_cloud_factor(prev.cloud_factor, world.sim_rng)
+    wind_v = update_wind_speed(prev.wind_speed_mps, D, world.wind_phi_seed, world.sim_rng)
+    wind_dir = update_wind_direction(prev.wind_direction_deg, world.sim_rng)
 
     # Scenario hook (open-source-arena slice 02). After the AR(1) updates,
     # any key present in `state.weather_overrides` wins. The override is
@@ -152,10 +154,13 @@ def step_weather_one_hour(world: World) -> None:
         if "wind_direction_deg" in overrides:
             wind_dir = float(overrides["wind_direction_deg"])
 
-    state.weather_now["cloud_factor"] = cloud
-    state.weather_now["wind_speed_mps"] = wind_v
-    state.weather_now["wind_direction_deg"] = wind_dir
     solar = irradiance(D, h, cloud)
     if overrides and "solar_irradiance" in overrides:
         solar = float(overrides["solar_irradiance"])
-    state.weather_now["solar_irradiance"] = solar
+
+    return WeatherNow(
+        solar_irradiance=solar,
+        wind_speed_mps=wind_v,
+        wind_direction_deg=wind_dir,
+        cloud_factor=cloud,
+    )

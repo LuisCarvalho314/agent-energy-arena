@@ -23,7 +23,7 @@ def test_scenario_base_apply_is_noop() -> None:
     snapshot = (
         world.state.day,
         world.state.treasury,
-        dict(world.state.weather_now),
+        world.state.weather_now,
         list(world.state.active_events),
         dict(world.state.weather_overrides),
         list(world.state.scenario_trace),
@@ -32,7 +32,7 @@ def test_scenario_base_apply_is_noop() -> None:
     assert (
         world.state.day,
         world.state.treasury,
-        dict(world.state.weather_now),
+        world.state.weather_now,
         list(world.state.active_events),
         dict(world.state.weather_overrides),
         list(world.state.scenario_trace),
@@ -43,7 +43,7 @@ def test_null_scenario_apply_does_not_mutate_state() -> None:
     s = NullScenario()
     world = World()
     world.reset(seed=42)
-    weather_before = dict(world.state.weather_now)
+    weather_before = world.state.weather_now
     s.apply(world, 0)
     assert world.state.weather_overrides == {}
     assert world.state.scenario_trace == []
@@ -166,8 +166,8 @@ def test_weather_override_wins_over_ar1_value() -> None:
     world = World(scenario=ClipScenario())
     world.reset(seed=42, scenario=ClipScenario())
     world.step(days=1)
-    assert world.state.weather_now["cloud_factor"] == pytest.approx(0.30)
-    assert world.state.weather_now["wind_speed_mps"] == pytest.approx(0.50)
+    assert world.state.weather_now.cloud_factor == pytest.approx(0.30)
+    assert world.state.weather_now.wind_speed_mps == pytest.approx(0.50)
 
 
 def test_weather_override_can_pin_solar_irradiance() -> None:
@@ -178,7 +178,7 @@ def test_weather_override_can_pin_solar_irradiance() -> None:
     world = World(scenario=DarkScenario())
     world.reset(seed=42, scenario=DarkScenario())
     world.step(days=1)
-    assert world.state.weather_now["solar_irradiance"] == 0.0
+    assert world.state.weather_now.solar_irradiance == 0.0
 
 
 def test_empty_weather_overrides_preserves_ar1_value() -> None:

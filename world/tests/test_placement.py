@@ -46,10 +46,13 @@ def test_halo_types_are_coal_gas_wind() -> None:
     assert frozenset({"coal_plant", "gas_peaker", "wind_turbine"}) == HALO_TYPES
 
 
-def test_admitted_neighbors_are_road_and_battery() -> None:
+def test_admitted_neighbors_are_road_battery_pipeline() -> None:
     # town_hall is road-network-equivalent (see world.grid.ROAD_TYPES), so a
     # halo'd plant adjacent to town hall is admitted on the same grounds.
-    assert frozenset({"road", "battery", "town_hall"}) == HALO_ADMITTED_NEIGHBORS
+    # Pipelines are admitted because a gas peaker's dispatch rule (see
+    # world.pipelines) requires a pipeline neighbor — the halo must let
+    # one in or the peaker can never be fed.
+    assert frozenset({"road", "battery", "town_hall", "pipeline"}) == HALO_ADMITTED_NEIGHBORS
 
 
 # -- Pure-function validate -------------------------------------------------
@@ -99,6 +102,18 @@ def test_validate_admits_battery_neighbor() -> None:
     assert validate("coal_plant", (5, 6), tiles) is None
     assert validate("gas_peaker", (6, 6), tiles) is None
     assert validate("wind_turbine", (5, 4), tiles) is None
+
+
+def test_validate_admits_pipeline_neighbor() -> None:
+    """Gas peakers must dispatch via a pipeline neighbor (see
+    world.pipelines.peaker_has_pipeline_supply), so the halo has to admit
+    pipelines or the rule contradicts itself. The admit-list is shared
+    across halo'd types, so coal and wind admit pipelines too."""
+    tiles = [_tile("pipeline", 5, 5)]
+    assert validate("gas_peaker", (5, 6), tiles) is None
+    assert validate("gas_peaker", (6, 6), tiles) is None
+    assert validate("coal_plant", (5, 4), tiles) is None
+    assert validate("wind_turbine", (4, 5), tiles) is None
 
 
 def test_validate_admits_town_hall_neighbor_via_road_membership() -> None:

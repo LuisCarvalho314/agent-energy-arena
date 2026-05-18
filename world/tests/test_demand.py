@@ -250,7 +250,7 @@ def test_state_power_now_demand_populated_after_step() -> None:
     # only town hall standing → no industrial/commercial demand. Pop changed
     # from 100 → 99 by end-of-day population update. Whatever the exact
     # value, it must be a non-negative finite float.
-    val = w.state.power_now["demand_kw"]
+    val = w.state.power_now.demand_kw
     assert isinstance(val, float)
     assert val >= 0.0
 
@@ -259,10 +259,10 @@ def test_demand_includes_population_and_tiles() -> None:
     """A 1-industrial world's demand must exceed a 0-tile world's demand."""
     bare = _fresh_world()
     bare.step(days=1)
-    bare_demand = bare.state.power_now["demand_kw"]
+    bare_demand = bare.state.power_now.demand_kw
 
     big = _fresh_world()
     _inject_tile(big, tile_type="industrial", x=5, y=5)
     big.step(days=1)
 
-    assert big.state.power_now["demand_kw"] > bare_demand + 200.0  # +300kW continuous
+    assert big.state.power_now.demand_kw > bare_demand + 200.0  # +300kW continuous

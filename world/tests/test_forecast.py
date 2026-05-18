@@ -164,7 +164,7 @@ def test_mean_solar_converges_to_truth():
         solars.append(recs[target_offset]["solar_irradiance"])
 
     # Compute deterministic truth.
-    cloud = w.state.weather_now["cloud_factor"]
+    cloud = w.state.weather_now.cloud_factor
     truth = irradiance(0, 0 + 1 + target_offset, cloud)
     mean = float(np.mean(solars))
     # σ at i=11 is 0.05 + 0.25 × 11/24 ≈ 0.165, clipping skews very

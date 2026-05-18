@@ -54,7 +54,7 @@ def test_grid_stress_low_wind_fires_and_clears_on_documented_days() -> None:
 
     _step_to_day(w, start + 1)
     assert w.state.weather_overrides.get("wind_speed_mps") == mps
-    assert w.state.weather_now["wind_speed_mps"] == mps
+    assert w.state.weather_now.wind_speed_mps == mps
     assert {
         "day": start,
         "kind": "low_wind_start",

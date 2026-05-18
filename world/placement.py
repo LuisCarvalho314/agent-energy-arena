@@ -1,11 +1,13 @@
 """Build-time spacing matrix for halo'd power facilities.
 
 Coal, gas, and wind generators impose a one-cell no-build halo on the
-8-neighborhood. Roads and batteries are admitted inside the halo so plants
-can still be serviced and storage co-located. Solar and battery candidates
-impose no halo of their own; their placement is rejected only by other
-rules. town_hall counts as a road (see `world.grid.ROAD_TYPES`), so it is
-admitted as well.
+8-neighborhood. Roads, batteries, and pipelines are admitted inside the
+halo so plants can still be serviced, storage co-located, and gas peakers
+reached by their feed (the pipeline-network rule in `world.pipelines`
+requires a pipeline neighbor for a peaker to dispatch). Solar and battery
+candidates impose no halo of their own; their placement is rejected only
+by other rules. town_hall counts as a road (see `world.grid.ROAD_TYPES`),
+so it is admitted as well.
 
 Validation runs at build time only — existing tiles violating the rule at
 release are grandfathered (the rule is consulted by `World.build` and
@@ -23,9 +25,11 @@ from world.state import Tile
 HALO_TYPES: frozenset[str] = frozenset({"coal_plant", "gas_peaker", "wind_turbine"})
 
 # Neighbor tile types that are admitted inside any halo. Roads thread
-# logistics; batteries co-locate with plants for self-firming. town_hall is
+# logistics; batteries co-locate with plants for self-firming; pipelines
+# feed gas peakers (the dispatch rule in `world.pipelines` requires a
+# pipeline neighbor, so the halo must let one in). town_hall is
 # road-network-equivalent (see `world.grid.ROAD_TYPES`).
-HALO_ADMITTED_NEIGHBORS: frozenset[str] = frozenset({"road", "battery", "town_hall"})
+HALO_ADMITTED_NEIGHBORS: frozenset[str] = frozenset({"road", "battery", "town_hall", "pipeline"})
 
 # Fixed scan order for the 8-neighborhood. Returning the first non-admitted
 # neighbor in this order makes the rejection deterministic when multiple

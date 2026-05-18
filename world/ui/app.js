@@ -1225,13 +1225,22 @@
         const y = H - padY - (v / maxY) * (H - padY * 2);
         return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
       });
+      const w = opts.width || 2;
       const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
       p.setAttribute("d", pts.join(" "));
       p.setAttribute("stroke", color);
-      p.setAttribute("stroke-width", String(opts.width || 2));
+      p.setAttribute("stroke-width", String(w));
       p.setAttribute("fill", "none");
       if (opts.opacity != null) p.setAttribute("stroke-opacity", String(opts.opacity));
-      if (opts.dashed) p.setAttribute("stroke-dasharray", "4 3");
+      if (opts.dashed) {
+        // Scale the dash pattern with stroke width so a wide supply band and
+        // a thin demand line both read as visibly dashed. A flat "4 3" looks
+        // dashed at width 2 but reads as near-continuous at width 4 because
+        // the gap is smaller than the stroke is tall.
+        const dash = (w * 2.5).toFixed(1);
+        const gap = (w * 1.75).toFixed(1);
+        p.setAttribute("stroke-dasharray", `${dash} ${gap}`);
+      }
       chartEl.appendChild(p);
     };
     // Y-axis label (max).
@@ -1242,13 +1251,14 @@
     lbl.setAttribute("font-size", "10");
     lbl.textContent = `${Math.round(maxY)} kW`;
     chartEl.appendChild(lbl);
-    // Layering order: yesterday (dashed, dimmer) underneath, projection on top.
-    // Within each pair: supply is a wider, semi-transparent envelope and
-    // demand is a crisp solid line on top, so demand stays visible even when
-    // it equals supply (a `balanced` grid produces identical series).
+    // Layering: all supply (wider, semi-transparent envelopes) underneath,
+    // then both demand lines on top. Otherwise the projected-supply band
+    // paints over the yesterday-demand dashed line wherever they overlap,
+    // making the dashed line look intermittent. Within each layer:
+    // yesterday (dashed, dimmer) below projection.
     path(ySupply, "#4ea3ff", { dashed: true, width: 4, opacity: 0.35 });
-    path(yDemand, "#ff7a59", { dashed: true, width: 2, opacity: 0.7 });
     path(pSupply, "#4ea3ff", { width: 4, opacity: 0.45 });
+    path(yDemand, "#ff7a59", { dashed: true, width: 2, opacity: 0.7 });
     path(pDemand, "#ff7a59", { width: 2 });
   }
 
@@ -1851,7 +1861,7 @@
     reservoirsSummary = s.reservoirs_summary || [];
     activeEvents = s.active_events || [];
     historicalEvents = s.historical_events || [];
-    summary = s.today_summary_so_far || {};
+    summary = s.today || {};
     treasury = s.treasury;
     els.day.textContent = s.day;
     els.treasury.textContent = Math.round(s.treasury).toLocaleString();

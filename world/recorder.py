@@ -28,6 +28,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from pydantic import BaseModel
+
 if TYPE_CHECKING:
     from world.sim import World
 
@@ -67,13 +69,13 @@ class Recorder:
 
         `day` is the just-completed day; the embedded `state` snapshot is
         the world's end-of-day view via `state_dict()`. The per-day
-        summary mirrors `state.today_summary_so_far` — same fields the
-        UI's step response and the daily P&L surface.
+        summary mirrors `state.today` — same fields the UI's step
+        response and the daily P&L surface.
         """
         entry = {
             "day": int(day),
             "state": world.state_dict(),
-            "summary": dict(world.state.today_summary_so_far),
+            "summary": world.state.today.model_dump(),
         }
         with self.states_path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=_json_default) + "\n")
@@ -96,6 +98,8 @@ def _new_run_id() -> str:
 
 
 def _json_default(obj: Any) -> Any:
+    if isinstance(obj, BaseModel):
+        return obj.model_dump()
     if hasattr(obj, "__dict__"):
         return obj.__dict__
     return str(obj)

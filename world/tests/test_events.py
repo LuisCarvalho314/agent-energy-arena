@@ -326,7 +326,7 @@ def test_fuel_price_shock_scales_coal_fuel_cost_by_coal_mult():
     th = next(t for t in w_normal.state.tiles if t.type == "town_hall")
     w_normal.build("coal_plant", th.x + 1, th.y)
     w_normal.step(days=1)
-    normal_fuel = w_normal.state.today_summary_so_far["fuel_cost"]
+    normal_fuel = w_normal.state.today.fuel_cost
 
     w_shock = World()
     w_shock.reset(seed=42)
@@ -336,7 +336,7 @@ def test_fuel_price_shock_scales_coal_fuel_cost_by_coal_mult():
         {"type": "fuel_price_shock", "started_day": 0, "ends_day": 30, "severity": 2.5}
     )
     w_shock.step(days=1)
-    shock_fuel = w_shock.state.today_summary_so_far["fuel_cost"]
+    shock_fuel = w_shock.state.today.fuel_cost
 
     assert normal_fuel > 0
     assert shock_fuel == pytest.approx(COAL_FUEL_SHOCK_MULT * normal_fuel)
@@ -356,7 +356,7 @@ def test_fuel_shock_hits_gas_harder():
     w_gas_normal.build("gas_peaker", th.x + 1, th.y)
     _supply_peaker_with_pipeline_refinery(w_gas_normal, th.x + 1, th.y)
     w_gas_normal.step(days=1)
-    gas_normal = w_gas_normal.state.today_summary_so_far["fuel_cost"]
+    gas_normal = w_gas_normal.state.today.fuel_cost
 
     # Shocked gas-only world.
     w_gas_shock = World()
@@ -367,14 +367,14 @@ def test_fuel_shock_hits_gas_harder():
         {"type": "fuel_price_shock", "started_day": 0, "ends_day": 30, "severity": 2.5}
     )
     w_gas_shock.step(days=1)
-    gas_shock = w_gas_shock.state.today_summary_so_far["fuel_cost"]
+    gas_shock = w_gas_shock.state.today.fuel_cost
 
     # Baseline coal-only world (no shock).
     w_coal_normal = World()
     w_coal_normal.reset(seed=42)
     w_coal_normal.build("coal_plant", th.x + 1, th.y)
     w_coal_normal.step(days=1)
-    coal_normal = w_coal_normal.state.today_summary_so_far["fuel_cost"]
+    coal_normal = w_coal_normal.state.today.fuel_cost
 
     # Shocked coal-only world.
     w_coal_shock = World()
@@ -384,7 +384,7 @@ def test_fuel_shock_hits_gas_harder():
         {"type": "fuel_price_shock", "started_day": 0, "ends_day": 30, "severity": 2.5}
     )
     w_coal_shock.step(days=1)
-    coal_shock = w_coal_shock.state.today_summary_so_far["fuel_cost"]
+    coal_shock = w_coal_shock.state.today.fuel_cost
 
     assert gas_normal > 0 and coal_normal > 0
     assert gas_shock == pytest.approx(GAS_FUEL_SHOCK_MULT * gas_normal)
@@ -512,8 +512,8 @@ def test_regulatory_tightening_bumps_carbon_price_immediately():
     w.step(days=1)
     # carbon_price was bumped to 37.5 before the carbon-cost step ran.
     assert w.state.carbon_price == pytest.approx(25.0 * 1.5)
-    co2 = w.state.today_summary_so_far["co2_emitted_t"]
-    assert w.state.today_summary_so_far["carbon_cost"] == pytest.approx(co2 * 37.5)
+    co2 = w.state.today.co2_emitted_t
+    assert w.state.today.carbon_cost == pytest.approx(co2 * 37.5)
 
 
 # -- Plant failure: zeros output, restores after expiry -------------------

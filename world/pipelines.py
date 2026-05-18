@@ -1,4 +1,4 @@
-"""Pipeline graph helpers: 4-connected components and per-network routing units.
+"""Pipeline graph helpers + per-network crude routing.
 
 A *pipeline tile* is a `Tile` with `type == "pipeline"`. Two pipeline tiles
 belong to the same component iff they are orthogonally adjacent (Manhattan
@@ -6,18 +6,24 @@ distance 1); diagonals do not connect. A well or refinery belongs to a
 component iff one of its four orthogonal neighbours is a pipeline tile in
 that component; otherwise it is an *orphan* with respect to crude routing.
 
-This module is intentionally pure — it has no `World` dependency, does not
-mutate its inputs, and is testable without a sim instance. Sim integration
-(per-network `route_crude` aggregation and orphan accounting) lives in
-`world/sim.py`.
+The graph helpers (``pipeline_components``, ``routing_units``,
+``peaker_supply``) are pure — no `World` dependency, no mutation,
+testable without a sim instance. ``route_oil`` is the end-of-day phase
+that walks the routing units, settles each refinery's throughput, and
+credits crude/refined revenue to ``state.today`` and ``state.treasury``.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
+from world.economy import REFINERY_YIELD, route_crude
 from world.state import Tile, Well
+
+if TYPE_CHECKING:
+    from world.state import WorldState
 
 _ORTHO: tuple[tuple[int, int], ...] = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
@@ -194,3 +200,77 @@ def peaker_supply(peaker_tile: Tile, tiles: Iterable[Tile]) -> bool:
         if ref_comps & peaker_comps:
             return True
     return False
+
+
+def route_oil(state: WorldState) -> None:
+    """End-of-day crude routing + oil revenue (brief §4.6, oilfield-v2 slice 08).
+
+    Crude only flows from producers to refineries on the same 4-connected
+    pipeline network. ``routing_units`` partitions wells + refineries by
+    component. Per network, ``route_crude`` aggregates that network's
+    producer crude with the same descending-setpoint / id-ascending
+    tiebreak as a global call. Surplus within a network sells raw at
+    ``state.crude_price_usd_per_bbl``. Orphan producers (no pipeline
+    neighbour) sell 100% of their crude raw; orphan refineries (no
+    pipeline neighbour or pipeline-isolated from any producer) starve
+    at zero throughput.
+
+    The yield factor is applied here (not inside ``route_crude``) so the
+    routing remains purely about input allocation; one place owns the
+    0.85 constant.
+
+    Writes per-refinery ``current_throughput_bbl_day``, the day's
+    ``oil_revenue`` / ``crude_revenue`` / ``refined_revenue`` on
+    ``state.today``, and pins ``state.today.refined_bbl`` for
+    ``settle_carbon`` to read. Credits ``state.treasury`` by oil revenue.
+
+    Must run after ``commit_well_injections`` and ``run_production_loop``
+    (which set each well's ``current_rate_bbl_day`` — the per-network
+    crude pool size), and before ``settle_carbon`` (which reads
+    ``state.today.refined_bbl``).
+    """
+    networks, orphan_wells, orphan_refineries = routing_units(state.tiles, state.wells)
+
+    total_refined_input = 0.0
+    total_routed_crude_bbl = 0.0
+    for net_wells, net_refs in networks:
+        net_producers = [w for w in net_wells if w.type == "production"]
+        net_crude = sum(w.current_rate_bbl_day for w in net_producers)
+        total_routed_crude_bbl += net_crude
+        operational_refs = [r for r in net_refs if r.operational]
+        per_refinery_actual = route_crude(operational_refs, net_crude)
+        for r in operational_refs:
+            r.current_throughput_bbl_day = per_refinery_actual.get(r.id, 0.0)
+        # Non-operational refineries in this network reset to 0.
+        for r in net_refs:
+            if not r.operational:
+                r.current_throughput_bbl_day = 0.0
+        total_refined_input += sum(per_refinery_actual.values())
+
+    # Orphan refineries: zero throughput regardless of operational flag.
+    for r in orphan_refineries:
+        r.current_throughput_bbl_day = 0.0
+
+    # Orphan producers: all of their crude sells raw, independent of
+    # whether a refinery happens to live elsewhere on the map.
+    orphan_producer_crude_bbl = sum(
+        w.current_rate_bbl_day for w in orphan_wells if w.type == "production"
+    )
+
+    networked_surplus = max(0.0, total_routed_crude_bbl - total_refined_input)
+    crude_direct_bbl = networked_surplus + orphan_producer_crude_bbl
+    crude_revenue = crude_direct_bbl * state.crude_price_usd_per_bbl
+    refined_revenue = total_refined_input * REFINERY_YIELD * state.refined_price_usd_per_bbl
+    oil_revenue = crude_revenue + refined_revenue
+
+    # Pin today's refined input regardless of revenue (settle_carbon reads
+    # it; an oil-revenue-zero day still has carbon to account for if any
+    # refinery happened to process any crude — defensive, but a zero pin
+    # is idempotent with the daily reset).
+    state.today.refined_bbl = total_refined_input
+
+    if oil_revenue:
+        state.today.oil_revenue = oil_revenue
+        state.today.crude_revenue = crude_revenue
+        state.today.refined_revenue = refined_revenue
+        state.treasury += oil_revenue

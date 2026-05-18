@@ -23,6 +23,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from world.hourly_tick import hourly_tick
+from world.power import PLANT_TYPES
+from world.snapshots import BalanceState, WeatherNow
 from world.weather import v_mean
 
 if TYPE_CHECKING:
@@ -39,24 +41,26 @@ def preview_next_day(world: World) -> dict[str, Any]:
     state = world.state
     cfg = world.config
 
-    cloud = float(state.weather_now.get("cloud_factor", 0.85))
-    weather_proj: dict[str, float] = {
-        "cloud_factor": cloud,
-        "wind_speed_mps": float(v_mean(state.day, world.wind_phi_seed)),
-    }
+    weather_proj = WeatherNow(
+        cloud_factor=state.weather_now.cloud_factor,
+        wind_speed_mps=float(v_mean(state.day, world.wind_phi_seed)),
+    )
 
     # Carry the last completed hour's plant outputs and balance into the
     # projection so DR-on-injection, ramp limits, and producer shedding
-    # read the same way the next `/step` would. Plants built since the
-    # last step are absent from `prev_outputs`, which is exactly how
-    # `dispatch` treats them (warm-starts coal at must-run, cold-starts
+    # read the same way the next `/step` would. ``tile.current_output_kw``
+    # is the canonical store — set by ``commit_tick`` at end of every hour
+    # — so a freshly-built plant naturally starts at 0.0, which is exactly
+    # how ``dispatch`` treats it (warm-starts coal at must-run, cold-starts
     # gas at 0).
-    prev_outputs: dict[str, float] = dict(world._prev_plant_outputs)
-    prev_balance: str = state.power_now.get("balance_state", "balanced")
+    prev_outputs: dict[str, float] = {
+        p.id: p.current_output_kw for p in state.tiles if p.type in PLANT_TYPES
+    }
+    prev_balance: BalanceState = state.power_now.balance_state
 
     demand_by_hour: list[float] = []
     supply_by_hour: list[float] = []
-    balance_by_hour: list[str] = []
+    balance_by_hour: list[BalanceState] = []
     source_by_hour: dict[str, list[float]] = {
         "solar": [],
         "wind": [],

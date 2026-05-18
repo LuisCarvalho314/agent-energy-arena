@@ -194,10 +194,15 @@ def summarize_state(
         lines.append("last_day_balance: " + " ".join(s[:1] for s in balance_h))
 
     # --- Today P&L so far ----------------------------------------------
-    today = obs.get("today_summary_so_far") or {}
+    today = obs.get("today") or {}
     if today:
-        # Drop zero-valued keys to keep the line short.
-        nz = {k: v for k, v in today.items() if abs(float(v or 0)) > 0.01}
+        # Drop zero-valued keys and non-scalar fields (per-hour
+        # accumulators on DayLedger — dicts/lists — are not P&L).
+        nz = {
+            k: v
+            for k, v in today.items()
+            if isinstance(v, int | float) and abs(float(v or 0)) > 0.01
+        }
         if nz:
             lines.append(
                 "today_so_far: " + " ".join(f"{k}={_round(v, 0)}" for k, v in sorted(nz.items()))

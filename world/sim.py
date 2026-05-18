@@ -17,54 +17,50 @@ from typing import Any
 
 import numpy as np
 
-from world import placement, workforce
+from world import placement
 from world.catalog import TILE_CATALOG, is_buildable
 from world.config import Config, load_config
 from world.economy import (
     CARBON_PRICE_USD_PER_TON,
+    COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
+    INDUSTRIAL_REVENUE_PER_DAY,
     REFINED_PRICE_USD_PER_BBL,
     REFINERY_SETPOINT_MAX,
     REFINERY_SETPOINT_MIN,
-    REFINERY_YIELD,
-    daily_emissions_t,
-    route_crude,
+    pin_yesterday,
+    settle_carbon,
+    settle_eod_treasury,
+    settle_fuel,
+    settle_opex,
+    update_civic_revenue,
 )
 from world.events import (
     expire_finite_events,
-    fuel_price_shock_multiplier,
     sample_and_apply_events,
 )
 from world.grid import has_road_adjacency, in_bounds, road_connected_set
-from world.hourly_tick import hourly_tick
-from world.pipelines import routing_units
+from world.hourly_tick import commit_tick, hourly_tick
+from world.pipelines import route_oil, routing_units
 from world.population import DAILY_TAX_PER_CAPITA, update_population
 from world.power import PLANT_TYPES
-from world.pricing import (
-    COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
-    INDUSTRIAL_REVENUE_PER_DAY,
-    update_civic_revenue,
-)
 from world.recorder import Recorder
 from world.scenario import NullScenario, Scenario
+from world.snapshots import WeatherNow
 from world.state import Tile, Well, WorldState
 from world.state_view import tile_view, well_view
 from world.subsurface import (
     CRUDE_PRICE_USD_PER_BBL,
-    PRESSURE_BOOST_MAX,
-    PRODUCTION_KWH_PER_BBL,
     WELL_SETPOINT_MAX,
     WELL_SETPOINT_MIN,
     SubsurfaceGrid,
     drill_capex,
     drill_collision,
     generate_subsurface,
-    injector_supports,
     is_size_valid,
     reservoirs_summary,
     reservoirs_voxel_summary,
     revealed_voxels,
     survey_cost,
-    well_production_bbl_day,
     well_reservoir_id,
 )
 from world.subsurface import survey as run_survey
@@ -75,6 +71,7 @@ from world.weather import (
     step_weather_one_hour,
     v_mean,
 )
+from world.wells import commit_well_injections, run_production_loop
 from world.workforce import employed as workforce_employed
 from world.workforce import hire_to_fill
 from world.workforce import total_jobs as workforce_total_jobs
@@ -141,9 +138,6 @@ class World:
         self.wind_phi_seed: float = 0.0
         self._tile_seq: int = 0
         self._well_seq: int = 0
-        # Previous hour's per-plant outputs, persisted across hours and days.
-        # Keyed by plant id. Used by `dispatch` to enforce ramp limits.
-        self._prev_plant_outputs: dict[str, float] = {}
         self.subsurface: SubsurfaceGrid = SubsurfaceGrid(
             width=self.config.world_w,
             height=self.config.world_h,
@@ -227,13 +221,14 @@ class World:
         )
         # Seed the AR(1) carry-overs at their long-run means so the first
         # hour's update is well-conditioned (no transient from a 0 init).
-        self.state.weather_now["cloud_factor"] = INITIAL_CLOUD_FACTOR
-        self.state.weather_now["wind_speed_mps"] = v_mean(0, self.wind_phi_seed)
-        self.state.weather_now["wind_direction_deg"] = INITIAL_WIND_DIRECTION_DEG
-        self.state.weather_now["solar_irradiance"] = 0.0
+        self.state.weather_now = WeatherNow(
+            cloud_factor=INITIAL_CLOUD_FACTOR,
+            wind_speed_mps=v_mean(0, self.wind_phi_seed),
+            wind_direction_deg=INITIAL_WIND_DIRECTION_DEG,
+            solar_irradiance=0.0,
+        )
         self._tile_seq = 0
         self._well_seq = 0
-        self._prev_plant_outputs = {}
         # Subsurface generation consumes sim_rng draws BEFORE any /step is
         # called. Same-seed reset is therefore byte-reproducible (§3.5
         # "two /reset calls with the same seed produce byte-identical
@@ -559,10 +554,9 @@ class World:
         )
 
     def _advance_one_day(self) -> None:
-        # Reset today's running summary at the start of each simulated day so
-        # callers can read per-day P&L from `state.today_summary_so_far`.
-        for k in self.state.today_summary_so_far:
-            self.state.today_summary_so_far[k] = 0.0
+        # Reset today's running ledger at the start of each simulated day so
+        # callers can read per-day P&L from `state.today`.
+        self.state.today.reset()
 
         # oilfield-v2 slice 03: snapshot every well's current_rate_bbl_day
         # into yesterday_rate_bbl_day BEFORE any production/injection
@@ -598,34 +592,6 @@ class World:
         self.scenario.apply(self, self.state.day)
         sample_and_apply_events(self)
 
-        # Per-hour traces for the most-recently-completed day. Reset here and
-        # pinned to last_day_* fields once the day finishes.
-        supply_trace: list[float] = []
-        demand_trace: list[float] = []
-        balance_trace: list[str] = []
-
-        # Running served-kWh by source for the day (renewable share + per-source
-        # totals available downstream).
-        coal_kwh = 0.0
-        gas_kwh = 0.0
-
-        # Per-injection-well daily accumulators. The DR mechanic splits each
-        # day into 24 hours of variable bbl/hr; we sum them to the well's
-        # current_rate_bbl_day and bump cumulative_injected_bbl below.
-        inj_bbl_today: dict[str, float] = {
-            w.id: 0.0 for w in self.state.wells if w.type == "injection"
-        }
-        inj_kwh_today = 0.0  # sum of hourly kW values; kWh delivered to injection.
-
-        # Per-production-well daily kWh delivered (economy-rebalance slice 07).
-        # Mirrors the injection accumulator: each hour the well draws either
-        # baseline_kw (balanced/curtailment) or 0 (brownout/blackout); the
-        # bbl-equivalent of that power becomes the well's daily throughput cap.
-        prod_kwh_today: dict[str, float] = {
-            w.id: 0.0 for w in self.state.wells if w.type == "production"
-        }
-        prod_kwh_total_today = 0.0
-
         for hour in range(self.config.ticks_per_day):
             self.state.hour = hour
             # Each hour: 3 sim_rng draws (cloud, wind speed, wind dir) inside
@@ -633,311 +599,67 @@ class World:
             # calculation inside hourly_tick. RNG draws are confined to
             # step_weather_one_hour to anchor the slice-01 step-size
             # determinism contract; hourly_tick itself consumes no RNG.
-            step_weather_one_hour(self)
+            self.state.weather_now = step_weather_one_hour(self)
 
-            # Fresh-world hour 0 reads state.power_now["balance_state"], which
-            # defaults to "balanced". DR-on-injection and producer power
-            # shedding both run against the PREVIOUS hour's balance to break
-            # the otherwise-circular dependency between load and dispatch.
-            prev_balance = self.state.power_now.get("balance_state", "balanced")
+            # Previous hour's per-plant outputs feed the next hour's ramp
+            # limits. ``tile.current_output_kw`` is the canonical store,
+            # updated by ``commit_tick`` at the bottom of each hour. Day-0
+            # hour-0 reads 0.0 across the board, which is exactly how
+            # ``dispatch`` treats unknown plants (warm-starts coal, cold-
+            # starts gas).
+            prev_outputs = {
+                p.id: p.current_output_kw for p in self.state.tiles if p.type in PLANT_TYPES
+            }
+
+            # Fresh-world hour 0 reads state.power_now.balance_state, which
+            # defaults to BalanceState.BALANCED. DR-on-injection and producer
+            # power shedding both run against the PREVIOUS hour's balance to
+            # break the otherwise-circular dependency between load and
+            # dispatch.
+            prev_balance = self.state.power_now.balance_state
             result = hourly_tick(
                 self.state,
                 hour,
-                self._prev_plant_outputs,
+                prev_outputs,
                 prev_balance,
                 self.state.weather_now,
             )
+            # commit_tick applies every per-hour mutation (battery SoC,
+            # outage bookkeeping, power revenue, renewable share, well
+            # commits, by-source accumulators, per-plant outputs,
+            # PowerNow snapshot, hourly traces) into state. Preview never
+            # calls commit_tick — that's the seam that keeps preview/sim
+            # drift-impossible. See world/hourly_tick.py.
+            commit_tick(self.state, result)
 
-            # ---- Post-tick mutations (sim only — preview reads result and
-            # throws these away). Order is documented; do not reorder without
-            # checking the determinism tests.
-
-            # Apply battery SoC deltas; clamp at storage bounds to absorb
-            # float jitter.
-            for b in self.state.tiles:
-                if b.type != "battery":
-                    continue
-                spec = TILE_CATALOG[b.type]
-                delta = result.charge_socs.get(b.id, 0.0) + result.discharge_socs.get(b.id, 0.0)
-                b.soc_kwh = max(0.0, min(spec.storage_kwh, b.soc_kwh + delta))
-
-            # Outage bookkeeping. Happiness damage is applied in one shot at
-            # end of day by `update_population` reading
-            # yesterday_blackout_hours / yesterday_brownout_hours; per-hour
-            # decrements here would be clobbered by that reassignment
-            # anyway (issue 22).
-            if result.balance == "blackout":
-                self.state.treasury -= self.state.blackout_penalty_hour
-                self.state.today_summary_so_far["blackout_hours"] += 1.0
-                self.state.today_summary_so_far["blackout_penalty"] += (
-                    self.state.blackout_penalty_hour
-                )
-            elif result.balance == "brownout":
-                self.state.today_summary_so_far["brownout_hours"] += 1.0
-
-            # Power revenue: civilian served kWh × retail. Process loads
-            # (injection wells, refinery) are unbilled per PRD §"Power
-            # economics". Curtailment exports the post-injection surplus only.
-            billable_served_kw = min(result.supply_kw, result.civilian_demand_kw)
-            self.state.today_summary_so_far["power_revenue"] += (
-                billable_served_kw * self.state.grid_price_retail
-            )
-            if result.balance == "curtailment" and result.excess_kw > 0:
-                self.state.today_summary_so_far["power_revenue"] += (
-                    result.excess_kw * self.state.grid_price_export
-                )
-
-            # Renewable-share accumulator (PRD §"Scoring"). served_kw is the
-            # kWh actually delivered to loads this hour (curtailed export
-            # excluded by construction). Battery accounting (slice 02):
-            # charged kWh subtracted from renewable supply, discharged kWh
-            # added back as 100% renewable — round-trip losses vanish from
-            # both numerator and denominator.
-            renewable_served_kw = min(result.renewable_supply_after_battery, result.served_kw)
-            self.state.cumulative_total_served_kwh += result.served_kw
-            self.state.cumulative_renewable_served_kwh += renewable_served_kw
-
-            # DR injection commits: only count bbl actually delivered. If
-            # supply collapsed and the grid went brownout/blackout this hour,
-            # injection wells STILL contributed their pre-set baseline to
-            # demand (they shed *next* hour, when prev_balance reflects the
-            # bad state). DR is a 1-hour-lagged mechanism.
-            for iw_id, (power_kw, bbl_this_hour) in result.inj_hour_assignments.items():
-                inj_bbl_today[iw_id] += bbl_this_hour
-                inj_kwh_today += power_kw
-
-            # Per-production-well kWh accumulator (slice 07). Summed across 24
-            # hours, dividing by PRODUCTION_KWH_PER_BBL yields the day's
-            # power-allocated bbl budget consumed by the producer loop below.
-            for pw_id, power_kw in result.prod_hour_kwh.items():
-                prod_kwh_today[pw_id] += power_kw
-                prod_kwh_total_today += power_kw
-
-            coal_kwh += result.by_source["coal"]
-            gas_kwh += result.by_source["gas"]
-
-            # Persist per-plant outputs for ramp-limit accounting next hour.
-            # Each hour at the kW dispatch step contributes 1 hour × kW = kWh
-            # to the plant's daily served-energy accumulator. Curtailed kWh
-            # are included here (per the PRD: revenue is priced from
-            # kwh_served_yesterday × grid_price_retail; the curtailment
-            # export rebate is a separate civilian-billing line item).
-            for p in self.state.tiles:
-                if p.type not in PLANT_TYPES:
-                    continue
-                out_kw = result.outputs.get(p.id, 0.0)
-                p.current_output_kw = out_kw
-                p.kwh_served_today += out_kw
-            self._prev_plant_outputs = dict(result.outputs)
-
-            # Snapshot power_now for /state consumers + traces for the UI chart.
-            self.state.power_now["demand_kw"] = result.demand_kw
-            self.state.power_now["supply_kw"] = result.supply_kw
-            self.state.power_now["balance_state"] = result.balance
-            self.state.power_now["by_source_kw"] = dict(result.by_source)
-            supply_trace.append(result.supply_kw)
-            demand_trace.append(result.demand_kw)
-            balance_trace.append(result.balance)
-
-        # End-of-day OPEX accrual: every standing tile and drilled well
-        # pays its daily OPEX.
-        opex_total = sum(t.opex_per_day for t in self.state.tiles) + sum(
-            w.opex_per_day for w in self.state.wells
-        )
-        if opex_total:
-            self.state.treasury -= opex_total
-            self.state.today_summary_so_far["opex"] = opex_total
-
-        # Fuel cost (kWh / 1000 = MWh) × $/MWh. Coal+gas only. A
-        # fuel_price_shock event (slice 11) doubles both costs while active.
-        if coal_kwh or gas_kwh:
-            coal_cost_per_mwh = self.state.plant_fuel_cost_per_mwh["coal_plant"]
-            gas_cost_per_mwh = self.state.plant_fuel_cost_per_mwh["gas_peaker"]
-            coal_shock = fuel_price_shock_multiplier(self.state, "coal_plant")
-            gas_shock = fuel_price_shock_multiplier(self.state, "gas_peaker")
-            fuel_total = (coal_kwh / 1000.0) * coal_cost_per_mwh * coal_shock + (
-                gas_kwh / 1000.0
-            ) * gas_cost_per_mwh * gas_shock
-            self.state.treasury -= fuel_total
-            self.state.today_summary_so_far["fuel_cost"] = fuel_total
-
-        # Apply power revenue to treasury (the running tally was just adding
-        # to today_summary_so_far; treasury credit happens once at day end).
-        self.state.treasury += self.state.today_summary_so_far["power_revenue"]
-
-        # Pin per-well injection totals from the hourly DR pass before the
-        # production loop runs — production reads `cumulative_injected_bbl`
-        # for its pressure_boost term, so injection bookkeeping has to land
-        # first.
-        for w in self.state.wells:
-            if w.type != "injection":
-                continue
-            bbl = inj_bbl_today.get(w.id, 0.0)
-            w.current_rate_bbl_day = bbl
-            w.cumulative_injected_bbl += bbl
-        if inj_kwh_today:
-            self.state.today_summary_so_far["injection_kw"] = inj_kwh_today
-        if prod_kwh_total_today:
-            self.state.today_summary_so_far["production_kw"] = prod_kwh_total_today
-
-        # Production-well daily output (brief §4.5). Iterates wells in
-        # creation order — `state.wells` is appended-to on /drill — which
-        # is the deterministic ordering required for shared-pool resolution.
-        # oilfield-v2 §"Rate-based pressure": each producer's
-        # pressure_boost = min(0.5, qualifying_inj_rate / max(prod_yest, 1))
-        # where qualifying injectors share the producer's reservoir_id AND
-        # sit at Chebyshev distance > 1 from the producer's target (no
-        # breakthrough). The qualification gate is owned by the
-        # `injector_supports` helper (wells-reservoir-rollup #02) so this
-        # loop and `well_view` use the same source of truth. Yesterday's
-        # rates were snapshotted at the top of this method.
-        qualifying_injectors_by_prod: dict[str, list[Well]] = {}
-        for iw in self.state.wells:
-            if iw.type != "injection":
-                continue
-            for prod_id in injector_supports(iw, self.state.wells):
-                qualifying_injectors_by_prod.setdefault(prod_id, []).append(iw)
-        for well in self.state.wells:
-            if well.type != "production":
-                continue
-            qualifying_inj_rate = sum(
-                iw.yesterday_rate_bbl_day for iw in qualifying_injectors_by_prod.get(well.id, [])
-            )
-            # oilfield-v2 slice 04: stamp the inputs/output of the rate-based
-            # pressure term on the producer so /state and the popup can report
-            # the same numbers fed into today's production calc.
-            well.yesterday_inj_rate_bbl_day = qualifying_inj_rate
-            well.pressure_boost = min(
-                PRESSURE_BOOST_MAX,
-                qualifying_inj_rate / max(well.yesterday_rate_bbl_day, 1.0),
-            )
-            q = well_production_bbl_day(
-                self.subsurface,
-                well.x,
-                well.y,
-                well.target_z,
-                well.setpoint_rate_bbl_day,
-                qualifying_inj_rate_bbl_day=qualifying_inj_rate,
-                producer_yesterday_rate_bbl_day=well.yesterday_rate_bbl_day,
-                efficiency=workforce.efficiency(well),
-            )
-            # Power-throttling cap (slice 07). The hourly loop already summed
-            # this well's allocated power into prod_kwh_today; the equivalent
-            # bbl budget caps today's actual throughput. At balanced/curtailment
-            # the budget equals setpoint × efficiency, so geology remains the
-            # binding constraint. When the grid sheds the well (brownout/
-            # blackout hours), the budget shrinks and pins throughput at
-            # sum_kw / PRODUCTION_KWH_PER_BBL.
-            power_allocated_bbl = prod_kwh_today.get(well.id, 0.0) / PRODUCTION_KWH_PER_BBL
-            q = min(q, power_allocated_bbl)
-            well.current_rate_bbl_day = q
-            well.cumulative_produced_bbl += q
-
-        # Refinery routing (brief §4.6, oilfield-v2 slice 08). Crude only
-        # flows from producers to refineries on the same 4-connected pipeline
-        # network — `pipelines.routing_units` partitions wells + refineries by
-        # pipeline component. Per network, `route_crude` aggregates that
-        # network's producer crude, with the same descending-setpoint /
-        # id-ascending tiebreak as the old global call. Orphan producers (no
-        # pipeline neighbour) sell 100% of their crude raw at $40/bbl; orphan
-        # refineries (no pipeline neighbour or pipeline-isolated from any
-        # producer) starve at zero throughput.
-        networks, orphan_wells, orphan_refineries = routing_units(
-            self.state.tiles, self.state.wells
-        )
-
-        total_refined_input = 0.0
-        total_routed_crude_bbl = 0.0
-        for net_wells, net_refs in networks:
-            net_producers = [w for w in net_wells if w.type == "production"]
-            net_crude = sum(w.current_rate_bbl_day for w in net_producers)
-            total_routed_crude_bbl += net_crude
-            operational_refs = [r for r in net_refs if r.operational]
-            per_refinery_actual = route_crude(operational_refs, net_crude)
-            for r in operational_refs:
-                r.current_throughput_bbl_day = per_refinery_actual.get(r.id, 0.0)
-            # Non-operational refineries in this network reset to 0 (same
-            # contract as the old global path).
-            for r in net_refs:
-                if not r.operational:
-                    r.current_throughput_bbl_day = 0.0
-            total_refined_input += sum(per_refinery_actual.values())
-            # Surplus within a network sells raw at $40/bbl — accumulated as
-            # part of the global crude_direct_bbl total below.
-
-        # Orphan refineries: zero throughput, identical to the pre-slice-08
-        # "no crude" outcome but pinned per-tile regardless of operational.
-        for r in orphan_refineries:
-            r.current_throughput_bbl_day = 0.0
-
-        # Orphan producers: all of their crude sells raw, independent of
-        # whether a refinery happens to live elsewhere on the map.
-        orphan_producer_crude_bbl = sum(
-            w.current_rate_bbl_day for w in orphan_wells if w.type == "production"
-        )
-
-        # Networked surplus = routed-network crude that no refinery in that
-        # network absorbed. Orphan producer crude is added on top.
-        networked_surplus = max(0.0, total_routed_crude_bbl - total_refined_input)
-        crude_direct_bbl = networked_surplus + orphan_producer_crude_bbl
-        crude_revenue = crude_direct_bbl * self.state.crude_price_usd_per_bbl
-        # Yield is applied here (not in route_crude) so the routing remains
-        # purely about input allocation; one place owns the 0.85 constant.
-        refined_revenue = (
-            total_refined_input * REFINERY_YIELD * self.state.refined_price_usd_per_bbl
-        )
-        oil_revenue = crude_revenue + refined_revenue
-        if oil_revenue:
-            self.state.today_summary_so_far["oil_revenue"] = oil_revenue
-            self.state.today_summary_so_far["crude_revenue"] = crude_revenue
-            self.state.today_summary_so_far["refined_revenue"] = refined_revenue
-            self.state.treasury += oil_revenue
-
-        # Carbon emissions + cost (PRD §4.7 / slice 10). Pin the day's running
-        # totals (consumed by daily_emissions_t) onto today_summary_so_far so
-        # the read-models surface them and the helper has a single source of
-        # truth. The order matters: refining is done above, so refined_bbl is
-        # final; the hourly loop accumulated coal_kwh and gas_kwh.
-        self.state.today_summary_so_far["coal_kwh"] = coal_kwh
-        self.state.today_summary_so_far["gas_kwh"] = gas_kwh
-        self.state.today_summary_so_far["refined_bbl"] = total_refined_input
-        co2_t = daily_emissions_t(self)
-        carbon_cost = co2_t * self.state.carbon_price
-        self.state.today_summary_so_far["co2_emitted_t"] = co2_t
-        self.state.today_summary_so_far["carbon_cost"] = carbon_cost
-        if carbon_cost:
-            self.state.treasury -= carbon_cost
-
-        # Carry today's outage-hour counts into tomorrow's population update.
-        self.state.yesterday_blackout_hours = self.state.today_summary_so_far["blackout_hours"]
-        self.state.yesterday_brownout_hours = self.state.today_summary_so_far["brownout_hours"]
-
-        # Pin per-hour traces for the UI's "yesterday" chart.
-        self.state.last_day_supply_kw_by_hour = supply_trace
-        self.state.last_day_demand_kw_by_hour = demand_trace
-        self.state.last_day_balance_state_by_hour = balance_trace
-
-        # facility-economics-popup slice 03: pin today's per-plant served kWh
-        # onto `kwh_served_yesterday` so the next day's hover popup (and the
-        # estimated_revenue_per_day stamped on /state) reads the actual served
-        # energy from the just-completed day rather than a stale value.
-        for t in self.state.tiles:
-            if t.type in PLANT_TYPES:
-                t.kwh_served_yesterday = t.kwh_served_today
-
-        # Civic revenue (industrial + commercial) accrues before the
-        # population update so commercial revenue (slice 02) uses today's
-        # lived population, not tomorrow's survivors.
+        # End-of-day phase sequence. Each phase is a self-contained module
+        # documented at its declaration site; the order here is the only
+        # place the sequence is visible. The constraints are:
+        #
+        #   * settle_fuel reads state.today.coal_kwh / gas_kwh (commit_tick).
+        #   * commit_well_injections must precede route_oil (route_oil
+        #     reads well.current_rate_bbl_day, set by both well loops).
+        #   * run_production_loop must precede route_oil (same reason).
+        #   * route_oil must precede settle_carbon (pins refined_bbl).
+        #   * pin_yesterday must precede update_civic_revenue (which reads
+        #     last_day_trace.supply_kw_by_hour for the industrial gate).
+        #   * update_civic_revenue must precede update_population
+        #     (commercial revenue uses today's lived population).
+        settle_opex(self.state)
+        settle_fuel(self.state)
+        settle_eod_treasury(self.state)
+        commit_well_injections(self.state)
+        run_production_loop(self)
+        route_oil(self.state)
+        settle_carbon(self)
+        pin_yesterday(self.state)
         update_civic_revenue(self)
-
-        # Population dynamics + tax revenue (brief §4.8). Deterministic; no
-        # RNG draws, so the sim_rng contract is unaffected.
         update_population(self)
 
         # Recorder hook (open-source-arena slice 03). Pin one
         # `states.jsonl` entry per simulated day BEFORE the day counter
         # increments, so the embedded `state_dict()` reflects the end
-        # of day N. `today_summary_so_far` is the just-completed day's
+        # of day N. `today` (DayLedger) is the just-completed day's
         # P&L. No-op when running without a runs_root (tests).
         if self.recorder is not None:
             self.recorder.record_step(self, self.state.day)
@@ -1009,13 +731,15 @@ class World:
             "active_events": list(s.active_events),
             "historical_events": list(s.historical_events),
             "regulatory_tightenings_applied": s.regulatory_tightenings_applied,
-            "weather_now": s.weather_now,
-            "power_now": s.power_now,
-            "last_day_supply_kw_by_hour": list(s.last_day_supply_kw_by_hour),
-            "last_day_demand_kw_by_hour": list(s.last_day_demand_kw_by_hour),
-            "last_day_balance_state_by_hour": list(s.last_day_balance_state_by_hour),
+            "weather_now": s.weather_now.model_dump(),
+            "power_now": s.power_now.model_dump(),
+            "last_day_supply_kw_by_hour": list(s.last_day_trace.supply_kw_by_hour),
+            "last_day_demand_kw_by_hour": list(s.last_day_trace.demand_kw_by_hour),
+            "last_day_balance_state_by_hour": [
+                str(b) for b in s.last_day_trace.balance_state_by_hour
+            ],
             "next_24h_preview": preview_next_day(self),
-            "today_summary_so_far": s.today_summary_so_far,
+            "today": s.today.model_dump(),
             "cumulative_renewable_served_kwh": s.cumulative_renewable_served_kwh,
             "cumulative_total_served_kwh": s.cumulative_total_served_kwh,
             "pipeline_networks": pipeline_networks,

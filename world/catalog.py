@@ -228,14 +228,12 @@ def build_catalog() -> dict[str, Any]:
     from world.config import load_config
     from world.economy import (
         CARBON_PRICE_USD_PER_TON,
-        REFINED_PRICE_USD_PER_BBL,
-        REFINERY_CO2_PER_BBL,
-        REFINERY_YIELD,
-    )
-    from world.pricing import (
         COMMERCIAL_RADIUS,
         COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
         INDUSTRIAL_REVENUE_PER_DAY,
+        REFINED_PRICE_USD_PER_BBL,
+        REFINERY_CO2_PER_BBL,
+        REFINERY_YIELD,
     )
     from world.subsurface import (
         CRUDE_PRICE_USD_PER_BBL,

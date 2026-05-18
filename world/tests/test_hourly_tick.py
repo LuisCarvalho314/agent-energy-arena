@@ -25,6 +25,7 @@ import math
 from world.catalog import TILE_CATALOG
 from world.hourly_tick import hourly_tick
 from world.sim import World
+from world.snapshots import BalanceState, WeatherNow
 from world.state import Tile, Well
 
 
@@ -69,8 +70,8 @@ def _well(world: World, well_type: str, idx: int, setpoint: float) -> Well:
     return well
 
 
-def _weather(cloud: float = 0.5, wind_mps: float = 6.0) -> dict[str, float]:
-    return {"cloud_factor": cloud, "wind_speed_mps": wind_mps}
+def _weather(cloud: float = 0.5, wind_mps: float = 6.0) -> WeatherNow:
+    return WeatherNow(cloud_factor=cloud, wind_speed_mps=wind_mps)
 
 
 # -- Field contract ---------------------------------------------------------
@@ -78,7 +79,7 @@ def _weather(cloud: float = 0.5, wind_mps: float = 6.0) -> dict[str, float]:
 
 def test_tick_returns_all_promised_fields_on_a_fresh_world() -> None:
     w = _fresh_world()
-    result = hourly_tick(w.state, 12, {}, "balanced", _weather())
+    result = hourly_tick(w.state, 12, {}, BalanceState.BALANCED, _weather())
     # Bus-level
     assert result.demand_kw >= 0.0
     assert result.civilian_demand_kw >= 0.0
@@ -99,7 +100,7 @@ def test_tick_returns_all_promised_fields_on_a_fresh_world() -> None:
 def test_injection_draws_baseline_when_balanced() -> None:
     w = _fresh_world()
     iw = _well(w, "injection", 1, setpoint=120.0)
-    result = hourly_tick(w.state, 0, {}, "balanced", _weather())
+    result = hourly_tick(w.state, 0, {}, BalanceState.BALANCED, _weather())
     power_kw, bbl = result.inj_hour_assignments[iw.id]
     # 120 bbl/day × 50 kWh/bbl / 24 h × eff(unstaffed passive)=1.0
     assert math.isclose(power_kw, 120.0 * 50.0 / 24.0)
@@ -109,7 +110,7 @@ def test_injection_draws_baseline_when_balanced() -> None:
 def test_injection_sheds_to_zero_on_brownout_and_blackout() -> None:
     w = _fresh_world()
     iw = _well(w, "injection", 1, setpoint=120.0)
-    for bad in ("brownout", "blackout"):
+    for bad in (BalanceState.BROWNOUT, BalanceState.BLACKOUT):
         result = hourly_tick(w.state, 0, {}, bad, _weather())
         power_kw, bbl = result.inj_hour_assignments[iw.id]
         assert power_kw == 0.0
@@ -120,7 +121,7 @@ def test_injection_ramps_under_curtailment_capped_at_hardware() -> None:
     w = _fresh_world()
     # Setpoint near the cap so 2× lands above it and clamps.
     iw = _well(w, "injection", 1, setpoint=150.0)
-    result = hourly_tick(w.state, 0, {}, "curtailment", _weather())
+    result = hourly_tick(w.state, 0, {}, BalanceState.CURTAILMENT, _weather())
     power_kw, _bbl = result.inj_hour_assignments[iw.id]
     # cap_kw = Q_MAX_WELL_BBL_DAY (200) * 50 / 24 = 416.67; baseline = 150*50/24=312.5
     # 2*baseline = 625, clamped to cap = 416.67.
@@ -133,9 +134,9 @@ def test_injection_ramps_under_curtailment_capped_at_hardware() -> None:
 def test_producer_draws_baseline_when_balanced_and_sheds_under_brownout() -> None:
     w = _fresh_world()
     pw = _well(w, "production", 1, setpoint=100.0)
-    bal = hourly_tick(w.state, 0, {}, "balanced", _weather())
+    bal = hourly_tick(w.state, 0, {}, BalanceState.BALANCED, _weather())
     assert math.isclose(bal.prod_hour_kwh[pw.id], 100.0 * 15.0 / 24.0)
-    brown = hourly_tick(w.state, 0, {}, "brownout", _weather())
+    brown = hourly_tick(w.state, 0, {}, BalanceState.BROWNOUT, _weather())
     assert brown.prod_hour_kwh[pw.id] == 0.0
 
 
@@ -150,7 +151,7 @@ def test_peaker_without_pipeline_path_yields_zero() -> None:
     peaker = _plant(w, "gas_peaker", 5, 5)
     # Drive demand high so the merit order would otherwise want gas.
     w.state.population = 1000.0
-    result = hourly_tick(w.state, 19, {}, "balanced", _weather())
+    result = hourly_tick(w.state, 19, {}, BalanceState.BALANCED, _weather())
     assert result.outputs.get(peaker.id, 0.0) == 0.0
 
 
@@ -166,7 +167,7 @@ def test_battery_charges_renewable_surplus() -> None:
     battery = _plant(w, "battery", 2, 1)
     # Zero out civilian demand so the solar farm fully overshoots.
     w.state.population = 0.0
-    result = hourly_tick(w.state, 12, {}, "balanced", _weather(cloud=1.0))
+    result = hourly_tick(w.state, 12, {}, BalanceState.BALANCED, _weather(cloud=1.0))
     assert result.by_source["solar"] > 0.0
     assert result.total_charge_kw > 0.0
     assert result.charge_socs.get(battery.id, 0.0) > 0.0
@@ -183,7 +184,7 @@ def test_battery_discharges_into_residual_demand() -> None:
     battery.soc_kwh = spec.storage_kwh
     # Big residual demand with no supply source built.
     w.state.population = 500.0
-    result = hourly_tick(w.state, 19, {}, "balanced", _weather())
+    result = hourly_tick(w.state, 19, {}, BalanceState.BALANCED, _weather())
     assert result.total_discharge_kw > 0.0
     assert result.discharge_socs.get(battery.id, 0.0) < 0.0
 
@@ -202,8 +203,8 @@ def test_tick_is_pure_given_inputs() -> None:
     _plant(w, "solar_farm", 1, 1)
     _plant(w, "coal_plant", 3, 1)
     _well(w, "injection", 1, setpoint=80.0)
-    a = hourly_tick(w.state, 14, {}, "balanced", _weather(cloud=0.7))
-    b = hourly_tick(w.state, 14, {}, "balanced", _weather(cloud=0.7))
+    a = hourly_tick(w.state, 14, {}, BalanceState.BALANCED, _weather(cloud=0.7))
+    b = hourly_tick(w.state, 14, {}, BalanceState.BALANCED, _weather(cloud=0.7))
     assert a == b
 
 
@@ -217,7 +218,7 @@ def test_tick_does_not_mutate_state() -> None:
     spec = TILE_CATALOG["battery"]
     battery.soc_kwh = spec.storage_kwh / 2.0
     soc_before = battery.soc_kwh
-    power_now_before = dict(w.state.power_now)
-    hourly_tick(w.state, 19, {}, "balanced", _weather())
+    power_now_before = w.state.power_now
+    hourly_tick(w.state, 19, {}, BalanceState.BALANCED, _weather())
     assert battery.soc_kwh == soc_before
     assert w.state.power_now == power_now_before

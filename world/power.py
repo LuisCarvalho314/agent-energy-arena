@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from world import workforce
 from world.catalog import TILE_CATALOG
+from world.snapshots import BalanceState, WeatherNow
 from world.weather import P_solar_kw, turbine_kw
 
 if TYPE_CHECKING:
@@ -129,7 +130,7 @@ def dispatch(
     plants: list[Tile],
     demand_kw: float,
     prev_outputs: dict[str, float],
-    weather: dict[str, float],
+    weather: WeatherNow,
     D: int,
     h: int,
     solar_derate: float = 1.0,
@@ -161,8 +162,8 @@ def dispatch(
     """
     outputs: dict[str, float] = {p.id: 0.0 for p in plants}
 
-    cloud = float(weather.get("cloud_factor", 0.85))
-    wind_v = float(weather.get("wind_speed_mps", 0.0))
+    cloud = weather.cloud_factor
+    wind_v = weather.wind_speed_mps
     unsupplied = unsupplied_peaker_ids or frozenset()
 
     def _cost(plant_type: str) -> float:
@@ -387,7 +388,9 @@ def daily_met_demand_fraction(
     return total / n
 
 
-def compute_balance_state(supply_kw: float, demand_kw: float) -> tuple[str, float, float, float]:
+def compute_balance_state(
+    supply_kw: float, demand_kw: float
+) -> tuple[BalanceState, float, float, float]:
     """Map (supply, demand) onto the four balance states.
 
     Returns (state, served_kw, excess_kw, R). When demand is zero the grid
@@ -395,12 +398,12 @@ def compute_balance_state(supply_kw: float, demand_kw: float) -> tuple[str, floa
     export market either).
     """
     if demand_kw <= 0:
-        return "balanced", 0.0, 0.0, 0.0
+        return BalanceState.BALANCED, 0.0, 0.0, 0.0
     R = supply_kw / max(demand_kw, 1.0)
     if R >= R_CURTAILMENT:
-        return "curtailment", demand_kw, max(0.0, supply_kw - demand_kw), R
+        return BalanceState.CURTAILMENT, demand_kw, max(0.0, supply_kw - demand_kw), R
     if R >= R_BALANCED:
-        return "balanced", demand_kw, 0.0, R
+        return BalanceState.BALANCED, demand_kw, 0.0, R
     if R >= R_BROWNOUT:
-        return "brownout", supply_kw, 0.0, R
-    return "blackout", supply_kw, 0.0, R
+        return BalanceState.BROWNOUT, supply_kw, 0.0, R
+    return BalanceState.BLACKOUT, supply_kw, 0.0, R
