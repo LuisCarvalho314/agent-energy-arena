@@ -21,7 +21,7 @@ from world.economy import (
     REFINERY_CO2_PER_BBL,
     REFINERY_YIELD,
 )
-from world.power import PLANT_TYPES
+from world.power import PLANT_TYPES, daily_met_demand_fraction
 from world.subsurface import INJECTION_KWH_PER_BBL, PRODUCTION_KWH_PER_BBL
 
 if TYPE_CHECKING:
@@ -44,15 +44,26 @@ COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY: float = 2.0
 COMMERCIAL_RADIUS: int = 2
 
 
-def industrial_revenue_for_tile(state: WorldState, tile: Tile) -> float:
+def industrial_revenue_for_tile(
+    state: WorldState, tile: Tile, power_supply_ratio: float = 1.0
+) -> float:
     """Daily revenue for one industrial tile at its current staffing.
 
     Zero when the tile is non-operational or not an industrial. Otherwise
-    ``state.industrial_revenue_per_day × workforce.efficiency(tile)``.
+    ``state.industrial_revenue_per_day × workforce.efficiency(tile) ×
+    power_supply_ratio``.
+
+    ``power_supply_ratio`` is the grid's daily met-demand fraction in
+    ``[0, 1]`` (see :func:`world.power.daily_met_demand_fraction`). A ratio
+    of 1.0 returns the workforce-only baseline; 0.5 halves revenue; 0.0
+    zeroes it. Composes multiplicatively with workforce efficiency — a
+    half-staffed tile under 50% supply earns 25% of baseline. Default 1.0
+    so direct unit-test callers that don't model the grid keep the
+    workforce-only contract.
     """
     if tile.type != "industrial" or not tile.operational:
         return 0.0
-    return state.industrial_revenue_per_day * workforce.efficiency(tile)
+    return state.industrial_revenue_per_day * workforce.efficiency(tile) * power_supply_ratio
 
 
 def industrial_co2_for_tile(tile: Tile) -> float:
@@ -273,10 +284,22 @@ def update_civic_revenue(world: World) -> None:
     survivors.
     """
     state = world.state
+    # Gate industrial revenue by the just-completed day's grid met-demand
+    # fraction (issue 08). Brownouts and blackouts now cost the industrial
+    # tile money — not just the city's happiness — so keeping the grid
+    # healthy is a producer-side concern, not only a citizen-side one.
+    # `last_day_*_kw_by_hour` were pinned at the end of the hourly loop
+    # earlier in `_advance_one_day`, so traces are present on day 0+.
+    power_supply_ratio = daily_met_demand_fraction(
+        state.last_day_supply_kw_by_hour,
+        state.last_day_demand_kw_by_hour,
+    )
     industrial = 0.0
     commercial = 0.0
     for tile in state.tiles:
-        industrial += industrial_revenue_for_tile(state, tile)
+        industrial += industrial_revenue_for_tile(
+            state, tile, power_supply_ratio=power_supply_ratio
+        )
         commercial += commercial_revenue_for_tile(state, tile)
     if industrial:
         state.today_summary_so_far["industrial_revenue"] = (

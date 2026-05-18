@@ -344,6 +344,38 @@ def battery_discharge_step(
 # -- Balance state -----------------------------------------------------------
 
 
+def daily_met_demand_fraction(
+    supply_kw_by_hour: list[float] | tuple[float, ...],
+    demand_kw_by_hour: list[float] | tuple[float, ...],
+) -> float:
+    """Grid's daily met-demand fraction, averaged across the 24 hours.
+
+    For each hour, the met-demand fraction is ``min(supply, demand) / demand``
+    clamped to ``[0, 1]``. The day's value is the equal-weighted mean of the
+    24 hourly fractions. Hours with zero demand contribute ``1.0`` (no unmet
+    demand). When the demand trace is empty (no day has completed yet),
+    returns ``1.0`` — the "no-evidence-of-shortage" default.
+
+    Named for its widest scope: this is a property of the bus, not of any
+    single load. Industrial revenue gating (issue 08) consumes it because
+    industrial demand is hour-flat on a single-pool grid, so the "fraction
+    of industrial demand actually served across the day" equals this
+    aggregate by construction.
+    """
+    if not demand_kw_by_hour:
+        return 1.0
+    n = len(demand_kw_by_hour)
+    total = 0.0
+    for h in range(n):
+        d = demand_kw_by_hour[h]
+        s = supply_kw_by_hour[h] if h < len(supply_kw_by_hour) else 0.0
+        if d <= 0.0:
+            total += 1.0
+        else:
+            total += min(1.0, max(0.0, s) / d)
+    return total / n
+
+
 def compute_balance_state(supply_kw: float, demand_kw: float) -> tuple[str, float, float, float]:
     """Map (supply, demand) onto the four balance states.
 

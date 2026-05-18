@@ -353,6 +353,66 @@ def test_balance_zero_demand_is_balanced() -> None:
     assert state == "balanced"
 
 
+# -- daily_met_demand_fraction (issue 08) ----------------------------------
+
+
+def test_daily_met_demand_fraction_full_supply_returns_one() -> None:
+    from world.power import daily_met_demand_fraction
+
+    supply = [1000.0] * 24
+    demand = [1000.0] * 24
+    assert daily_met_demand_fraction(supply, demand) == pytest.approx(1.0)
+
+
+def test_daily_met_demand_fraction_oversupply_clamps_at_one() -> None:
+    from world.power import daily_met_demand_fraction
+
+    supply = [2000.0] * 24
+    demand = [1000.0] * 24
+    assert daily_met_demand_fraction(supply, demand) == pytest.approx(1.0)
+
+
+def test_daily_met_demand_fraction_uniform_undersupply_at_half() -> None:
+    from world.power import daily_met_demand_fraction
+
+    supply = [500.0] * 24
+    demand = [1000.0] * 24
+    assert daily_met_demand_fraction(supply, demand) == pytest.approx(0.5)
+
+
+def test_daily_met_demand_fraction_zero_supply_returns_zero() -> None:
+    from world.power import daily_met_demand_fraction
+
+    supply = [0.0] * 24
+    demand = [1000.0] * 24
+    assert daily_met_demand_fraction(supply, demand) == pytest.approx(0.0)
+
+
+def test_daily_met_demand_fraction_hour_average_not_demand_weighted() -> None:
+    """12 hours fully served, 12 hours zero served → 0.5 daily."""
+    from world.power import daily_met_demand_fraction
+
+    supply = [1000.0] * 12 + [0.0] * 12
+    demand = [1000.0] * 24
+    assert daily_met_demand_fraction(supply, demand) == pytest.approx(0.5)
+
+
+def test_daily_met_demand_fraction_zero_demand_hour_counts_as_served() -> None:
+    """An hour with no load is not a brownout — fraction is 1.0 for that hour."""
+    from world.power import daily_met_demand_fraction
+
+    supply = [0.0] * 24
+    demand = [0.0] * 24
+    assert daily_met_demand_fraction(supply, demand) == pytest.approx(1.0)
+
+
+def test_daily_met_demand_fraction_empty_trace_returns_one() -> None:
+    """Day 0 path: no day has completed yet — default to "no shortage"."""
+    from world.power import daily_met_demand_fraction
+
+    assert daily_met_demand_fraction([], []) == pytest.approx(1.0)
+
+
 # -- Sim integration --------------------------------------------------------
 
 
