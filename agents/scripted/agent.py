@@ -161,7 +161,10 @@ class ScriptedAgent(BaseAgent):
             if (
                 want_coal
                 and phase != "late"
-                and self._build_plant("coal_plant", treasury, cx, cy, w, h, occupied)
+                # Coal requires road adjacency (economy-rebalance #05); route
+                # through the civilian / road-aware builder instead of the
+                # perimeter spiral used by renewables.
+                and self._build_civilian("coal_plant", treasury, cx, cy, w, h, occupied, tiles)
             ):
                 return
             if treasury >= 80_000 and self._build_plant(

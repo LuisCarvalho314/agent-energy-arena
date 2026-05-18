@@ -1,7 +1,7 @@
 {
   "agent": "agents.scripted",
   "population": 103.0,
-  "raw_score": 0.30127719024945065,
+  "raw_score": 0.29091585112181506,
   "renewable_share": 0.650386581393589,
   "scenario": "scenarios.grid_stress",
   "seed": 42,

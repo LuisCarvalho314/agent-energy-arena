@@ -55,8 +55,11 @@ def test_catalog_exposes_four_plant_types() -> None:
     for t in ("solar_farm", "wind_turbine", "gas_peaker", "coal_plant"):
         assert t in TILE_CATALOG
         spec = TILE_CATALOG[t]
-        assert spec.requires_road is False
         assert spec.buildable is True
+    # Coal is the only plant with a road requirement (logistically heavy).
+    for t in ("solar_farm", "wind_turbine", "gas_peaker"):
+        assert TILE_CATALOG[t].requires_road is False
+    assert TILE_CATALOG["coal_plant"].requires_road is True
 
 
 def test_plant_capacities_match_spec() -> None:
@@ -80,13 +83,33 @@ def test_coal_cheaper_per_mwh_than_gas_at_default_carbon() -> None:
     assert coal_all_in < gas_all_in
 
 
-def test_plants_do_not_require_road_adjacency() -> None:
+def test_renewable_and_gas_plants_do_not_require_road_adjacency() -> None:
     w = _fresh_world()
     # Far corner of the world, no roads connecting.
     res = w.build("solar_farm", 0, 0)
     assert res["ok"] is True, res
-    res = w.build("coal_plant", 31, 31)
+    res = w.build("wind_turbine", 1, 0)
     assert res["ok"] is True, res
+    res = w.build("gas_peaker", 2, 0)
+    assert res["ok"] is True, res
+
+
+def test_coal_plant_requires_road_adjacency() -> None:
+    w = _fresh_world()
+    # Isolated corner — no road network reaches here.
+    res = w.build("coal_plant", 31, 31)
+    assert res["ok"] is False
+    assert res["error"] == "no_road_adjacency"
+
+
+def test_coal_plant_catalog_labor_and_road_requirements() -> None:
+    """Coal is logistically heavy: 30 workers and a road-adjacent site."""
+    spec = TILE_CATALOG["coal_plant"]
+    assert spec.jobs == 30
+    assert spec.requires_road is True
+    # Catalog description is the in-game tooltip + tile-spec contract.
+    assert "30" in spec.description
+    assert "road" in spec.description.lower()
 
 
 # -- Solar/wind output (Step 1: must-take renewables) -----------------------
@@ -401,14 +424,17 @@ def test_curtailment_revenue_includes_export_component() -> None:
 def test_renewables_build_via_api() -> None:
     """All four plant types are accepted via /build."""
     w = _fresh_world()
+    th = next(t for t in w.state.tiles if t.type == "town_hall")
     for tile_type, x in (
         ("solar_farm", 0),
         ("wind_turbine", 1),
         ("gas_peaker", 2),
-        ("coal_plant", 3),
     ):
         res = w.build(tile_type, x, 0)
         assert res["ok"] is True, (tile_type, res)
+    # Coal requires road; town hall participates in the road network for adjacency.
+    res = w.build("coal_plant", th.x + 1, th.y)
+    assert res["ok"] is True, res
 
 
 def test_step_size_invariance_with_plants() -> None:
@@ -486,8 +512,8 @@ def test_full_day_blackout_pins_happiness_at_zero() -> None:
 
 
 def test_half_staffed_coal_ceiling_is_half_capacity() -> None:
-    """A coal plant at 4/8 staff has effective capacity = 0.5 × catalog."""
-    p = _plant("coal_plant", staffed_jobs=4)  # jobs=8 → efficiency=0.5
+    """A coal plant at 15/30 staff has effective capacity = 0.5 × catalog."""
+    p = _plant("coal_plant", staffed_jobs=15)  # jobs=30 → efficiency=0.5
     cap = TILE_CATALOG["coal_plant"].capacity_kw
     eff_cap = cap * 0.5
     # Big prior to skip the ramp constraint — pin the ceiling alone.
@@ -498,7 +524,7 @@ def test_half_staffed_coal_ceiling_is_half_capacity() -> None:
 
 def test_half_staffed_coal_must_run_is_half_floor() -> None:
     """Half-staffed coal's must-run floor scales with efficiency."""
-    p = _plant("coal_plant", staffed_jobs=4)
+    p = _plant("coal_plant", staffed_jobs=15)
     cap = TILE_CATALOG["coal_plant"].capacity_kw
     outputs, _s, _b = dispatch([p], demand_kw=0.0, prev_outputs={}, weather={}, D=0, h=12)
     assert outputs[p.id] == pytest.approx(cap * 0.5 * COAL_MIN_RUN)
@@ -506,7 +532,7 @@ def test_half_staffed_coal_must_run_is_half_floor() -> None:
 
 def test_half_staffed_coal_ramp_scales() -> None:
     """Cold-start half-staffed coal: hour 1 cap = eff_floor + eff_ramp."""
-    p = _plant("coal_plant", staffed_jobs=4)
+    p = _plant("coal_plant", staffed_jobs=15)
     cap = TILE_CATALOG["coal_plant"].capacity_kw
     eff_cap = cap * 0.5
     # No prior output → warm-start at effective must-run.
@@ -869,13 +895,14 @@ def test_plant_failure_preserves_staffing() -> None:
     w = _fresh_world()
     w.state.treasury = 1_000_000.0
     cx, cy = w.config.world_w // 2, w.config.world_h // 2
+    # Coal is town-hall-adjacent so it sits inside the road network for free.
     w.build("coal_plant", cx + 1, cy)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
-    assert coal.staffed_jobs == 8
+    assert coal.staffed_jobs == 30
     # Simulate plant failure.
     coal.operational = False
     # Workforce module sees the staffing regardless of operational flag.
-    assert coal.staffed_jobs == 8
+    assert coal.staffed_jobs == 30
     # Restore.
     coal.operational = True
-    assert coal.staffed_jobs == 8
+    assert coal.staffed_jobs == 30

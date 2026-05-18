@@ -586,6 +586,16 @@ def test_catalog_commercial_description_mentions_new_revenue_behavior() -> None:
 # =========================================================================
 
 
+def _give_coal_road(w: World, th_x: int, th_y: int) -> None:
+    """Lay a one-cell road south of the town hall so a coal plant built at
+    ``(th_x + 2, th_y)`` clears the road-adjacency check via a connected
+    road at ``(th_x + 2, th_y + 1)``.
+    """
+    w.build("road", th_x, th_y + 1)
+    w.build("road", th_x + 1, th_y + 1)
+    w.build("road", th_x + 2, th_y + 1)
+
+
 def _coal_plant_tile(x: int = 0, y: int = 0) -> Tile:
     spec = TILE_CATALOG["coal_plant"]
     return Tile(
@@ -662,6 +672,7 @@ def test_kwh_served_today_resets_at_start_of_day() -> None:
     w = World()
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _give_coal_road(w, th.x, th.y)
     res = w.build("coal_plant", th.x + 2, th.y)
     assert res["ok"], res
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
@@ -676,6 +687,7 @@ def test_kwh_served_today_copied_to_yesterday_after_step() -> None:
     w = World()
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _give_coal_road(w, th.x, th.y)
     w.build("coal_plant", th.x + 2, th.y)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     w.step(days=1)
@@ -692,6 +704,7 @@ def test_kwh_served_yesterday_isolates_from_today_after_two_steps() -> None:
     w = World()
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _give_coal_road(w, th.x, th.y)
     w.build("coal_plant", th.x + 2, th.y)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     w.step(days=1)
@@ -710,6 +723,7 @@ def test_freshly_built_plant_has_zero_revenue_until_next_step() -> None:
     w = World()
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _give_coal_road(w, th.x, th.y)
     w.build("coal_plant", th.x + 2, th.y)
     s = w.state_dict()
     coal_dict = next(t for t in s["tiles"] if t["type"] == "coal_plant")
@@ -728,7 +742,9 @@ def test_state_tile_dict_estimated_revenue_matches_yesterday_times_retail() -> N
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
     # A second industrial pushes total demand above the city's renewable
-    # output, forcing the coal plant to dispatch.
+    # output, forcing the coal plant to dispatch. Both industrial and coal
+    # need road adjacency.
+    _give_coal_road(w, th.x, th.y)
     w.build("industrial", th.x + 1, th.y)
     w.build("coal_plant", th.x + 2, th.y)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
@@ -964,6 +980,7 @@ def test_state_tile_dict_plant_emits_estimated_fuel_and_carbon_cost() -> None:
     w = World()
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _give_coal_road(w, th.x, th.y)
     w.build("industrial", th.x + 1, th.y)
     w.build("coal_plant", th.x + 2, th.y)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
@@ -1000,6 +1017,7 @@ def test_state_tile_dict_plant_net_reconciles_with_component_rows() -> None:
     w = World()
     w.reset(seed=42)
     th = next(t for t in w.state.tiles if t.type == "town_hall")
+    _give_coal_road(w, th.x, th.y)
     w.build("industrial", th.x + 1, th.y)
     w.build("coal_plant", th.x + 2, th.y)
     w.step(days=1)

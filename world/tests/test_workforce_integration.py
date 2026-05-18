@@ -34,10 +34,10 @@ def test_build_coal_plant_with_available_labor_staffs_to_full() -> None:
     assert res["ok"] is True
     state = w.state_dict()
     coal = next(t for t in state["tiles"] if t["type"] == "coal_plant")
-    assert coal["staffed_jobs"] == 8
-    # unemployed dropped by 8 (70 → 62).
-    assert state["unemployed"] == 62
-    assert state["employed"] == 38
+    assert coal["staffed_jobs"] == 30
+    # unemployed dropped by 30 (70 → 40).
+    assert state["unemployed"] == 40
+    assert state["employed"] == 60
 
 
 def test_build_coal_plant_with_partial_labor_staffs_to_pool_size() -> None:
@@ -131,7 +131,7 @@ def test_state_tiles_and_wells_carry_staffed_jobs() -> None:
 
 def test_catalog_exposes_jobs_for_plants_and_wells() -> None:
     expectations = {
-        "coal_plant": 8,
+        "coal_plant": 30,
         "gas_peaker": 4,
         "solar_farm": 2,
         "wind_turbine": 2,

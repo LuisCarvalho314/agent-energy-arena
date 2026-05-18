@@ -129,9 +129,12 @@ TILE_CATALOG: dict[str, TileSpec] = {
         tile_type="coal_plant",
         capex=200_000,
         opex_per_day=400,
-        requires_road=False,
-        description="375-1500 kW. Min run 25%, ramp 10%/h. Fuel $12/MWh.",
-        jobs=8,
+        requires_road=True,
+        description=(
+            "375-1500 kW. Min run 25%, ramp 10%/h. Fuel $12/MWh. "
+            "Needs 30 workers and a road-adjacent site."
+        ),
+        jobs=30,
         capacity_kw=1500,
         fuel_cost_per_mwh=12.0,
         co2_t_per_mwh=0.9,

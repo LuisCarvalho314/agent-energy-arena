@@ -85,17 +85,17 @@ def test_efficiency_passive_tile_returns_one() -> None:
 
 
 def test_efficiency_zero_staff_returns_zero() -> None:
-    t = Tile(id="c-1", type="coal_plant", x=0, y=0, built_day=0, jobs=8, staffed_jobs=0)
+    t = Tile(id="c-1", type="coal_plant", x=0, y=0, built_day=0, jobs=30, staffed_jobs=0)
     assert efficiency(t) == 0.0
 
 
 def test_efficiency_full_staff_returns_one() -> None:
-    t = Tile(id="c-1", type="coal_plant", x=0, y=0, built_day=0, jobs=8, staffed_jobs=8)
+    t = Tile(id="c-1", type="coal_plant", x=0, y=0, built_day=0, jobs=30, staffed_jobs=30)
     assert efficiency(t) == 1.0
 
 
 def test_efficiency_partial_returns_ratio() -> None:
-    t = Tile(id="c-1", type="coal_plant", x=0, y=0, built_day=0, jobs=8, staffed_jobs=4)
+    t = Tile(id="c-1", type="coal_plant", x=0, y=0, built_day=0, jobs=30, staffed_jobs=15)
     assert efficiency(t) == 0.5
 
 

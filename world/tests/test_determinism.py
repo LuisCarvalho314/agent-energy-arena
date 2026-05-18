@@ -167,6 +167,13 @@ def test_seed_42_post_upgrade_replay_byte_identical():
         # something to evaluate.
         w.build("road", th.x + 1, th.y)
         w.build("road", th.x + 2, th.y)
+        # Extend the road chain south so the coal plant at th.x + 5, th.y
+        # has orthogonal road adjacency without colliding with the
+        # solar/battery/coal cells.
+        w.build("road", th.x + 2, th.y - 1)
+        w.build("road", th.x + 3, th.y - 1)
+        w.build("road", th.x + 4, th.y - 1)
+        w.build("road", th.x + 5, th.y - 1)
         w.build("house", th.x + 1, th.y + 1)
         w.build("industrial", th.x + 2, th.y + 1)
         w.build("solar_farm", th.x + 3, th.y)

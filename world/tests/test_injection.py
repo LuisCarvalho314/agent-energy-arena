@@ -28,6 +28,24 @@ def _hc_voxel(world: World) -> Voxel:
     return next(iter(world.subsurface.voxels.values()))
 
 
+def _build_road_to(world: World, x: int, y: int) -> None:
+    """Lay a road link from town hall to (x, y) so a road-requiring tile
+    built at or adjacent to (x, y) clears the adjacency check.
+    """
+    th = next(t for t in world.state.tiles if t.type == "town_hall")
+    cx, cy = th.x, th.y
+    while cx != x:
+        cx += 1 if cx < x else -1
+        if (cx, cy) == (x, y):
+            return
+        world.build("road", cx, cy)
+    while cy != y:
+        cy += 1 if cy < y else -1
+        if (cx, cy) == (x, y):
+            return
+        world.build("road", cx, cy)
+
+
 def _make_voxel(x: int, y: int, z: int, *, perm: float = 1000.0, oil: float = 1000.0) -> Voxel:
     return Voxel(
         x=x,
@@ -232,7 +250,9 @@ def test_injection_baseline_when_balanced():
     # which is ~208 kW for setpoint=100). 2 coal plants give plenty of
     # headroom and stay in must-run + ramp.
     w.state.treasury = 10_000_000.0
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)
+    _build_road_to(w, 6, 5)
     w.build("coal_plant", 6, 5)
     w.drill(10, 10, 8, "injection")
     w.control_well(w.state.wells[0].id, 100.0)
@@ -290,6 +310,7 @@ def test_injection_ramps_at_curtailment():
     # is 0; any positive renewable supply > 1.15× triggers curtailment.
     w.state.population = 0
     w.state.treasury = 10_000_000.0
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)  # forces some baseline
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs  # pop=0; force-staff so plant dispatches
@@ -376,6 +397,7 @@ def test_injection_kw_summary_accumulates_hourly_power():
     w.state.population = 0
     w.state.treasury = 10_000_000.0
     # Build enough plant capacity to hold balanced.
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)
     # Force the coal plant fully staffed even though pop=0; the workforce
     # module's max(0, pop-employed) clamp keeps the inconsistency benign.
@@ -410,7 +432,9 @@ def test_pressure_boost_keeps_late_game_capacity_high():
         w.reset(seed=42)
         w.state.treasury = 10_000_000.0
         # Build enough renewable + fossil capacity to keep grid healthy.
+        _build_road_to(w, 5, 5)
         w.build("coal_plant", 5, 5)
+        _build_road_to(w, 6, 5)
         w.build("coal_plant", 6, 5)
         # Pre-deplete the pool around a known HC voxel by overwriting
         # oil_remaining to 5% of OOIP.
@@ -489,7 +513,9 @@ def _setup_depleted_producer_world() -> World:
     w = World()
     w.reset(seed=42)
     w.state.treasury = 10_000_000.0
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)
+    _build_road_to(w, 6, 5)
     w.build("coal_plant", 6, 5)
     hc = _hc_voxel(w)
     for v in w.subsurface.voxels.values():
@@ -720,6 +746,8 @@ def test_step_size_invariance_with_injection_wells():
     b.reset(seed=42)
     a.state.treasury = 10_000_000.0
     b.state.treasury = 10_000_000.0
+    _build_road_to(a, 5, 5)
+    _build_road_to(b, 5, 5)
     a.build("coal_plant", 5, 5)
     b.build("coal_plant", 5, 5)
     hc = _hc_voxel(a)
@@ -754,6 +782,7 @@ def test_half_staffed_injection_baseline_halves():
     w.reset(seed=42)
     w.state.population = 0
     w.state.treasury = 10_000_000.0
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs
@@ -786,6 +815,7 @@ def test_idle_injection_draws_zero_baseline():
     w.reset(seed=42)
     w.state.population = 0
     w.state.treasury = 10_000_000.0
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs
@@ -805,6 +835,7 @@ def test_idle_injection_offers_zero_dr_headroom():
     w.reset(seed=42)
     w.state.population = 0
     w.state.treasury = 10_000_000.0
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)
     coal = next(t for t in w.state.tiles if t.type == "coal_plant")
     coal.staffed_jobs = coal.jobs
@@ -828,7 +859,9 @@ def test_half_staffed_injection_pool_intersection_still_recovers_pressure_propor
         w = World()
         w.reset(seed=42)
         w.state.treasury = 10_000_000.0
+        _build_road_to(w, 5, 5)
         w.build("coal_plant", 5, 5)
+        _build_road_to(w, 6, 5)
         w.build("coal_plant", 6, 5)
         hc = _hc_voxel(w)
         for v in w.subsurface.voxels.values():

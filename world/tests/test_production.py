@@ -23,6 +23,23 @@ from world.subsurface import (
 )
 
 
+def _build_road_to(world: World, x: int, y: int) -> None:
+    """Lay a road link from town hall to (x, y) (excluding the destination)
+    so a road-requiring tile at (x, y) clears the adjacency check."""
+    th = next(t for t in world.state.tiles if t.type == "town_hall")
+    cx, cy = th.x, th.y
+    while cx != x:
+        cx += 1 if cx < x else -1
+        if (cx, cy) == (x, y):
+            return
+        world.build("road", cx, cy)
+    while cy != y:
+        cy += 1 if cy < y else -1
+        if (cx, cy) == (x, y):
+            return
+        world.build("road", cx, cy)
+
+
 def _hc_voxel(world: World) -> Voxel:
     return next(iter(world.subsurface.voxels.values()))
 
@@ -433,7 +450,9 @@ def _setup_depleted_producer_world_for_observability() -> World:
     w = World()
     w.reset(seed=42)
     w.state.treasury = 10_000_000.0
+    _build_road_to(w, 5, 5)
     w.build("coal_plant", 5, 5)
+    _build_road_to(w, 6, 5)
     w.build("coal_plant", 6, 5)
     hc = _hc_voxel(w)
     for v in w.subsurface.voxels.values():
