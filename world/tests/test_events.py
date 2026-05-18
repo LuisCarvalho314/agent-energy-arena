@@ -46,20 +46,20 @@ from world.sim import World
 
 
 def test_event_constants_match_prd_table():
-    assert HEATWAVE_PROB == 0.003
+    assert HEATWAVE_PROB == 0.006
     assert HEATWAVE_DURATION == 5
     assert HEATWAVE_RESIDENTIAL_MULT == 1.40
-    assert FUEL_PRICE_SHOCK_PROB == 0.002
+    assert FUEL_PRICE_SHOCK_PROB == 0.004
     assert FUEL_PRICE_SHOCK_DURATION == 30
     assert GAS_FUEL_SHOCK_MULT == 2.5
     assert COAL_FUEL_SHOCK_MULT == 1.3
-    assert DEMAND_SURPRISE_PROB == 0.003
+    assert DEMAND_SURPRISE_PROB == 0.006
     assert DEMAND_SURPRISE_DURATION == 10
     assert DEMAND_SURPRISE_IC_MULT == 1.30
-    assert REGULATORY_TIGHTENING_PROB == 0.001
+    assert REGULATORY_TIGHTENING_PROB == 0.002
     assert REGULATORY_TIGHTENING_MULT == 1.5
     assert REGULATORY_TIGHTENING_MAX_OCCURRENCES == 3
-    assert PLANT_FAILURE_PROB == {"gas_peaker": 0.0014, "coal_plant": 0.0006}
+    assert PLANT_FAILURE_PROB == {"gas_peaker": 0.0028, "coal_plant": 0.0012}
     assert PLANT_FAILURE_DURATION_MIN == 3
     assert PLANT_FAILURE_DURATION_MAX == 7
 
@@ -110,7 +110,7 @@ def _force_event_rng(w: World, seed: int) -> None:
 
 def test_heatwave_probability_respected_over_many_trials():
     """Roll heatwave many times from a no-active state. Empirical hit rate
-    should land near HEATWAVE_PROB (0.003)."""
+    should land near HEATWAVE_PROB (0.006)."""
     w = World()
     w.reset(seed=42)
     _force_event_rng(w, 12345)
@@ -128,8 +128,8 @@ def test_heatwave_probability_respected_over_many_trials():
         # never advance day here it stays static. To keep heatwave eligible,
         # clear active_events between trials (above).
         _ = before
-    # 95% CI for binomial(20000, 0.003) ~ 60 ± 15. Allow generous margin.
-    assert 30 < n_hits < 110
+    # 95% CI for binomial(20000, 0.006) ~ 120 ± 22. Allow generous margin.
+    assert 60 < n_hits < 200
 
 
 def test_regulatory_tightening_probability_respected():
@@ -148,8 +148,8 @@ def test_regulatory_tightening_probability_respected():
         sample_and_apply_events(w)
         if w.state.regulatory_tightenings_applied > before_count:
             n_hits += 1
-    # Expected ~20 hits (0.001 * 20000); generous tolerance.
-    assert 5 < n_hits < 50
+    # Expected ~40 hits (0.002 * 20000); generous tolerance.
+    assert 15 < n_hits < 80
 
 
 # -- Plant failure duration sampled in [3, 7] -----------------------------
@@ -158,7 +158,7 @@ def test_regulatory_tightening_probability_respected():
 def test_plant_failure_duration_in_spec_range():
     """Force-fire plant_failure many times and assert duration ∈ [3, 7].
 
-    Uses gas_peaker (the higher per-type rate, 0.0014) and a generous trial
+    Uses gas_peaker (the higher per-type rate, 0.0028) and a generous trial
     budget so the test collects 200+ duration draws even after the slice 03
     per-type rate split. Each trial reseeds event_rng for an independent
     Bernoulli draw.
@@ -379,7 +379,7 @@ def test_fuel_price_shock_multiplier_helper():
 
 
 def test_plant_failure_samples_gas_more_often_over_n_trials():
-    """Monte Carlo: under per-type probabilities (gas 0.0014, coal 0.0006), a
+    """Monte Carlo: under per-type probabilities (gas 0.0028, coal 0.0012), a
     world with one of each fossil plant sees gas fail ~2.33× as often as coal
     across N=10000 trials. Within tolerance, the hit ratio matches the rate
     ratio.
@@ -432,6 +432,10 @@ def test_plant_failure_fleet_size_scales_linearly():
     def _count_failures(n_plants: int, seed: int) -> int:
         w = World()
         w.reset(seed=42)
+        # Default starting cash ($500k) only covers ~6 peakers at $80k each;
+        # bump treasury so all `n_plants` placements succeed and the
+        # fleet-scaling intent of the test is not silently capped at 6.
+        w.state.treasury += 10_000_000.0
         for i in range(n_plants):
             w.build("gas_peaker", th.x + 1 + i, th.y)
         _force_event_rng(w, seed)
@@ -448,7 +452,7 @@ def test_plant_failure_fleet_size_scales_linearly():
 
     one_plant_hits = _count_failures(1, seed=7)
     ten_plant_hits = _count_failures(10, seed=7)
-    # Expected: one ~ 20000 * 0.0014 = 28; ten ~ 280. Ratio ~10. Poisson noise
+    # Expected: one ~ 20000 * 0.0028 = 56; ten ~ 560. Ratio ~10. Poisson noise
     # at both ends — assert the ten-plant fleet sees at least 5× the hits.
     assert one_plant_hits >= 5
     assert ten_plant_hits >= 5 * one_plant_hits

@@ -177,7 +177,7 @@ def test_seed_42_post_upgrade_replay_byte_identical():
         # `battery_discharge_step`; the value is preserved across step().
         w.control_battery(battery.id, charge_kw=-50.0)
         # Long enough to give the events RNG room to draw (heatwave +
-        # fuel shock at ~0.003/day each, plus the per-plant failure roll
+        # fuel shock at ~0.006/day each, plus the per-plant failure roll
         # cadence) and to accumulate measurable renewable-share kwh.
         w.step(days=7)
         w.step(days=7)

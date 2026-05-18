@@ -8,11 +8,11 @@ don't interleave with the deterministic weather sequence.
 
 | Event                  | Probability       | Duration (days) | Effect                            |
 |-----------------------|-------------------|-----------------|-----------------------------------|
-| heatwave              | 0.003 daily       | 5 fixed         | residential demand × 1.40         |
-| plant_failure         | per-type (gas 0.0014 / coal 0.0006) | 3-7 uniform | affected plant outputs 0 kW |
-| fuel_price_shock      | 0.002 daily       | 30 fixed        | gas fuel × 2.5, coal fuel × 1.3   |
-| demand_surprise       | 0.003 daily       | 10 fixed        | I+C demand × 1.30                 |
-| regulatory_tightening | 0.001 daily (cap 3) | permanent     | carbon_price × 1.5                |
+| heatwave              | 0.006 daily       | 5 fixed         | residential demand × 1.40         |
+| plant_failure         | per-type (gas 0.0028 / coal 0.0012) | 3-7 uniform | affected plant outputs 0 kW |
+| fuel_price_shock      | 0.004 daily       | 30 fixed        | gas fuel × 2.5, coal fuel × 1.3   |
+| demand_surprise       | 0.006 daily       | 10 fixed        | I+C demand × 1.30                 |
+| regulatory_tightening | 0.002 daily (cap 3) | permanent     | carbon_price × 1.5                |
 
 Sampling order (RNG draw stability across replays):
 1. heatwave roll (skipped if active)
@@ -44,17 +44,20 @@ if TYPE_CHECKING:
     from world.sim import World
     from world.state import WorldState
 
-# Probabilities (per day unless noted).
-HEATWAVE_PROB: float = 0.003
-# Per-fossil-type plant-failure daily probability. Average stays near 0.001/day;
-# gas is rolled at 0.0014 (more failure-prone) and coal at 0.0006 (baseload).
+# Probabilities (per day unless noted). Doubled in the economy-rebalance pass
+# so resilience and event-readiness become real strategic concerns within a
+# single play session; the per-event "skipped if already active" guard, the
+# regulatory_tightening cap of 3, and the RNG draw ordering are unchanged.
+HEATWAVE_PROB: float = 0.006
+# Per-fossil-type plant-failure daily probability. Average stays near 0.002/day;
+# gas is rolled at 0.0028 (more failure-prone) and coal at 0.0012 (baseload).
 PLANT_FAILURE_PROB: dict[str, float] = {
-    "gas_peaker": 0.0014,
-    "coal_plant": 0.0006,
+    "gas_peaker": 0.0028,
+    "coal_plant": 0.0012,
 }
-FUEL_PRICE_SHOCK_PROB: float = 0.002
-DEMAND_SURPRISE_PROB: float = 0.003
-REGULATORY_TIGHTENING_PROB: float = 0.001
+FUEL_PRICE_SHOCK_PROB: float = 0.004
+DEMAND_SURPRISE_PROB: float = 0.006
+REGULATORY_TIGHTENING_PROB: float = 0.002
 
 # Durations (days).
 HEATWAVE_DURATION: int = 5
