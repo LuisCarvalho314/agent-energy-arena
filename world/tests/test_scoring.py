@@ -1,26 +1,18 @@
-"""Scoring formula + renewable accumulator + /score endpoint (slice 13).
+"""Legacy `world.scoring.score()` pure-function tests + renewable accumulator.
 
-Pins the PRD's three-term scoring formula:
-
-  p_term = 0.5 × min(P / P_ref, 3.0)              # capped at 1.5
-  t_term = 0.4 × 0.5 × (1 + tanh(T / max(T_ref, 1)))  # in [0, 0.4]
-  r_term = 0.1 × R                                     # in [0, 0.1]
-
-Plus the renewable-share accumulator: per-hour, cumulative_total += served,
-cumulative_renewable += min(renewable_supply, served). Curtailed kWh
-(supply > demand) is implicitly excluded because served is capped at demand.
+`world.scoring` is still imported by `arena/` (via `evaluate.py`'s
+`_score_breakdown`) so its public surface (`score`, `P_TERM_*`,
+`T_TERM_WEIGHT`, `R_TERM_WEIGHT`) stays pinned here. The HTTP `/score`
+endpoint was repurposed to the trend-aware formula in
+`world.scoring_formula`; its endpoint tests live in `test_score_endpoint.py`.
 """
 
 from __future__ import annotations
 
-import json
 import math
-from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
-from world.api import create_app
 from world.scoring import (
     P_TERM_CAP,
     P_TERM_WEIGHT,
@@ -323,90 +315,3 @@ def test_state_dict_exposes_cumulative_kwh():
     s = w.state_dict()
     assert "cumulative_renewable_served_kwh" in s
     assert "cumulative_total_served_kwh" in s
-
-
-# -- /score endpoint -------------------------------------------------------
-
-
-def test_score_endpoint_404_when_baseline_missing(tmp_path: Path, monkeypatch):
-    """No baseline file ⇒ 404 with detail 'baseline_missing'."""
-    # Point BASELINES_DIR at an empty tmp dir for this test.
-    import world.api as api_mod
-
-    monkeypatch.setattr(api_mod, "BASELINES_DIR", tmp_path)
-    app = create_app(world=World())
-    client = TestClient(app)
-    r = client.get("/score")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "baseline_missing"
-
-
-def test_score_endpoint_returns_breakdown(tmp_path: Path, monkeypatch):
-    """With a baseline file present, /score returns the score breakdown
-    using the active seed's baseline."""
-    import world.api as api_mod
-
-    monkeypatch.setattr(api_mod, "BASELINES_DIR", tmp_path)
-    # Drop a baseline matching the default world seed (42).
-    baseline = {"seed": 42, "p_ref": 500.0, "t_ref": 100_000.0}
-    (tmp_path / "seed_42.json").write_text(json.dumps(baseline))
-
-    w = World()
-    w.reset(seed=42)
-    w.state.population = 1000
-    w.state.treasury = 600_000.0
-    w.state.cumulative_renewable_served_kwh = 5.0
-    w.state.cumulative_total_served_kwh = 10.0
-
-    app = create_app(world=w)
-    client = TestClient(app)
-    r = client.get("/score")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["P"] == 1000
-    assert body["P_ref"] == 500.0
-    assert body["T_ref"] == 100_000.0
-    # P/P_ref = 2 → p_term = 1.0
-    assert body["p_term"] == pytest.approx(1.0)
-    # R = 0.5
-    assert body["r_term"] == pytest.approx(0.05)
-    assert body["score"] == pytest.approx(body["p_term"] + body["t_term"] + body["r_term"])
-
-
-def test_score_endpoint_picks_seed_specific_baseline(tmp_path: Path, monkeypatch):
-    """Active seed selects the right baseline file even when others exist."""
-    import world.api as api_mod
-
-    monkeypatch.setattr(api_mod, "BASELINES_DIR", tmp_path)
-    (tmp_path / "seed_1.json").write_text(json.dumps({"seed": 1, "p_ref": 999.0, "t_ref": 1.0}))
-    (tmp_path / "seed_42.json").write_text(
-        json.dumps({"seed": 42, "p_ref": 500.0, "t_ref": 100_000.0})
-    )
-
-    w = World()
-    w.reset(seed=42)
-    app = create_app(world=w)
-    client = TestClient(app)
-    r = client.get("/score")
-    assert r.status_code == 200
-    assert r.json()["P_ref"] == 500.0  # not 999.0
-
-
-def test_score_endpoint_404_after_reset_to_unknown_seed(tmp_path: Path, monkeypatch):
-    """Resetting to a seed without a baseline triggers the 404 path."""
-    import world.api as api_mod
-
-    monkeypatch.setattr(api_mod, "BASELINES_DIR", tmp_path)
-    (tmp_path / "seed_42.json").write_text(
-        json.dumps({"seed": 42, "p_ref": 500.0, "t_ref": 100_000.0})
-    )
-    w = World()
-    app = create_app(world=w)
-    client = TestClient(app)
-    # First seed has a baseline.
-    client.post("/reset", json={"seed": 42})
-    assert client.get("/score").status_code == 200
-    # Switch to a seed with no baseline.
-    client.post("/reset", json={"seed": 7})
-    r = client.get("/score")
-    assert r.status_code == 404

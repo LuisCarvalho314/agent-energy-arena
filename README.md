@@ -26,7 +26,23 @@ Each day the world:
 4. Steps 24 hours: weather, dispatch, grid balance, population, finance.
 5. Emits a daily summary; records the end-of-day state.
 
-The score is `0.5·population + 0.4·tanh(treasury delta) + 0.1·renewable share`, with population and treasury normalised against a reference scripted-agent run on the same seed. The exact formula and reference policy live in [RULES.md §Scoring](RULES.md#scoring).
+`GET /score` returns an absolute score in `[0, 100]` derived from the active run's per-day `states.jsonl` on disk. The `trend_aware` formula decomposes treasury, population, and happiness into level / trend / trough triples, then adds a renewable-share term and a solvency term — a peak-and-collapse run cannot outscore a steady prosperous one. Empty / fresh-reset / no-recorder runs return `{"n_days": 0, "score": 0.0, "components": {}}` (HTTP 200) so polling clients can use a single code path. The formula and tunable scale anchors live in [`world/scoring_formula.py`](world/scoring_formula.py).
+
+```bash
+curl http://localhost:8000/score
+# {
+#   "n_days": 365,
+#   "score": 42.3,
+#   "components": {
+#     "level_treasury": 0.58, "trend_treasury": 0.71, "trough_treasury": 0.44, "axis_treasury": 0.58,
+#     "level_pop":      0.41, "trend_pop":      0.63, "trough_pop":     0.35, "axis_pop":      0.47,
+#     "level_happy":    0.62, "trend_happy":    0.51, "trough_happy":   0.55, "axis_happy":    0.57,
+#     "R":              0.27, "solvency":       0.95
+#   }
+# }
+```
+
+The legacy scripted-baseline scoring path (`make score`, `arena/`) still lives in [`world/scoring.py`](world/scoring.py) and is used by the multi-agent runner; see [RULES.md §Scoring](RULES.md#scoring) for that workflow.
 
 ## Quickstart
 
