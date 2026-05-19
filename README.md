@@ -12,7 +12,6 @@ The world is the single source of truth. Two clients consume the same API: a bro
 | Look up an endpoint or response shape | [API.md](API.md) |
 | Write a stress scenario | [SCENARIOS.md](SCENARIOS.md) |
 | Submit an agent | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| See how the community ranks | [LEADERBOARD.md](LEADERBOARD.md) |
 
 ## 60-second tour
 
@@ -64,7 +63,7 @@ docker compose --profile eval run --rm agent       # evaluate submit/agent.py
 
 1. Fork the repo.
 2. Drop your agent under `agents/community/<your_handle>.py` as a single Python file with a class that satisfies the `Agent` protocol (see [agents/base.py](agents/base.py)).
-3. Open a PR. CI runs `make check`. A maintainer regenerates `LEADERBOARD.md` on merge.
+3. Open a PR. CI runs `make check`.
 
 Full submission protocol: [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -82,9 +81,8 @@ scenarios/          # one Python file per shipped stress scenario
   baseline.py         null scenario on seed 42
   grid_stress.py      sustained low-wind + heatwave cluster
   economy_stress.py   fuel shock + crude collapse + regulatory tightening
-arena/              # multi-(agent, scenario) runner + leaderboard
+arena/              # multi-(agent, scenario) runner
   runner.py           subprocess-isolated runner; `python -m arena.runner`
-  leaderboard.py      mean-rank aggregator → Markdown table
   baselines.py        regenerates baselines/arena/<scenario>-<seed>.json
 baselines/          # committed reference scores
 docs/               # internal agent-skill docs + archived design briefs

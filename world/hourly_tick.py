@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 from world import workforce
 from world.catalog import TILE_CATALOG
 from world.economy import refinery_process_kw
-from world.pipelines import peaker_supply
+from world.event_effects import heatwave_solar_derate
 from world.power import (
     PLANT_TYPES,
     battery_charge_step,
@@ -47,7 +47,6 @@ from world.power import (
 )
 from world.snapshots import BalanceState, BySourceKw, PowerNow, WeatherNow
 from world.subsurface import INJECTION_KWH_PER_BBL, PRODUCTION_KWH_PER_BBL, Q_MAX_WELL_BBL_DAY
-from world.weather import solar_derate_multiplier
 
 if TYPE_CHECKING:
     from world.state import WorldState
@@ -102,6 +101,7 @@ def hourly_tick(
     prev_outputs: dict[str, float],
     prev_balance: BalanceState,
     weather: WeatherNow,
+    peaker_supplied_ids: frozenset[str],
 ) -> TickResult:
     """Project one hour of bus-level state without mutating ``state``.
 
@@ -121,6 +121,12 @@ def hourly_tick(
             `wind_speed_mps` are read. The day loop passes
             `state.weather_now` after `step_weather_one_hour`; preview
             passes a deterministic projection.
+        peaker_supplied_ids: Gas peakers that share a pipeline network
+            with an operational refinery this epoch. Precomputed once
+            per day (or once per preview) by the caller from the same
+            ``PipelineGraph`` ``route_oil`` consumes — refinery
+            operational flags are day-stable, so the set does not
+            change inside the 24-hour loop.
 
     Returns:
         TickResult with every field both callers consume.
@@ -179,9 +185,12 @@ def hourly_tick(
     # Gas peakers must share a 4-connected pipeline network with at
     # least one operational refinery to dispatch this hour. Filtered
     # peakers are treated identically to plant_failure (zero output).
+    # ``peaker_supplied_ids`` is precomputed once per epoch from the
+    # day's ``PipelineGraph``; we invert it here to get the per-hour
+    # zero-output set.
     plants = [t for t in state.tiles if t.type in PLANT_TYPES]
     unsupplied_peakers = frozenset(
-        p.id for p in plants if p.type == "gas_peaker" and not peaker_supply(p, state.tiles)
+        p.id for p in plants if p.type == "gas_peaker" and p.id not in peaker_supplied_ids
     )
 
     outputs, supply_kw, by_source = dispatch(
@@ -191,7 +200,7 @@ def hourly_tick(
         weather,
         state.day,
         hour,
-        solar_derate=solar_derate_multiplier(state),
+        solar_derate=heatwave_solar_derate(state),
         fuel_cost_per_mwh=state.plant_fuel_cost_per_mwh,
         unsupplied_peaker_ids=unsupplied_peakers,
     )

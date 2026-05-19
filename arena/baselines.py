@@ -2,10 +2,9 @@
 
 A *baseline* is the deterministic subset of an `ArenaResult` committed to
 `baselines/arena/<scenario_short>-<seed>.json`. It anchors the arena
-integration test (which verifies the scripted reference agent's
+integration test, which verifies the scripted reference agent's
 `(population, treasury_delta, renewable_share, raw_score)` byte-match
-the committed file for each public scenario) and gives leaderboard
-consumers a stable reference row.
+the committed file for each public scenario.
 
 Non-deterministic fields (`run_id`, `submitted_at`) are stripped — the
 baseline JSON is a 7-field document of (agent, scenario, seed,
@@ -15,9 +14,8 @@ Game length: baselines are regenerated at `BASELINE_GAME_DAYS=30`. The
 short window matches the existing arena integration test pattern and
 keeps `make baselines` + the per-scenario regression test in the
 sub-second range. Full-game (`GAME_DAYS=3650`) baselines are NOT
-committed; if a future slice needs leaderboard-quality references they
-should land under a sibling directory (e.g. `baselines/arena-full/`)
-rather than overwriting the regression sentinels.
+committed; the committed files exist as regression sentinels for the
+scripted agent on each scenario.
 
 CLI:
 

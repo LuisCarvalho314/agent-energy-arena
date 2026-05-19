@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from world.hourly_tick import hourly_tick
+from world.pipelines import build_pipeline_graph, peaker_supplied_ids
 from world.power import PLANT_TYPES
 from world.snapshots import BalanceState, WeatherNow
 from world.weather import v_mean
@@ -58,6 +59,13 @@ def preview_next_day(world: World) -> dict[str, Any]:
     }
     prev_balance: BalanceState = state.power_now.balance_state
 
+    # One BFS over pipeline tiles for the whole 24-hour projection —
+    # the tile grid and refinery operational flags are stable across
+    # the projection, so the peaker-supplied set is constant for all
+    # 24 ticks (mirrors ``_advance_one_day``).
+    graph = build_pipeline_graph(state.tiles)
+    supplied_peaker_ids = peaker_supplied_ids(graph, state.tiles)
+
     demand_by_hour: list[float] = []
     supply_by_hour: list[float] = []
     balance_by_hour: list[BalanceState] = []
@@ -69,7 +77,9 @@ def preview_next_day(world: World) -> dict[str, Any]:
     }
 
     for h in range(cfg.ticks_per_day):
-        result = hourly_tick(state, h, prev_outputs, prev_balance, weather_proj)
+        result = hourly_tick(
+            state, h, prev_outputs, prev_balance, weather_proj, supplied_peaker_ids
+        )
         demand_by_hour.append(float(result.demand_kw))
         supply_by_hour.append(float(result.supply_kw))
         balance_by_hour.append(result.balance)

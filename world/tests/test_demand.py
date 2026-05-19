@@ -15,13 +15,15 @@ from __future__ import annotations
 
 import pytest
 
-from world.power import (
+from world.event_effects import (
     DEMAND_SURPRISE_IC_MULT,
     HEATWAVE_RESIDENTIAL_MULT,
+    demand_surprise_ic_mult,
+    heatwave_residential_mult,
+)
+from world.power import (
     PER_CAPITA_KW,
     commercial_factor,
-    demand_surprise_multiplier,
-    heatwave_multiplier,
     hourly_factor,
     residential_kw,
     total_demand_kw,
@@ -67,27 +69,52 @@ def _inject_tile(
 # -- Hourly factor buckets ---------------------------------------------------
 
 
-def test_hourly_factor_buckets_match_brief() -> None:
-    # Spot-check each bucket boundary.
-    assert hourly_factor(0) == 0.6
-    assert hourly_factor(4) == 0.6
-    assert hourly_factor(5) == 1.0
-    assert hourly_factor(8) == 1.0
-    assert hourly_factor(9) == 0.8
-    assert hourly_factor(16) == 0.8
-    assert hourly_factor(17) == 1.5
-    assert hourly_factor(21) == 1.5
-    assert hourly_factor(22) == 0.7
-    assert hourly_factor(23) == 0.7
+def test_hourly_factor_peaks_at_midday_with_evening_shoulder() -> None:
+    """Daytime-peaked shape: max at h=12, evening shoulder, night trough.
+
+    Replaces the brief's stepped curve; intra-day mix shifts toward
+    daytime while the daily total stays pinned (see
+    `test_hourly_factor_daily_total_is_preserved`).
+    """
+    # Midday is the unique peak.
+    assert hourly_factor(12) == 1.50
+    for h in range(24):
+        if h != 12:
+            assert hourly_factor(h) < hourly_factor(12)
+
+    # Evening shoulder (17-19) sits well above night but below midday.
+    for h in (17, 18, 19):
+        assert 1.0 < hourly_factor(h) < hourly_factor(12)
+
+    # Night trough (h=1-3) is the lowest band.
+    for h in (1, 2, 3):
+        assert hourly_factor(h) == 0.35
+    # And every other hour is at least as high as the trough.
+    for h in range(24):
+        assert hourly_factor(h) >= 0.35
+
+    # Daytime hours all clear the night floor by a wide margin.
+    for h in range(9, 17):
+        assert hourly_factor(h) >= 1.20
+
+
+def test_hourly_factor_daily_total_is_preserved() -> None:
+    """24-hour sum stays at 22.3 (≈ the brief's stepped curve's sum).
+
+    City-level economics are tuned against this total; the
+    `improve-codebase-architecture`-driven reshape is intra-day only.
+    """
+    total = sum(hourly_factor(h) for h in range(24))
+    assert total == pytest.approx(22.30)
 
 
 def test_residential_kw_zero_when_pop_zero() -> None:
     assert residential_kw(12, pop=0) == 0.0
 
 
-def test_residential_kw_evening_peak() -> None:
-    # pop=100, h=18 (evening peak) → 100 * 0.333 * 1.5 = 49.95
-    assert residential_kw(18, pop=100) == pytest.approx(100 * PER_CAPITA_KW * 1.5)
+def test_residential_kw_midday_peak() -> None:
+    # pop=100, h=12 (midday peak) → 100 * 0.333 * 1.5 = 49.95
+    assert residential_kw(12, pop=100) == pytest.approx(100 * PER_CAPITA_KW * 1.50)
 
 
 # -- Commercial factor -------------------------------------------------------
@@ -171,8 +198,8 @@ def test_half_staffed_industrial_draws_half() -> None:
 
 def test_no_events_means_unit_multipliers() -> None:
     w = _fresh_world()
-    assert heatwave_multiplier(w.state) == 1.0
-    assert demand_surprise_multiplier(w.state) == 1.0
+    assert heatwave_residential_mult(w.state) == 1.0
+    assert demand_surprise_ic_mult(w.state) == 1.0
 
 
 def test_heatwave_multiplies_residential_only() -> None:

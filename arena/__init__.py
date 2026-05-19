@@ -1,17 +1,14 @@
-"""Arena package — `(agent, scenario)` runner + leaderboard.
+"""Arena package — `(agent, scenario)` runner.
 
-Three modules:
+Two modules:
 
 - `arena.results`: `ArenaResult` dataclass + JSON I/O for the per-pair
   result schema (population, treasury delta, renewable share, raw
-  score, run folder id, submission timestamp).
+  score, run folder id, submission timestamp). Each run is independent;
+  external tooling consumes the JSON rows to track agents over time.
 - `arena.runner`: orchestrates `(agent, scenario)` pairs as
   subprocesses for isolation; each pair shells out to
   `python evaluate.py --agent <A> --scenario <S> --seed <Z>` and
   captures the JSON line into an `ArenaResult`. CLI:
   `python -m arena.runner`.
-- `arena.leaderboard`: pure-function aggregator. Takes a list of
-  `ArenaResult`s, ranks agents per-scenario by raw score, and produces
-  a Markdown ranked table via mean-rank across scenarios. Ties break
-  on mean raw score, then submission timestamp.
 """

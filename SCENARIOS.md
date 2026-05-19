@@ -156,7 +156,7 @@ The world is fully deterministic given `(seed, action log)`. Scenarios participa
 
 ## v1 shipped scenarios
 
-All three are seed-42 by default and ship under `scenarios/`. Their committed scripted-agent reference rows live under `baselines/arena/`; see [LEADERBOARD.md](LEADERBOARD.md) for the ranked view.
+All three are seed-42 by default and ship under `scenarios/`. Their committed scripted-agent reference rows live under `baselines/arena/`. Ranking across runs is tracked externally; each run is independent.
 
 ### `scenarios.baseline`
 
@@ -194,6 +194,6 @@ Source: [`scenarios/economy_stress.py`](scenarios/economy_stress.py).
 
 ## Submitting a scenario
 
-Open a PR with `scenarios/<your_slug>.py` and its test. CI runs `make check`. A maintainer reviews the override taxonomy and merges. If the scenario enters the arena's public set, `make baselines` regenerates the committed scripted-agent reference for it and `make leaderboard` refreshes `LEADERBOARD.md`.
+Open a PR with `scenarios/<your_slug>.py` and its test. CI runs `make check`. A maintainer reviews the override taxonomy and merges. If the scenario enters the arena's public set, `make baselines` regenerates the committed scripted-agent reference for it.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the broader contributor flow.

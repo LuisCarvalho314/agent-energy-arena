@@ -90,6 +90,34 @@ value), so it stays human-readable on the wire while giving in-process
 callers type-checked comparison. Lives in `world/snapshots.py`.
 _Avoid_: grid_state, dispatch_outcome, balance string
 
+**PipelineGraph**:
+The 4-connected component partition of pipeline tiles, materialised
+once per "use epoch" (one `_advance_one_day` pass, one
+`preview_next_day` projection, one `state_dict` poll) and reused by
+every consumer in that epoch: hourly peaker-supply checks, end-of-day
+`route_oil`, the wire-format `pipeline_networks` projection. Built by
+`build_pipeline_graph(state.tiles)`; consumed by `routing_units(graph,
+tiles, wells)` and `peaker_supplied_ids(graph, tiles)`. Within an
+epoch the tile grid is immutable (the only mutators, `World.build` and
+`World.demolish`, run between days), so the graph stays valid across
+all 24 hourly_ticks of a day. Lives in `world/pipelines.py`.
+_Avoid_: PipelineNetwork (used for the per-component routing unit),
+pipe_graph, component_graph
+
+**Event**:
+A finite-duration or permanent perturbation rolled at the start of each
+simulated day from `event_rng`. Five types: `heatwave`,
+`demand_surprise`, `fuel_price_shock`, `regulatory_tightening`,
+`plant_failure`. Lifecycle — sampling, applying at fire time, expiring
+at `ends_day` — lives in `world/events.py`. Per-tick / per-day
+**effect** queries (multipliers read from `state.active_events`) live
+in `world/event_effects.py`; the lifecycle/effects split is the same
+shape as `hourly_tick` (read) / `commit_tick` (write). Consumer-facing
+helpers in `event_effects` are named `<event>_<affected_quantity>`
+(e.g. `heatwave_residential_mult`, `fuel_price_shock_bill_mult`) so
+grepping an event name lands every effect site at once.
+_Avoid_: Hazard, Disaster, Modifier
+
 ## Relationships
 
 - A **World** contains many **Tiles** and many **Wells**.
@@ -105,3 +133,14 @@ _Avoid_: grid_state, dispatch_outcome, balance string
   **LastDayTrace**, and one **DayLedger** through `state.power_now`,
   `state.weather_now`, `state.last_day_trace`, `state.today`. All four
   are pydantic models (typed wire schema per ADR-0003).
+- A **World**'s day builds one **PipelineGraph** at the top of
+  `_advance_one_day`; every hourly_tick's peaker-supply check and the
+  end-of-day `route_oil` read from that single graph. `state_dict` and
+  `preview_next_day` each build their own (read-only) graph for the
+  same reason.
+- A **World**'s day rolls new **Event**s via
+  `events.sample_and_apply_events` at the top of `_advance_one_day`;
+  consumers (`hourly_tick`, `settle_fuel`, ...) read effect multipliers
+  off `event_effects` during the tick and end-of-day phases. Events
+  with no read-side multiplier (`plant_failure`, `regulatory_tightening`)
+  apply at fire time and have no entry in `event_effects`.

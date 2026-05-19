@@ -42,7 +42,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from world import workforce
-from world.events import fuel_price_shock_multiplier
+from world.event_effects import fuel_price_shock_bill_mult
 from world.power import PLANT_TYPES, daily_met_demand_fraction
 from world.subsurface import INJECTION_KWH_PER_BBL, PRODUCTION_KWH_PER_BBL
 
@@ -389,8 +389,8 @@ def settle_fuel(state: WorldState) -> None:
         return
     coal_cost_per_mwh = state.plant_fuel_cost_per_mwh["coal_plant"]
     gas_cost_per_mwh = state.plant_fuel_cost_per_mwh["gas_peaker"]
-    coal_shock = fuel_price_shock_multiplier(state, "coal_plant")
-    gas_shock = fuel_price_shock_multiplier(state, "gas_peaker")
+    coal_shock = fuel_price_shock_bill_mult(state, "coal_plant")
+    gas_shock = fuel_price_shock_bill_mult(state, "gas_peaker")
     fuel_total = (state.today.coal_kwh / 1000.0) * coal_cost_per_mwh * coal_shock + (
         state.today.gas_kwh / 1000.0
     ) * gas_cost_per_mwh * gas_shock

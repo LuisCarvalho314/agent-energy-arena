@@ -24,7 +24,6 @@ Other useful targets:
 | Target | What it does |
 |---|---|
 | `make baselines` | Regenerate the per-scenario scripted-agent baselines under `baselines/arena/`. Run this after editing the scripted agent or a v1 scenario. |
-| `make leaderboard` | Regenerate `LEADERBOARD.md` from the committed baselines. Run this after `make baselines`. |
 | `make score` | Run the scripted agent on seed 42 and print the score. |
 | `make play` | `docker compose up` — world + UI at `:8000`. |
 | `make eval` | `docker compose --profile eval run agent` — evaluate `submit/agent.py`. |
@@ -39,7 +38,7 @@ Community agents live under `agents/community/`. The PR-as-submission flow:
 4. **Stay within the v1 budget.** Soft caps: ≤ 5 minutes wall-clock per evaluation seed, ≤ 500,000 LLM tokens per game if you use an LLM. The runner does not enforce these; the maintainer reviewing your PR will.
 5. **No edits outside `agents/community/<you>/`.** Do not modify `world/`, `agents/base.py`, `agents/api_client.py`, `agents/scripted/`, or `arena/`. If your approach requires a world change, open a separate issue first.
 6. **Verify locally.** `make check` must pass. If you added a test (recommended), it goes under `agents/tests/community_<you>.py`.
-7. **Open a PR.** Include in the description: the score on seed 42 against the committed `baselines/seed_42.json`, and the arena leaderboard rows your agent earned on the three public scenarios (`baseline`, `grid_stress`, `economy_stress`) via `make baselines`-style runs. A maintainer will re-run on merge and regenerate `LEADERBOARD.md`.
+7. **Open a PR.** Include in the description: the score on seed 42 against the committed `baselines/seed_42.json`, and the arena rows your agent earned on the three public scenarios (`baseline`, `grid_stress`, `economy_stress`) via `make baselines`-style runs. A maintainer will re-run on merge. Ranking across submissions is tracked externally; each run is independent.
 
 The legacy `submit/` directory at the repo root is preserved as a personal-workspace scratchpad — it is **not** where final submissions live. Final, judged submissions go to `agents/community/`.
 

@@ -18,9 +18,8 @@ Event multipliers (PRD's correction to the brief's bottom-line multipliers):
   * Demand surprise (1.30) multiplies *commercial + industrial only*.
   * Process loads are unaffected by either multiplier.
 
-In slice 04 events are stubbed; both `heatwave_active` and
-`demand_surprise_active` return False unless a test injects a matching
-entry into `state.active_events`. The flags go live in slice 11.
+The per-event multiplier helpers live in ``world.event_effects`` so the
+effect surface of each event is one grep target (CONTEXT.md — Event).
 """
 
 from __future__ import annotations
@@ -30,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from world import workforce
 from world.catalog import TILE_CATALOG
+from world.event_effects import demand_surprise_ic_mult, heatwave_residential_mult
 from world.snapshots import BalanceState, WeatherNow
 from world.weather import P_solar_kw, turbine_kw
 
@@ -37,8 +37,6 @@ if TYPE_CHECKING:
     from world.state import Tile, WorldState
 
 PER_CAPITA_KW: float = 0.333  # 8 kWh/day continuous; brief §4.3
-HEATWAVE_RESIDENTIAL_MULT: float = 1.40
-DEMAND_SURPRISE_IC_MULT: float = 1.30
 
 # Dispatch ramp/min-run (brief §4.4).
 COAL_RAMP_PER_HOUR: float = 0.10
@@ -62,16 +60,44 @@ FOSSIL_TYPES: frozenset[str] = frozenset({"coal_plant", "gas_peaker"})
 PLANT_TYPES: frozenset[str] = RENEWABLE_TYPES | FOSSIL_TYPES
 
 
+# Per-hour residential demand multiplier (revises brief §4.3). Shape: deep
+# night minimum at h=1-3, smooth ramp through the morning, midday peak at
+# h=12 (≈1.5), evening shoulder at h=17-19 for cooking / leisure, late
+# evening drop. Calibrated so the 24-hour sum stays at 22.3 (≈22.3/24 ≈
+# 0.93 mean — unchanged from the brief's stepped curve), so day-level
+# residential consumption — and the city-wide economics tuned against it
+# — are invariant. Only the intra-day mix changes: daytime gets more,
+# night gets less. Peak/night ratio ≈ 4.3×.
+_HOURLY_RESIDENTIAL_FACTOR: tuple[float, ...] = (
+    0.40,
+    0.35,
+    0.35,
+    0.35,
+    0.40,  # 00-04 night trough
+    0.55,
+    0.75,
+    0.95,
+    1.10,  # 05-08 morning ramp
+    1.25,
+    1.35,
+    1.45,
+    1.50,  # 09-12 climb to midday peak
+    1.45,
+    1.35,
+    1.25,
+    1.20,  # 13-16 afternoon descent
+    1.20,
+    1.20,
+    1.15,  # 17-19 evening shoulder
+    0.95,
+    0.75,
+    0.60,
+    0.45,  # 20-23 evening drop
+)
+
+
 def hourly_factor(h: int) -> float:
-    if h < 5:
-        return 0.6  # night
-    if h < 9:
-        return 1.0  # morning
-    if h < 17:
-        return 0.8  # midday
-    if h < 22:
-        return 1.5  # evening peak
-    return 0.7  # late night
+    return _HOURLY_RESIDENTIAL_FACTOR[h]
 
 
 def residential_kw(h: int, pop: int) -> float:
@@ -80,22 +106,6 @@ def residential_kw(h: int, pop: int) -> float:
 
 def commercial_factor(h: int) -> float:
     return 1.0 if 8 <= h < 20 else 0.2
-
-
-def heatwave_active(state: WorldState) -> bool:
-    return any(e.get("type") == "heatwave" for e in state.active_events)
-
-
-def demand_surprise_active(state: WorldState) -> bool:
-    return any(e.get("type") == "demand_surprise" for e in state.active_events)
-
-
-def heatwave_multiplier(state: WorldState) -> float:
-    return HEATWAVE_RESIDENTIAL_MULT if heatwave_active(state) else 1.0
-
-
-def demand_surprise_multiplier(state: WorldState) -> float:
-    return DEMAND_SURPRISE_IC_MULT if demand_surprise_active(state) else 1.0
 
 
 def _industrial_kw(state: WorldState) -> float:
@@ -115,9 +125,9 @@ def _process_loads_kw(state: WorldState) -> float:
 
 
 def total_demand_kw(state: WorldState, h: int) -> float:
-    res = residential_kw(h, int(state.population)) * heatwave_multiplier(state)
+    res = residential_kw(h, int(state.population)) * heatwave_residential_mult(state)
     ic = (_industrial_kw(state) + _commercial_peak_kw(state) * commercial_factor(h)) * (
-        demand_surprise_multiplier(state)
+        demand_surprise_ic_mult(state)
     )
     process = _process_loads_kw(state)
     return float(res + ic + process)
@@ -157,8 +167,9 @@ def dispatch(
     connected to an operational refinery via the pipeline network this
     hour. Filtered before merit-order ordering and treated identically to
     a `plant_failure` (zero output, no ramp credit) — downstream
-    brownout/blackout accounting flows through the existing path. Callers
-    compute the set via `world.pipelines.peaker_supply`.
+    brownout/blackout accounting flows through the existing path. The
+    day loop derives it from `world.pipelines.peaker_supplied_ids`
+    once per day (the supplied set is day-stable).
     """
     outputs: dict[str, float] = {p.id: 0.0 for p in plants}
 

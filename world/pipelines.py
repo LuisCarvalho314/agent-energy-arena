@@ -6,8 +6,15 @@ distance 1); diagonals do not connect. A well or refinery belongs to a
 component iff one of its four orthogonal neighbours is a pipeline tile in
 that component; otherwise it is an *orphan* with respect to crude routing.
 
-The graph helpers (``pipeline_components``, ``routing_units``,
-``peaker_supply``) are pure — no `World` dependency, no mutation,
+The component partition is materialised once per "use epoch" (a single
+``_advance_one_day`` pass, a single ``preview_next_day`` projection, a
+single ``state_dict`` poll) as a :class:`PipelineGraph` and reused by
+every consumer in that epoch: hourly peaker-supply checks, end-of-day
+``route_oil``, the wire-format pipeline-networks projection. Within an
+epoch the tile grid is immutable, so the graph stays valid.
+
+The graph helpers (``build_pipeline_graph``, ``routing_units``,
+``peaker_supplied_ids``) are pure — no `World` dependency, no mutation,
 testable without a sim instance. ``route_oil`` is the end-of-day phase
 that walks the routing units, settles each refinery's throughput, and
 credits crude/refined revenue to ``state.today`` and ``state.treasury``.
@@ -17,6 +24,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from world.economy import REFINERY_YIELD, route_crude
@@ -62,8 +70,59 @@ def pipeline_components(
     return components
 
 
+@dataclass(frozen=True)
+class PipelineGraph:
+    """4-connected components of pipeline tiles, materialised once per epoch.
+
+    Built from ``state.tiles`` by :func:`build_pipeline_graph`. Stays
+    valid for the lifetime of a use-epoch (one ``_advance_one_day`` pass,
+    one ``preview_next_day``, one ``state_dict`` call): within an epoch
+    the tile grid is immutable, and the only mutators (``World.build`` /
+    ``World.demolish``) run outside the day loop.
+
+    Consumers — :func:`routing_units`, :func:`peaker_supplied_ids` — read
+    ``pos_to_comp`` to test whether a given ``(x, y)`` has a neighbour in
+    a pipeline component, so the BFS that populated ``components`` runs
+    once instead of once per query.
+    """
+
+    components: tuple[frozenset[tuple[int, int]], ...]
+    pos_to_comp: dict[tuple[int, int], int]
+
+
+def build_pipeline_graph(tiles: Iterable[Tile]) -> PipelineGraph:
+    """Walk pipeline tiles once and return the cached component partition.
+
+    The bounds passed to :func:`pipeline_components` only filter
+    out-of-range neighbours; since pipeline coordinates come from the
+    input tiles themselves, any bound larger than the maximum tile
+    coordinate is safe. Derive one from the inputs so callers don't have
+    to plumb ``world_w`` / ``world_h`` through.
+    """
+    tiles_list = list(tiles)
+
+    max_xy = 0
+    for t in tiles_list:
+        if t.x > max_xy:
+            max_xy = t.x
+        if t.y > max_xy:
+            max_xy = t.y
+    bound = max_xy + 2
+
+    components = pipeline_components(tiles_list, bound, bound)
+    pos_to_comp: dict[tuple[int, int], int] = {}
+    for idx, comp in enumerate(components):
+        for pos in comp:
+            pos_to_comp[pos] = idx
+
+    return PipelineGraph(
+        components=tuple(frozenset(c) for c in components),
+        pos_to_comp=pos_to_comp,
+    )
+
+
 def routing_units(
-    tiles: Iterable[Tile], wells: Iterable[Well]
+    graph: PipelineGraph, tiles: Iterable[Tile], wells: Iterable[Well]
 ) -> tuple[
     list[tuple[list[Well], list[Tile]]],
     list[Well],
@@ -81,41 +140,17 @@ def routing_units(
     A well with pipeline neighbours in multiple components is assigned to
     the first one found (stable by component index).
     """
-    tiles_list = list(tiles)
-    wells_list = list(wells)
+    pos_to_comp = graph.pos_to_comp
+    n_components = len(graph.components)
 
-    # The bounds passed to pipeline_components only filter out-of-range
-    # neighbours; since pipeline coordinates come from the input tiles
-    # themselves, any bound larger than the maximum tile coordinate is
-    # safe. Derive one from the inputs so callers don't have to plumb
-    # world_w / world_h through.
-    max_xy = 0
-    for t in tiles_list:
-        if t.x > max_xy:
-            max_xy = t.x
-        if t.y > max_xy:
-            max_xy = t.y
-    for wl in wells_list:
-        if wl.x > max_xy:
-            max_xy = wl.x
-        if wl.y > max_xy:
-            max_xy = wl.y
-    bound = max_xy + 2
+    refineries: list[Tile] = [t for t in tiles if t.type == "refinery"]
 
-    components = pipeline_components(tiles_list, bound, bound)
-    pos_to_comp: dict[tuple[int, int], int] = {}
-    for idx, comp in enumerate(components):
-        for pos in comp:
-            pos_to_comp[pos] = idx
-
-    refineries: list[Tile] = [t for t in tiles_list if t.type == "refinery"]
-
-    network_wells: list[list[Well]] = [[] for _ in components]
-    network_refs: list[list[Tile]] = [[] for _ in components]
+    network_wells: list[list[Well]] = [[] for _ in range(n_components)]
+    network_refs: list[list[Tile]] = [[] for _ in range(n_components)]
     orphan_wells: list[Well] = []
     orphan_refineries: list[Tile] = []
 
-    for wl in wells_list:
+    for wl in wells:
         comp_idx = _first_neighbour_component(wl.x, wl.y, pos_to_comp)
         if comp_idx is None:
             orphan_wells.append(wl)
@@ -131,7 +166,7 @@ def routing_units(
 
     networks: list[tuple[list[Well], list[Tile]]] = [
         (network_wells[i], network_refs[i])
-        for i in range(len(components))
+        for i in range(n_components)
         if network_wells[i] or network_refs[i]
     ]
     return networks, orphan_wells, orphan_refineries
@@ -156,53 +191,44 @@ def _neighbour_components(x: int, y: int, pos_to_comp: dict[tuple[int, int], int
     return found
 
 
-def peaker_supply(peaker_tile: Tile, tiles: Iterable[Tile]) -> bool:
-    """True iff the gas peaker shares a 4-connected pipeline network with at
-    least one operational refinery.
+def peaker_supplied_ids(graph: PipelineGraph, tiles: Iterable[Tile]) -> frozenset[str]:
+    """IDs of gas peakers that share a pipeline network with an operational refinery.
 
-    The peaker is "on a network" iff one of its four orthogonal neighbours is
-    a pipeline tile in that component (mirrors the well/refinery rule in
-    `routing_units`). Diagonal adjacency does not connect. Non-operational
-    refineries do not count as supply — destroying a refinery makes every
-    peaker on its network unsupplied on the next call.
+    A peaker is "on a network" iff one of its four orthogonal neighbours
+    is a pipeline tile in that component (mirrors the well/refinery rule
+    in :func:`routing_units`). Diagonal adjacency does not connect.
+    Non-operational refineries do not count as supply — destroying a
+    refinery makes every peaker on its network unsupplied on the next
+    epoch's graph build.
+
+    Returns a frozenset because the consumer (``hourly_tick``) tests
+    set membership across the gas-peaker fleet; computing the whole set
+    once is cheaper than per-peaker BFS lookups.
     """
+    pos_to_comp = graph.pos_to_comp
+    if not pos_to_comp:
+        return frozenset()
+
     tiles_list = list(tiles)
-
-    # Same bound derivation as `routing_units`: the bound only filters
-    # out-of-range pipeline neighbours, so any value strictly larger than
-    # the max input coord is safe.
-    max_xy = 0
-    for t in tiles_list:
-        if t.x > max_xy:
-            max_xy = t.x
-        if t.y > max_xy:
-            max_xy = t.y
-    if peaker_tile.x > max_xy:
-        max_xy = peaker_tile.x
-    if peaker_tile.y > max_xy:
-        max_xy = peaker_tile.y
-    bound = max_xy + 2
-
-    components = pipeline_components(tiles_list, bound, bound)
-    pos_to_comp: dict[tuple[int, int], int] = {}
-    for idx, comp in enumerate(components):
-        for pos in comp:
-            pos_to_comp[pos] = idx
-
-    peaker_comps = _neighbour_components(peaker_tile.x, peaker_tile.y, pos_to_comp)
-    if not peaker_comps:
-        return False
-
+    refinery_comps: set[int] = set()
     for t in tiles_list:
         if t.type != "refinery" or not t.operational:
             continue
-        ref_comps = _neighbour_components(t.x, t.y, pos_to_comp)
-        if ref_comps & peaker_comps:
-            return True
-    return False
+        refinery_comps.update(_neighbour_components(t.x, t.y, pos_to_comp))
+    if not refinery_comps:
+        return frozenset()
+
+    supplied: set[str] = set()
+    for t in tiles_list:
+        if t.type != "gas_peaker":
+            continue
+        peaker_comps = _neighbour_components(t.x, t.y, pos_to_comp)
+        if peaker_comps & refinery_comps:
+            supplied.add(t.id)
+    return frozenset(supplied)
 
 
-def route_oil(state: WorldState) -> None:
+def route_oil(state: WorldState, graph: PipelineGraph) -> None:
     """End-of-day crude routing + oil revenue (brief §4.6, oilfield-v2 slice 08).
 
     Crude only flows from producers to refineries on the same 4-connected
@@ -227,9 +253,11 @@ def route_oil(state: WorldState) -> None:
     Must run after ``commit_well_injections`` and ``run_production_loop``
     (which set each well's ``current_rate_bbl_day`` — the per-network
     crude pool size), and before ``settle_carbon`` (which reads
-    ``state.today.refined_bbl``).
+    ``state.today.refined_bbl``). The caller supplies the day's
+    ``PipelineGraph`` — the same one ``_advance_one_day`` built at the
+    top of the day and reused for hourly peaker-supply checks.
     """
-    networks, orphan_wells, orphan_refineries = routing_units(state.tiles, state.wells)
+    networks, orphan_wells, orphan_refineries = routing_units(graph, state.tiles, state.wells)
 
     total_refined_input = 0.0
     total_routed_crude_bbl = 0.0

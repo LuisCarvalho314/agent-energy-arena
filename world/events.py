@@ -38,6 +38,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from world.event_effects import (
+    DEMAND_SURPRISE_IC_MULT,
+    GAS_FUEL_SHOCK_MULT,
+    HEATWAVE_RESIDENTIAL_MULT,
+)
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -66,18 +72,10 @@ PLANT_FAILURE_DURATION_MAX: int = 7  # inclusive
 FUEL_PRICE_SHOCK_DURATION: int = 30
 DEMAND_SURPRISE_DURATION: int = 10
 
-# Multipliers / constants.
-HEATWAVE_RESIDENTIAL_MULT: float = 1.40
-# Fuel-shock multipliers split per fuel type: gas exposure is sharp, coal
-# (historically more contract-locked) drags less. Severity stored on the
-# active-event record uses the gas mult as the headline figure.
-GAS_FUEL_SHOCK_MULT: float = 2.5
-COAL_FUEL_SHOCK_MULT: float = 1.3
-FUEL_SHOCK_MULT_BY_TYPE: dict[str, float] = {
-    "gas_peaker": GAS_FUEL_SHOCK_MULT,
-    "coal_plant": COAL_FUEL_SHOCK_MULT,
-}
-DEMAND_SURPRISE_IC_MULT: float = 1.30
+# Multipliers / constants. The per-event effect multipliers
+# (HEATWAVE_RESIDENTIAL_MULT, GAS/COAL_FUEL_SHOCK_MULT, DEMAND_SURPRISE_IC_MULT)
+# live in `world.event_effects`; this module only reads them to record the
+# headline severity on each active-event entry.
 REGULATORY_TIGHTENING_MULT: float = 1.5
 REGULATORY_TIGHTENING_MAX_OCCURRENCES: int = 3
 
@@ -90,21 +88,6 @@ FINITE_DURATION_TYPES: frozenset[str] = frozenset(
 
 def _has_active(state: WorldState, event_type: str) -> bool:
     return any(e.get("type") == event_type for e in state.active_events)
-
-
-def fuel_price_shock_active(state: WorldState) -> bool:
-    """True iff a fuel_price_shock is currently in `active_events`."""
-    return _has_active(state, "fuel_price_shock")
-
-
-def fuel_price_shock_multiplier(state: WorldState, fuel_type: str) -> float:
-    """Return the per-fuel-type shock multiplier (≥1.0) for the named fossil
-    plant type (`gas_peaker` or `coal_plant`). Returns 1.0 when no shock is
-    active.
-    """
-    if not fuel_price_shock_active(state):
-        return 1.0
-    return FUEL_SHOCK_MULT_BY_TYPE[fuel_type]
 
 
 def expire_finite_events(world: World) -> None:

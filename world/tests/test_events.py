@@ -19,17 +19,20 @@ from fastapi.testclient import TestClient
 
 from world.api import create_app
 from world.economy import CARBON_PRICE_USD_PER_TON
-from world.events import (
+from world.event_effects import (
     COAL_FUEL_SHOCK_MULT,
-    DEMAND_SURPRISE_DURATION,
     DEMAND_SURPRISE_IC_MULT,
+    GAS_FUEL_SHOCK_MULT,
+    HEATWAVE_RESIDENTIAL_MULT,
+    fuel_price_shock_bill_mult,
+)
+from world.events import (
+    DEMAND_SURPRISE_DURATION,
     DEMAND_SURPRISE_PROB,
     FUEL_PRICE_SHOCK_DURATION,
     FUEL_PRICE_SHOCK_PROB,
-    GAS_FUEL_SHOCK_MULT,
     HEATWAVE_DURATION,
     HEATWAVE_PROB,
-    HEATWAVE_RESIDENTIAL_MULT,
     PLANT_FAILURE_DURATION_MAX,
     PLANT_FAILURE_DURATION_MIN,
     PLANT_FAILURE_PROB,
@@ -37,7 +40,6 @@ from world.events import (
     REGULATORY_TIGHTENING_MULT,
     REGULATORY_TIGHTENING_PROB,
     expire_finite_events,
-    fuel_price_shock_multiplier,
     sample_and_apply_events,
 )
 from world.sim import World
@@ -393,16 +395,16 @@ def test_fuel_shock_hits_gas_harder():
     assert (gas_shock / gas_normal) > (coal_shock / coal_normal)
 
 
-def test_fuel_price_shock_multiplier_helper():
+def test_fuel_price_shock_bill_mult_helper():
     w = World()
     w.reset(seed=42)
-    assert fuel_price_shock_multiplier(w.state, "gas_peaker") == 1.0
-    assert fuel_price_shock_multiplier(w.state, "coal_plant") == 1.0
+    assert fuel_price_shock_bill_mult(w.state, "gas_peaker") == 1.0
+    assert fuel_price_shock_bill_mult(w.state, "coal_plant") == 1.0
     w.state.active_events.append(
         {"type": "fuel_price_shock", "started_day": 0, "ends_day": 30, "severity": 2.5}
     )
-    assert fuel_price_shock_multiplier(w.state, "gas_peaker") == GAS_FUEL_SHOCK_MULT
-    assert fuel_price_shock_multiplier(w.state, "coal_plant") == COAL_FUEL_SHOCK_MULT
+    assert fuel_price_shock_bill_mult(w.state, "gas_peaker") == GAS_FUEL_SHOCK_MULT
+    assert fuel_price_shock_bill_mult(w.state, "coal_plant") == COAL_FUEL_SHOCK_MULT
 
 
 def test_plant_failure_samples_gas_more_often_over_n_trials():

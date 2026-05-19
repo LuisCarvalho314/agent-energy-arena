@@ -7,7 +7,12 @@ slice 08; this slice only pins the pure-function contract.
 
 from __future__ import annotations
 
-from world.pipelines import peaker_supply, pipeline_components, routing_units
+from world.pipelines import (
+    build_pipeline_graph,
+    peaker_supplied_ids,
+    pipeline_components,
+    routing_units,
+)
 from world.state import Tile, Well
 
 
@@ -25,6 +30,16 @@ def _peaker(id_: str, x: int, y: int) -> Tile:
 
 def _well(id_: str, x: int, y: int, well_type: str = "production") -> Well:
     return Well(id=id_, type=well_type, x=x, y=y, target_z=8, drilled_day=0)
+
+
+def _routing_units(tiles: list[Tile], wells: list[Well]):
+    """Build the graph and route in one step — production callers build
+    the graph once and reuse it; tests don't care, so wrap it here."""
+    return routing_units(build_pipeline_graph(tiles), tiles, wells)
+
+
+def _peaker_supplied(peaker: Tile, tiles: list[Tile]) -> bool:
+    return peaker.id in peaker_supplied_ids(build_pipeline_graph(tiles), tiles)
 
 
 # -- pipeline_components -----------------------------------------------------
@@ -94,7 +109,7 @@ def test_one_network_with_shipping_well_and_receiving_refinery():
         _refinery("ref1", 7, 5),
     ]
     wells = [_well("w1", 4, 5)]  # adjacent to p1
-    networks, orphan_w, orphan_r = routing_units(tiles, wells)
+    networks, orphan_w, orphan_r = _routing_units(tiles, wells)
 
     assert len(networks) == 1
     net_wells, net_refs = networks[0]
@@ -107,7 +122,7 @@ def test_one_network_with_shipping_well_and_receiving_refinery():
 def test_well_with_no_pipeline_neighbor_is_orphan():
     tiles = [_pipe("p1", 5, 5), _refinery("ref1", 6, 5)]
     wells = [_well("w1", 20, 20)]
-    networks, orphan_w, orphan_r = routing_units(tiles, wells)
+    networks, orphan_w, orphan_r = _routing_units(tiles, wells)
 
     assert [w.id for w in orphan_w] == ["w1"]
     # The network exists (refinery is adjacent to p1) and contains no wells.
@@ -120,7 +135,7 @@ def test_well_with_no_pipeline_neighbor_is_orphan():
 def test_refinery_with_no_pipeline_neighbor_is_orphan():
     tiles = [_pipe("p1", 5, 5), _refinery("ref1", 20, 20)]
     wells = [_well("w1", 4, 5)]
-    networks, orphan_w, orphan_r = routing_units(tiles, wells)
+    networks, orphan_w, orphan_r = _routing_units(tiles, wells)
 
     assert [r.id for r in orphan_r] == ["ref1"]
     assert len(networks) == 1
@@ -144,7 +159,7 @@ def test_two_disjoint_networks_route_independently():
         _well("wA", 4, 5),
         _well("wB", 19, 20),
     ]
-    networks, orphan_w, orphan_r = routing_units(tiles, wells)
+    networks, orphan_w, orphan_r = _routing_units(tiles, wells)
 
     assert len(networks) == 2
     assert orphan_w == []
@@ -170,7 +185,7 @@ def test_removing_bridging_pipeline_splits_network_into_two():
     ]
     wells = [_well("w_left", 4, 5)]
 
-    nets_before, orphan_w_before, _ = routing_units(tiles, wells)
+    nets_before, orphan_w_before, _ = _routing_units(tiles, wells)
     assert len(nets_before) == 1
     net_wells, net_refs = nets_before[0]
     assert [w.id for w in net_wells] == ["w_left"]
@@ -178,7 +193,7 @@ def test_removing_bridging_pipeline_splits_network_into_two():
     assert orphan_w_before == []
 
     tiles_after = [t for t in tiles if t.id != "bridge"]
-    nets_after, orphan_w_after, _ = routing_units(tiles_after, wells)
+    nets_after, orphan_w_after, _ = _routing_units(tiles_after, wells)
 
     # Two components now: {(5,5)} with the well, {(7,5)} with the refinery.
     assert len(nets_after) == 2
@@ -200,7 +215,7 @@ def test_pure_no_mutation_of_inputs():
     tiles_snapshot = list(tiles)
     wells_snapshot = list(wells)
 
-    routing_units(tiles, wells)
+    _routing_units(tiles, wells)
     pipeline_components(tiles, 32, 32)
 
     assert tiles == tiles_snapshot
@@ -219,7 +234,7 @@ def test_peaker_supply_true_when_sharing_network_with_operational_refinery():
         _pipe("p2", 6, 5),
         _refinery("ref1", 7, 5),
     ]
-    assert peaker_supply(peaker, tiles) is True
+    assert _peaker_supplied(peaker, tiles) is True
 
 
 def test_peaker_supply_false_when_connected_refinery_is_not_operational():
@@ -231,7 +246,7 @@ def test_peaker_supply_false_when_connected_refinery_is_not_operational():
         _pipe("p2", 6, 5),
         _refinery("ref1", 7, 5, operational=False),
     ]
-    assert peaker_supply(peaker, tiles) is False
+    assert _peaker_supplied(peaker, tiles) is False
 
 
 def test_peaker_supply_false_when_pipeline_network_isolated_from_refineries():
@@ -246,7 +261,7 @@ def test_peaker_supply_false_when_pipeline_network_isolated_from_refineries():
         _pipe("q1", 20, 20),
         _refinery("ref_far", 21, 20),
     ]
-    assert peaker_supply(peaker, tiles) is False
+    assert _peaker_supplied(peaker, tiles) is False
 
 
 def test_peaker_supply_false_when_peaker_has_no_pipeline_adjacency():
@@ -257,7 +272,7 @@ def test_peaker_supply_false_when_peaker_has_no_pipeline_adjacency():
         _pipe("p1", 5, 5),
         _refinery("ref1", 6, 5),
     ]
-    assert peaker_supply(peaker, tiles) is False
+    assert _peaker_supplied(peaker, tiles) is False
 
 
 def test_peaker_supply_diagonal_adjacency_is_not_enough():
@@ -269,7 +284,7 @@ def test_peaker_supply_diagonal_adjacency_is_not_enough():
         _pipe("p1", 5, 6),
         _refinery("ref1", 6, 6),
     ]
-    assert peaker_supply(peaker, tiles) is False
+    assert _peaker_supplied(peaker, tiles) is False
 
 
 def test_peaker_supply_picks_up_refinery_reached_via_long_path():
@@ -283,12 +298,12 @@ def test_peaker_supply_picks_up_refinery_reached_via_long_path():
         _pipe("p4", 6, 7),
         _refinery("ref1", 7, 7),
     ]
-    assert peaker_supply(peaker, tiles) is True
+    assert _peaker_supplied(peaker, tiles) is True
 
 
 def test_peaker_supply_pure_no_mutation():
     peaker = _peaker("gp1", 4, 5)
     tiles = [peaker, _pipe("p1", 5, 5), _refinery("ref1", 6, 5)]
     snapshot = list(tiles)
-    peaker_supply(peaker, tiles)
+    _peaker_supplied(peaker, tiles)
     assert tiles == snapshot

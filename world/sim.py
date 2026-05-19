@@ -40,7 +40,7 @@ from world.events import (
 )
 from world.grid import has_road_adjacency, in_bounds, road_connected_set
 from world.hourly_tick import commit_tick, hourly_tick
-from world.pipelines import route_oil, routing_units
+from world.pipelines import build_pipeline_graph, peaker_supplied_ids, route_oil, routing_units
 from world.population import DAILY_TAX_PER_CAPITA, update_population
 from world.power import PLANT_TYPES
 from world.recorder import Recorder
@@ -574,6 +574,16 @@ class World:
             if t.type in PLANT_TYPES:
                 t.kwh_served_today = 0.0
 
+        # Pipeline graph (one BFS over pipeline tiles): the tile grid is
+        # immutable for the duration of `_advance_one_day`, so the graph
+        # the hourly peaker-supply check needs is the same graph
+        # `route_oil` consumes at end-of-day. Build once here, reuse
+        # below. Refinery operational flags are also day-stable, so the
+        # peaker-supplied set computed from `graph` is constant across
+        # the 24-hour loop.
+        graph = build_pipeline_graph(self.state.tiles)
+        supplied_peaker_ids = peaker_supplied_ids(graph, self.state.tiles)
+
         # Events (slice 11): expire yesterday's finished events first (so a
         # fresh roll today doesn't get stomped by an immediate expiry), then
         # roll new events from event_rng. Effects apply via:
@@ -623,6 +633,7 @@ class World:
                 prev_outputs,
                 prev_balance,
                 self.state.weather_now,
+                supplied_peaker_ids,
             )
             # commit_tick applies every per-hour mutation (battery SoC,
             # outage bookkeeping, power revenue, renewable share, well
@@ -650,7 +661,7 @@ class World:
         settle_eod_treasury(self.state)
         commit_well_injections(self.state)
         run_production_loop(self)
-        route_oil(self.state)
+        route_oil(self.state, graph)
         settle_carbon(self)
         pin_yesterday(self.state)
         update_civic_revenue(self)
@@ -684,7 +695,8 @@ class World:
         # oilfield-v2 slice 08: per-day pipeline graph summary. Pure derivation
         # over the current tiles + wells, so it stays in lockstep with the
         # routing decision taken in `_advance_one_day`.
-        networks, orphan_wells, orphan_refineries = routing_units(s.tiles, s.wells)
+        graph = build_pipeline_graph(s.tiles)
+        networks, orphan_wells, orphan_refineries = routing_units(graph, s.tiles, s.wells)
         pipeline_networks = [
             {
                 "component_id": i,

@@ -155,7 +155,7 @@ def test_solar_derate_during_heatwave() -> None:
     """Solar output drops 20% when `solar_derate=0.8`; unchanged at 1.0.
 
     AC pin (balance-upgrade-p0 issue 05): a heatwave-active dispatch call
-    receives `solar_derate_multiplier(state) = 0.8`, which caps each solar
+    receives `heatwave_solar_derate(state) = 0.8`, which caps each solar
     plant at 80% of its effective capacity.
     """
     p = _plant("solar_farm")

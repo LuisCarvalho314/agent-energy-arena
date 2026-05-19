@@ -2,8 +2,10 @@
 
 One ArenaResult per `(agent, scenario, seed)` row. The arena runner
 captures these from each subprocess and writes them to a single JSON
-file consumed by `arena.leaderboard`. The schema is stable: an external
-auditor can read the JSON without importing this package.
+file. Each row is independent; aggregation across runs (ranking,
+ranking-over-time, etc.) is the responsibility of external tooling.
+The schema is stable: an external auditor can read the JSON without
+importing this package.
 """
 
 from __future__ import annotations
