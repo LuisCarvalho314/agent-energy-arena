@@ -34,7 +34,10 @@ def _short_game(monkeypatch: pytest.MonkeyPatch, days: int = 30) -> None:
 
 def _run_scripted(runs_root: Path, seed: int = 42) -> tuple[Path, dict]:
     """Run the scripted agent in-process and return (run_dir, final_state)."""
-    world = World()
+    # Match the production path's starter grid so `evaluate.cmd_replay`
+    # (which uses `_make_inprocess_client`, also with the starter grid)
+    # rehydrates to the same baseline as the original run.
+    world = World(seed_starter_grid=True)
     log = ActionLog(root=runs_root)
     app = create_app(world=world, action_log=log)
     api = ApiClient(transport=TestClient(app))

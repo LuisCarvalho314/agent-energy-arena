@@ -4,9 +4,10 @@ A single end-of-day routine, `update_population(world)`, that:
 
   1. Sums housing capacity and jobs from the current tile set.
   2. Computes happiness from a spatial park benefit (averaged over
-     houses), a noise penalty from industrial/refinery tiles near
-     houses (halved by an intervening park), prior-day blackout +
-     brownout hours, and a coal-proximity term.
+     residential tiles — both `town_hall` and `house` count), a noise
+     penalty from industrial/refinery tiles near those residences
+     (halved by an intervening park), prior-day blackout + brownout
+     hours, and a coal-proximity term.
   3. Calls `happiness_velocity` (signed daily delta around the
      neutral happiness fixed-point of 1.0) and `apply_structural_clamps`
      (housing exodus + jobs floor backstops) as pure helpers.
@@ -37,8 +38,11 @@ BROWNOUT_HAPPINESS_PER_HOUR: float = 0.02
 
 # Flat daily happiness penalty when the day closes with treasury < 0.
 # Does not scale with depth or duration; disappears the day treasury
-# returns non-negative.
-NEGATIVE_TREASURY_HAPPINESS_PENALTY: float = 0.05
+# returns non-negative. Sized at 0.20 — larger than a single park's
+# +0.10 contribution and capable of beating the max park benefit
+# (+0.30/house) down to a near-neutral +0.10 net, so debt cannot be
+# silently cancelled by minimal park placement.
+NEGATIVE_TREASURY_HAPPINESS_PENALTY: float = 0.20
 
 # Velocity model anchors (PRD §"Implementation Decisions").
 HAPPINESS_NEUTRAL: float = 1.0
@@ -49,7 +53,7 @@ def happiness_velocity(
     happiness: float,
     capacity: int,
     jobs: int,
-    b: float = 0.012,
+    b: float = 0.025,
     h_neutral: float = HAPPINESS_NEUTRAL,
 ) -> float:
     """Signed daily population delta from the happiness-velocity model.
@@ -68,16 +72,22 @@ def happiness_velocity(
 
 
 def apply_structural_clamps(pop: float, capacity: int, jobs: int) -> float:
-    """Gradual housing exodus and jobs floor backstops.
+    """Housing exodus and idle out-migration backstops.
 
     Both clamps fire in sequence. Housing exodus caps the post-velocity
-    population at `max(capacity, pop - 5)` when `pop > capacity`. Jobs
-    floor caps at `max(jobs / 0.7, pop * 0.99)` when `jobs < 0.7 * pop`.
+    population at `max(capacity, pop - 5)` when `pop > capacity`. Idle
+    out-migration shrinks pop by 0.3%/day toward `jobs` when `pop > jobs`:
+    people leave when there is no work for them, even if housing is
+    available. Equilibrium is `pop == jobs` (zero idle); the production
+    starter (pop=100, jobs=60) settles at pop=60 over ~170 days. The
+    rate is deliberately slow so that happiness-driven in-migration
+    (`happiness_velocity` with b=0.025) can outpace it at any happiness
+    above ~1.12.
     """
     if pop > capacity:
         pop = max(float(capacity), pop - 5.0)
-    if jobs < 0.7 * pop:
-        pop = max(jobs / 0.7, pop * 0.99)
+    if pop > jobs:
+        pop = max(float(jobs), pop * 0.997)
     return pop
 
 
@@ -88,21 +98,25 @@ def update_population(world: World) -> None:
     capacity = sum(t.housing_capacity for t in state.tiles)
     jobs = workforce.total_jobs(state)
     parks = [t for t in state.tiles if t.type == "park"]
-    houses = [t for t in state.tiles if t.type == "house"]
-    house_count = len(houses)
+    # The town_hall holds the starter pop before any dedicated house exists.
+    # The previous formula iterated only over `house` tiles, which left
+    # early-game happiness pinned at 1.0 regardless of parks built (no
+    # houses → no spatial bonus). Both residential tile types now contribute.
+    residences = [t for t in state.tiles if t.type in ("house", "town_hall")]
+    residence_count = len(residences)
     noise_sources = [t for t in state.tiles if t.type in ("industrial", "refinery")]
 
     coal_plants = [t for t in state.tiles if t.type == "coal_plant" and t.operational]
-    coal_houses_within_3 = sum(
-        1 for h in houses if any(max(abs(h.x - c.x), abs(h.y - c.y)) <= 3 for c in coal_plants)
+    coal_residences_within_3 = sum(
+        1 for h in residences if any(max(abs(h.x - c.x), abs(h.y - c.y)) <= 3 for c in coal_plants)
     )
 
     park_benefit = 0.0
     noise_penalty = 0.0
-    if house_count > 0:
+    if residence_count > 0:
         bonus_total = 0.0
         penalty_total = 0.0
-        for h in houses:
+        for h in residences:
             nearby_parks = [p for p in parks if max(abs(h.x - p.x), abs(h.y - p.y)) <= 2]
             bonus_total += min(0.30, 0.10 * len(nearby_parks))
             for src in noise_sources:
@@ -114,15 +128,15 @@ def update_population(world: World) -> None:
                     for p in parks
                 )
                 penalty_total += 0.015 if shielded else 0.03
-        park_benefit = bonus_total / house_count
-        noise_penalty = penalty_total / house_count
+        park_benefit = bonus_total / residence_count
+        noise_penalty = penalty_total / residence_count
 
     happiness = 1.0
     happiness += park_benefit
     happiness -= noise_penalty
     happiness -= BLACKOUT_HAPPINESS_PER_HOUR * state.yesterday_blackout_hours
     happiness -= BROWNOUT_HAPPINESS_PER_HOUR * state.yesterday_brownout_hours
-    happiness -= 0.05 * coal_houses_within_3 / max(1, house_count)
+    happiness -= 0.05 * coal_residences_within_3 / max(1, residence_count)
     if state.treasury < 0:
         happiness -= NEGATIVE_TREASURY_HAPPINESS_PENALTY
     happiness = max(0.0, min(1.5, happiness))

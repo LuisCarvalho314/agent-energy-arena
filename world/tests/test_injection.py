@@ -933,7 +933,7 @@ def test_api_drill_injection_well():
     assert res["ok"] is True
     assert res["result"]["type"] == "injection"
     expected = drill_capex(30_000.0, 8, w.config.world_d)
-    assert w.state.treasury == 500_000.0 - expected
+    assert w.state.treasury == w.config.starting_cash - expected
 
 
 def test_api_control_injection_well():

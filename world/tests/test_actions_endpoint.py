@@ -64,6 +64,7 @@ def test_endpoint_returns_in_flight_slice(tmp_path: Path) -> None:
     the FastAPI route returns the same slice the helper does."""
     runs_root = tmp_path / "runs"
     log = ActionLog(root=runs_root)
+    log.dir.mkdir(parents=True, exist_ok=True)  # ActionLog is now lazy
     shutil.copy(FIXTURE, log.path)
     app = create_app(world=World(), action_log=log)
     client = TestClient(app)
@@ -82,7 +83,9 @@ def test_endpoint_empty_log_returns_empty_slice(tmp_path: Path) -> None:
     log = ActionLog(root=tmp_path / "runs")
     app = create_app(world=World(), action_log=log)
     client = TestClient(app)
-    # The ActionLog constructor already created the file; ensure it's empty.
+    # ActionLog allocates lazily — touch the file so the endpoint
+    # sees the "exists but empty" steady state.
+    log.dir.mkdir(parents=True, exist_ok=True)
     log.path.write_text("")
     r = client.get("/actions", params={"day": 0})
     assert r.status_code == 200

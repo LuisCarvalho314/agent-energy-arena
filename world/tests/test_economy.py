@@ -476,6 +476,7 @@ def test_two_refineries_higher_throughput_takes_more_crude():
     the low-setpoint refinery refines 0."""
     w = World()
     w.reset(seed=42)
+    w.state.treasury = 1_000_000.0  # multi-refinery + drill overrun default budget
     th = next(t for t in w.state.tiles if t.type == "town_hall")
     w.build("refinery", th.x + 1, th.y)
     w.build("refinery", th.x - 1, th.y)
@@ -1022,6 +1023,7 @@ def test_two_disjoint_networks_do_not_share_crude():
     pipeline. A's crude must not reach B's refinery and vice versa."""
     w = World()
     w.reset(seed=42)
+    w.state.treasury = 1_000_000.0  # 2x refinery + 2x drill + pipelines overrun budget
     th = next(t for t in w.state.tiles if t.type == "town_hall")
     # Pick two HC voxels at distinct, non-adjacent (x, y) so each network
     # can have its own well without sharing tiles.

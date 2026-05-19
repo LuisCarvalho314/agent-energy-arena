@@ -65,7 +65,7 @@ CAPEX is paid up-front at build time; OPEX is deducted daily as long as the tile
 | `battery` | 60,000 | 40 | 200 kW rated, 800 kWh storage, 85% round-trip. |
 | `oil_well` | 50,000 base | 100 | Production well. Setpoint 0–200 bbl/day. Drilled via `/drill`; actual CAPEX scales quadratically with `target_z` (see Subsurface). |
 | `injection_well` | 30,000 base | 50 | Injection well. Setpoint 0–200 bbl/day. Power 50 kWh/bbl (shed during brownout/blackout, 2× during curtailment). Drilled via `/drill`; quadratic depth-CAPEX. |
-| `refinery` | 150,000 | 300 | +25 jobs. Up to 500 bbl/day. 200 kWh/bbl. 0.3 t CO₂/bbl. Road-adjacent. |
+| `refinery` | 150,000 | 300 | +25 jobs. Up to 250 bbl/day. 200 kWh/bbl. 0.3 t CO₂/bbl. Road-adjacent. |
 | `pipeline` | 2,000 | 5 | Crude transport. Routes producer→refinery on the 4-connected component. |
 | `town_hall` | n/a | 0 | Placed at start. Immutable. +100 housing, +30 jobs. |
 
@@ -210,8 +210,8 @@ At reset, the world generates 3–7 reservoir blobs (`reservoir_rng` stream):
 1. Center voxel `(x, y, z)` with `z ∈ [4, WORLD_D-2]`.
 2. Radius `r ∈ [3, 6]`.
 3. Within Manhattan distance `r` of center, mark a voxel hydrocarbon-bearing with probability `0.6·(1 - dist/r)`. Each accepted voxel is tagged with the blob's 1-indexed `reservoir_id`; voxels sharing an id form a single 26-connected component.
-4. Per HC voxel: porosity `φ ~ U(0.10, 0.30)`, permeability `k ~ LogU(10, 1000)` mD, oil saturation `S_o ~ U(0.55, 0.80)`, `oil_in_place_bbl = φ · S_o · VOXEL_VOLUME_BBL`. `VOXEL_VOLUME_BBL = 70,000` (per-voxel OIP ranges ~4k–17k bbl, mean ~8.5k).
-5. Total OOIP varies by seed; a typical 36-voxel reservoir holds ~300k bbl — exhaustible by an injection-supported producer within the 10-year game horizon.
+4. Per HC voxel: porosity `φ ~ U(0.10, 0.30)`, permeability `k ~ LogU(10, 1000)` mD, oil saturation `S_o ~ U(0.55, 0.80)`, `oil_in_place_bbl = φ · S_o · VOXEL_VOLUME_BBL`. `VOXEL_VOLUME_BBL = 56,000` (per-voxel OIP ranges ~3k–13k bbl, mean ~7.5k).
+5. Total OOIP varies by seed; a typical 36-voxel reservoir holds ~270k bbl — exhaustible by an injection-supported producer within the 10-year game horizon.
 
 ### Surveys
 
@@ -361,14 +361,14 @@ growth_multiplier = max(0.0, (happiness - 0.3) / 1.2)
 pop = world.population
 
 if jobs ≥ pop and capacity > pop:
-    growth = BASE_GROWTH_RATE · pop · growth_multiplier        # 0.012
+    growth = BASE_GROWTH_RATE · pop · growth_multiplier        # 0.025
     growth = min(growth, capacity - pop, jobs - pop)
     pop   += growth
 
 elif capacity < pop:
     pop = max(capacity, pop - 5)               # housing exodus
-elif jobs < 0.7·pop:
-    pop = max(jobs/0.7, pop · 0.99)            # job-driven decline
+elif pop > jobs:
+    pop = max(jobs, pop · 0.997)               # idle out-migration (0.3%/day)
 elif happiness < 0.3:
     pop = pop · 0.99                            # unhappy decline
 
@@ -386,7 +386,7 @@ State-mutable rates (`world/state.py`):
 |---|---|---|
 | `daily_tax_per_capita` | 4.0 | `tax_revenue = population · rate` |
 | `industrial_revenue_per_day` | 500.0 | per staffed industrial slot |
-| `commercial_revenue_per_resident_per_day` | 1.0 | per resident in 5×5 area × occupancy × staffing |
+| `commercial_revenue_per_resident_per_day` | 2.0 | per resident in 5×5 area × occupancy × staffing |
 | `crude_price_usd_per_bbl` | 40.0 | unrouted crude sale price |
 | `refined_price_usd_per_bbl` | 90.0 | refined product sale price |
 | `grid_price_retail` | 0.08 $/kWh | local power served price |
@@ -418,53 +418,75 @@ Implementation: `world/events.py`. Probabilities are checked once per day, befor
 
 | Event | Daily P | Duration | Effect |
 |---|---:|---|---|
-| `heatwave` | 0.003 | 5 days | residential demand × 1.40 |
-| `plant_failure` | 0.001 per fossil plant, gas-weighted 0.7/0.3 | 3–7 days | affected plant outputs 0 |
-| `fuel_price_shock` | 0.002 | 30 days | gas fuel × 2.5, coal fuel × 1.3 |
-| `demand_surprise` | 0.003 | 10 days | industrial+commercial demand × 1.30 |
-| `regulatory_tightening` | 0.001 | permanent | carbon price × 1.5 (cumulative) |
+| `heatwave` | 0.006 | 5 days | residential demand × 1.40 |
+| `plant_failure` | 0.0028 per gas peaker, 0.0012 per coal plant | 3–7 days | affected plant outputs 0 |
+| `fuel_price_shock` | 0.004 | 30 days | gas fuel × 2.5, coal fuel × 1.3 |
+| `demand_surprise` | 0.006 | 10 days | industrial+commercial demand × 1.30 |
+| `regulatory_tightening` | 0.002 (capped at 3 occurrences) | permanent | carbon price × 1.5 (cumulative) |
 
 Active events surface in `state.active_events`. Expired events move to `state.historical_events`. Scenarios can inject events directly into `active_events` using the same shape (see [SCENARIOS.md](SCENARIOS.md)); the day-loop's "is this event type already active?" guard prevents double-firing.
 
 ## Scoring
 
-Implementation: `world/scoring.py`. The score is a weighted sum of three independent terms over a finished game:
+Implementation: `world/scoring.py`. The score is an absolute number in `[0, 100]` computed from the full per-day trace of `(treasury, population, happiness, cumulative_renewable_served_kwh, cumulative_total_served_kwh)` — no reference agent, no relative comparison.
+
+Three axes (treasury, population, happiness) each decompose into a level / trend / trough triple. Two extra terms (renewable share, solvency) round out the headline.
 
 ```
-P     = final population
-T     = treasury_end - starting_cash                     # may be negative
-R     = cumulative_renewable_served_kwh
-      / max(cumulative_total_served_kwh, 1)
+# Per-day utility maps in [0, 1]
+u_t(day) = 0.5 · (1 + tanh((treasury - starting_cash) / TREASURY_SCALE))   # 5_000_000
+u_p(day) = 1 - exp(-population / POP_TARGET)                                # 1000
+u_h(day) = clip(happiness, 0, HAPPINESS_CEIL) / HAPPINESS_CEIL              # 1.2
 
-P_ref = scripted-agent final population on same seed
-T_ref = scripted-agent treasury delta on same seed
+# Per-axis: level = mean over the run.
+level_X = mean(u_X over all days)
 
-p_term = 0.5 · min(P / max(P_ref, 1), 3.0)               # cap at 1.5
-t_term = 0.4 · 0.5 · (1 + tanh(T / max(T_ref, 1)))       # in [0, 0.4]
-r_term = 0.1 · R                                          # in [0, 0.1]
+# Per-axis: trend lifts level when the signal saturates at its ceiling.
+trend_treasury = max( 0.5 + 0.5·tanh(linear_slope(treasury - starting_cash) / 13_700),
+                      mean(u_t over last n//4 days) )
+trend_pop      = max( 0.5 + 0.5·tanh(daily_CAGR(population) / 0.003),
+                      mean(u_p over last n//4 days) )
+trend_happy    = max( 0.5 + 0.5·tanh(daily_CAGR(happiness)  / 0.001),
+                      mean(u_h over last n//4 days) )
 
-score  = p_term + t_term + r_term
+# Per-axis: trough = utility of the CVaR_5% (mean of the worst 5% of days).
+trough_X = u_X( mean of lowest ceil(0.05·n) values of the raw signal )
+
+# Per-axis composite.
+axis_X = 0.4·level_X + 0.4·trend_X + 0.2·trough_X
+
+# Renewable: linear ramp to RENEWABLE_TARGET = 0.5, clamped at 1.0 above.
+R = min(1.0, renewable_share / 0.5)
+
+# Solvency: fraction of days with treasury > 0.
+solvency = (# days with treasury > 0) / n
+
+score = clip(100 · ( 0.30·axis_treasury
+                   + 0.30·axis_pop
+                   + 0.20·axis_happy
+                   + 0.10·R
+                   + 0.10·solvency ), 0, 100)
 ```
 
 Properties:
 
-- Bankruptcy is punished: very negative `T` collapses `t_term` toward 0.
-- Cash-hoarding saturates: very large `T` plateaus `t_term` near 0.4.
-- The renewable share is the tie-breaker (0–10% of total).
-- An agent matching the scripted baseline exactly scores ≈ `0.5 + 0.2 + R`.
+- Bankruptcy is punished twice: the treasury level term collapses toward 0, and `solvency` drops.
+- Cash-hoarding saturates: the treasury level term plateaus near 1 well below the tanh anchor.
+- Trough terms (CVaR over the worst 5% of days) make late-game survival mandatory — one catastrophic stretch erodes the score even if the level looks fine on average.
+- A signal pinned at its utility ceiling for the whole run still scores 1.0 on the trend term (the trailing-window fallback handles the zero-CAGR case).
+- The renewable share contributes up to 10%; `solvency` contributes up to 10%.
 
-`P_ref`/`T_ref` for the dev seed (42) live in `baselines/seed_42.json` and are read by `GET /score`. Per-`(scenario, seed)` arena baselines live under `baselines/arena/` as regression sentinels for the scripted reference agent; both files are regenerated by `make baselines`. Ranking across submissions is tracked externally.
+`GET /score` reads the on-disk `runs/{run_id}/states.jsonl` trace and computes the score from it directly — there is no reference agent and no baseline lookup. Per-`(scenario, seed)` artifacts under `baselines/arena/`, regenerated by `make baselines`, are kept as byte-match regression sentinels for the scripted reference agent and the arena integration test; they do not feed the score.
 
 ## Determinism contract
 
-A run is fully determined by `(seed, action log)`. The world threads four `numpy.random.Generator` streams from a single seed sequence:
+A run is fully determined by `(seed, action log)`. The world threads three `numpy.random.Generator` streams from a single seed sequence:
 
-- `sim_rng` — weather AR(1), per-hour noise.
+- `sim_rng` — weather AR(1), per-hour noise, reservoir generation at reset, and seismic survey noise.
 - `event_rng` — daily event sampling.
 - `forecast_rng` — `GET /forecast` noise.
-- `reservoir_rng` — one-shot reservoir generation at reset.
 
-Scenarios consume zero RNG draws in v1; introducing the scenario hook does not change the byte trace of a baseline-seed run.
+Reservoir generation consumes its `sim_rng` draws once, before any `/step` is taken, so the per-day weather sequence within a run is unaffected by world dimensions. Scenarios consume zero RNG draws in v1; introducing the scenario hook does not change the byte trace of a baseline-seed run.
 
 Every API call is appended to `runs/{run_id}/actions.jsonl`; every end-of-day state is appended to `runs/{run_id}/states.jsonl`. `python evaluate.py --replay runs/{run_id}` re-runs the action log against a fresh world and asserts byte-identical final state. `tests/test_determinism.py` pins this contract for the scripted agent on seed 42.
 

@@ -1,5 +1,12 @@
 """Append-only action log. Every mutating endpoint call lands here regardless
-of success — the log plus seed reproduces the game byte-for-byte."""
+of success — the log plus seed reproduces the game byte-for-byte.
+
+Filesystem allocation is *lazy*: `__init__` only computes paths; the
+`runs/<run_id>/` directory is created on the first `append` call. A
+log that's constructed and never appended to leaves no trace on
+disk. This keeps every `uvicorn` boot, `create_app(world=...)` test
+helper, and read-only smoke test from littering the real `runs/`
+folder with stub directories."""
 
 from __future__ import annotations
 
@@ -16,7 +23,6 @@ class ActionLog:
         self.root = Path(root)
         self.run_id = run_id or _new_run_id()
         self.dir = self.root / self.run_id
-        self.dir.mkdir(parents=True, exist_ok=True)
         self.path = self.dir / "actions.jsonl"
 
     def append(
@@ -37,6 +43,8 @@ class ActionLog:
             entry["error"] = error
         if result is not None:
             entry["result"] = result
+        # Materialize on first append — see module docstring.
+        self.dir.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, default=_json_default) + "\n")
 

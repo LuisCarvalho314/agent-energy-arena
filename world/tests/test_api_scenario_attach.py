@@ -107,7 +107,10 @@ def test_reset_with_scenario_field(tmp_path: Path) -> None:
     assert world.scenario_dotted_path == FIXTURE_PATH
 
     # Recorder metadata reflects the attached scenario at reset time.
+    # Recorder allocation is now lazy — step once so the new
+    # recorder writes metadata.json before we read it.
     assert world.recorder is not None
+    client.post("/step", json={"days": 1})
     meta = json.loads(world.recorder.metadata_path.read_text())
     assert meta["scenario"] == FIXTURE_PATH
 
@@ -164,11 +167,15 @@ def test_get_run_reflects_reset_reallocation(tmp_path: Path) -> None:
     client, app, world, _log = _client(tmp_path)
     assert world.recorder is not None
     first_id = world.recorder.run_id
+    # Step at least once so the first recorder materializes — a
+    # zero-day recorder no longer leaves a folder behind (slice 03
+    # invariant relaxed to "preserve *recorded* runs").
+    client.post("/step", json={"days": 1})
 
     client.post("/reset", json={"seed": 1})
     payload = client.get("/run").json()
     assert payload["run_id"] != first_id
-    # The previous run folder is preserved on disk (slice 03 invariant).
+    # The previous run folder is preserved on disk.
     assert (Path(world.runs_root or "runs") / first_id).exists()
 
 
@@ -179,7 +186,10 @@ def test_replay_reproduces_session_with_mid_game_scenario_attach(
     tmp_path: Path,
 ) -> None:
     runs_root = tmp_path / "runs"
-    world = World(runs_root=str(runs_root))
+    # Replay (`evaluate.cmd_replay`) rebuilds the world via
+    # `_make_inprocess_client`, which opts in to the starter grid.
+    # The original run must match.
+    world = World(runs_root=str(runs_root), seed_starter_grid=True)
     run_id = world.recorder.run_id if world.recorder is not None else None
     log = ActionLog(root=str(runs_root), run_id=run_id)
     app = create_app(world=world, action_log=log, runs_root=str(runs_root))
@@ -203,7 +213,8 @@ def test_replay_reproduces_session_with_mid_game_scenario_attach(
 
 def test_replay_reproduces_reset_with_scenario(tmp_path: Path) -> None:
     runs_root = tmp_path / "runs"
-    world = World(runs_root=str(runs_root))
+    # See sibling replay test: match the cmd_replay starter-grid setup.
+    world = World(runs_root=str(runs_root), seed_starter_grid=True)
     run_id = world.recorder.run_id if world.recorder is not None else None
     log = ActionLog(root=str(runs_root), run_id=run_id)
     app = create_app(world=world, action_log=log, runs_root=str(runs_root))

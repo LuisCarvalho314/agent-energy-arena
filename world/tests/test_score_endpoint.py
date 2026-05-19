@@ -82,9 +82,10 @@ def test_score_endpoint_with_empty_states_file_returns_empty_payload(tmp_path: P
     w = World(runs_root=str(tmp_path))
     app = create_app(world=w)
     client = TestClient(app)
-    # Recorder created at construction; force a freshly-empty states.jsonl
-    # by touching the file without writing any lines.
+    # Recorder is lazy — force the "states.jsonl exists but is empty"
+    # edge case by materializing the folder and touching the file.
     assert w.recorder is not None
+    w.recorder.dir.mkdir(parents=True, exist_ok=True)
     w.recorder.states_path.write_text("")
     r = client.get("/score")
     assert r.status_code == 200

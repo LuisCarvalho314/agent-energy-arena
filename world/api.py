@@ -286,7 +286,7 @@ def create_app(
     # `actions.jsonl` inside the recorder's run folder so a single run
     # directory holds every artifact for the session.
     if world is None:
-        world = World(runs_root=runs_root)
+        world = World(runs_root=runs_root, seed_starter_grid=True)
     if action_log is None:
         run_id = world.recorder.run_id if world.recorder is not None else None
         action_log = ActionLog(root=runs_root, run_id=run_id)

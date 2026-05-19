@@ -249,6 +249,9 @@ def test_survey_appends_to_voxel_history():
 def test_survey_records_survey_day():
     w = World()
     w.reset(seed=42)
+    # Without a power plant, stepping accrues blackout penalty that
+    # would bankrupt the 300k default budget before survey runs.
+    w.state.treasury = 1_000_000.0
     hc = next(iter(w.subsurface.voxels.values()))
     w.step(days=3)
     w.survey(hc.x, hc.y, size=8)

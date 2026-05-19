@@ -29,9 +29,20 @@ def test_runs_root_none_allocates_no_recorder() -> None:
     assert world.recorder is None
 
 
-def test_recorder_allocates_run_folder_on_init(tmp_path: Path) -> None:
+def test_recorder_construction_does_not_touch_filesystem(tmp_path: Path) -> None:
+    """Filesystem allocation is lazy: a never-stepped recorder leaves
+    no trace under `runs/`. This is what keeps `uvicorn` boots and
+    `create_app(world=...)` test helpers from littering `runs/`."""
     world = World(runs_root=str(tmp_path))
     assert world.recorder is not None
+    assert not world.recorder.dir.exists()
+    assert not world.recorder.metadata_path.exists()
+
+
+def test_recorder_materializes_on_first_step(tmp_path: Path) -> None:
+    world = World(runs_root=str(tmp_path))
+    assert world.recorder is not None
+    world.step(days=1)
     assert world.recorder.dir.exists()
     assert (world.recorder.dir / "metadata.json").exists()
 
@@ -39,6 +50,7 @@ def test_recorder_allocates_run_folder_on_init(tmp_path: Path) -> None:
 def test_metadata_fields_present(tmp_path: Path) -> None:
     world = World(runs_root=str(tmp_path))
     assert world.recorder is not None
+    world.step(days=1)  # trigger materialization
     payload = json.loads(world.recorder.metadata_path.read_text())
     assert payload["run_id"] == world.recorder.run_id
     assert payload["seed"] == world.state.seed
@@ -53,6 +65,7 @@ def test_metadata_captures_attached_scenario(tmp_path: Path) -> None:
 
     world = World(runs_root=str(tmp_path), scenario=MyScenario())
     assert world.recorder is not None
+    world.step(days=1)
     payload = json.loads(world.recorder.metadata_path.read_text())
     assert payload["scenario"] is not None
     assert payload["scenario"].endswith(".MyScenario")
@@ -131,9 +144,28 @@ def test_reset_finalizes_current_and_allocates_fresh(tmp_path: Path) -> None:
     # written by the reset hand-off.
     assert prev_dir.exists()
     assert (prev_dir / "final.json").exists()
-    # New run's metadata reflects the new seed.
+    # New run's metadata reflects the new seed (after the first step
+    # materializes its folder).
+    world.step(days=1)
     new_meta = json.loads(new_recorder.metadata_path.read_text())
     assert new_meta["seed"] == 7
+
+
+def test_reset_without_step_leaves_no_trace(tmp_path: Path) -> None:
+    """A recorder that never recorded a state is invisible on disk —
+    the per-reset folder churn from `uvicorn` boots that the user
+    never plays is what we're guarding against."""
+    world = World(runs_root=str(tmp_path))
+    assert world.recorder is not None
+    prev_dir = world.recorder.dir
+
+    world.reset(seed=7)  # finalize a recorder that never stepped
+
+    assert not prev_dir.exists()
+    # Sibling listing: only the new recorder's path placeholder, also
+    # un-materialized.
+    materialized = [p for p in tmp_path.iterdir() if p.is_dir()]
+    assert materialized == []
 
 
 def test_action_log_lives_in_same_run_folder(tmp_path: Path) -> None:
@@ -154,14 +186,20 @@ def test_action_log_lives_in_same_run_folder(tmp_path: Path) -> None:
     assert (world.recorder.dir / "states.jsonl").exists()
 
 
-def test_recorder_direct_construction_writes_metadata(tmp_path: Path) -> None:
-    """Recorder works standalone; World wiring is one of several callers."""
+def test_recorder_direct_construction_writes_metadata_on_first_step(
+    tmp_path: Path,
+) -> None:
+    """Recorder works standalone; metadata is written on first
+    materialization (record_step). Construction alone touches no disk."""
     rec = Recorder(
         root=str(tmp_path),
         seed=99,
         scenario_name="scenarios.foo",
         session="ui",
     )
+    assert not rec.dir.exists()
+    # Force materialization via the same path record_step takes.
+    rec._materialize()
     payload = json.loads(rec.metadata_path.read_text())
     assert payload["seed"] == 99
     assert payload["scenario"] == "scenarios.foo"
@@ -171,6 +209,7 @@ def test_recorder_direct_construction_writes_metadata(tmp_path: Path) -> None:
 def test_session_marker_propagates_to_metadata(tmp_path: Path) -> None:
     world = World(runs_root=str(tmp_path), session="ui")
     assert world.recorder is not None
+    world.step(days=1)
     payload = json.loads(world.recorder.metadata_path.read_text())
     assert payload["session"] == "ui"
 

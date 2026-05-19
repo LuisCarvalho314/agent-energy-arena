@@ -87,7 +87,7 @@ def _make_inprocess_client(
     # cmd_replay) passes a sibling temp dir so the original run is
     # preserved verbatim.
     root = str(runs_root) if runs_root is not None else "runs"
-    world = World(runs_root=root)
+    world = World(runs_root=root, seed_starter_grid=True)
     run_id = world.recorder.run_id if world.recorder is not None else None
     log = ActionLog(root=root, run_id=run_id)
     app = create_app(world=world, action_log=log)

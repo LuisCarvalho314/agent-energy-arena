@@ -113,6 +113,7 @@ class World:
         session: str = "agent",
         scenario: Scenario | None = None,
         runs_root: str | None = None,
+        seed_starter_grid: bool = False,
     ) -> None:
         self.config: Config = config or load_config()
         self.session: str = session
@@ -130,6 +131,12 @@ class World:
         # is destroyed by a reset. Tests pass `runs_root=None` to skip
         # filesystem side effects; api.py / evaluate.py pass "runs".
         self.runs_root: str | None = runs_root
+        # Production callers (`create_app`, `evaluate.py`) opt in to
+        # a starter coal plant + road bridge at reset so the agent
+        # doesn't have to bootstrap power from a blank field. Unit
+        # tests of individual mechanics leave it False so they keep
+        # a controlled "town hall only" baseline.
+        self._seed_starter_grid: bool = seed_starter_grid
         self.recorder: Recorder | None = None
         self.state: WorldState = WorldState(seed=self.config.world_seed)
         self.sim_rng: np.random.Generator
@@ -240,8 +247,12 @@ class World:
             self.config.world_d,
         )
         self._place_town_hall()
-        # Workforce slice 01: auto-staff the town hall (and any future
-        # reset-time injections) from the starting unemployed pool.
+        if self._seed_starter_grid:
+            self._place_starter_grid()
+        # Workforce slice 01: auto-staff the town hall (and the
+        # starter coal plant when seeded) from the starting
+        # unemployed pool. With 100 starting pop, 30 town-hall + 30
+        # coal-plant jobs leave 40 idle in the production starter.
         hire_to_fill(self.state)
 
     def _place_town_hall(self) -> None:
@@ -259,6 +270,58 @@ class World:
                 housing_capacity=spec.housing_capacity,
                 jobs=spec.jobs,
                 demand_kw=spec.demand_kw,
+            )
+        )
+
+    def _place_starter_grid(self) -> None:
+        """Drop a coal plant + a road bridge to the town hall at reset
+        so the agent doesn't have to bootstrap power from scratch. The
+        capex is *not* charged against starting_cash — the starter
+        layout is a free gift, equivalent to the town hall itself.
+        Normal per-day opex still applies.
+
+        Layout (default 32x32 world): town hall at (16, 16); coal at
+        (8, 16); roads at (9, 16) .. (15, 16). The road chain
+        satisfies the coal plant's road-adjacency requirement and
+        plugs into the town hall (which counts as road via
+        `grid.ROAD_TYPES`)."""
+        tx = self.config.world_w // 2
+        ty = self.config.world_h // 2
+        coal_xy = (tx - 8, ty)
+        road_xs = range(tx - 7, tx)  # (tx-7) inclusive through (tx-1)
+
+        for x in road_xs:
+            spec = TILE_CATALOG["road"]
+            self.state.tiles.append(
+                Tile(
+                    id=self._next_tile_id("road"),
+                    type="road",
+                    x=x,
+                    y=ty,
+                    built_day=0,
+                    operational=True,
+                    capex_paid=0.0,
+                    opex_per_day=spec.opex_per_day,
+                    housing_capacity=spec.housing_capacity,
+                    jobs=spec.jobs,
+                    demand_kw=spec.demand_kw,
+                )
+            )
+
+        coal_spec = TILE_CATALOG["coal_plant"]
+        self.state.tiles.append(
+            Tile(
+                id=self._next_tile_id("coal_plant"),
+                type="coal_plant",
+                x=coal_xy[0],
+                y=coal_xy[1],
+                built_day=0,
+                operational=True,
+                capex_paid=0.0,
+                opex_per_day=coal_spec.opex_per_day,
+                housing_capacity=coal_spec.housing_capacity,
+                jobs=coal_spec.jobs,
+                demand_kw=coal_spec.demand_kw,
             )
         )
 

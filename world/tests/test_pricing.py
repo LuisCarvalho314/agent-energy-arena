@@ -615,8 +615,8 @@ def test_step_accrues_commercial_revenue_using_pre_update_population() -> None:
     use today's lived population, not tomorrow's (post-decay) survivors.
 
     The default starting world has pop=100 and only the town hall (jobs=30).
-    Adding a commercial brings total jobs to 42; jobs < 0.7×pop fires the
-    job-driven decline branch, dropping pop to 99 after the step. The
+    Adding a commercial brings total jobs to 42; pop > jobs fires the
+    idle out-migration branch, dropping pop to 99 after the step. The
     commercial revenue must reflect the pre-update pop=100 occupancy.
     """
     w = World()

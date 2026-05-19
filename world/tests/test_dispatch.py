@@ -553,8 +553,8 @@ def test_blackout_decrements_treasury_per_hour() -> None:
     assert w.state.today.blackout_penalty == pytest.approx(expected_penalty)
     # Net treasury delta = -penalty + tax_revenue (no plants → no opex/fuel/
     # power_revenue). Pop drops under the happiness-velocity model:
-    # h=0 (24h blackout clipped) → velocity = 0.012·100·-1 = -1.2 → 98.8.
-    # Then jobs floor fires: max(30/0.7, 98.8·0.99) = 97.812. int = 97.
+    # h=0 (24h blackout clipped) → velocity = 0.025·100·-1 = -2.5 → 97.5.
+    # Then idle drain fires: max(30, 97.5·0.997) = 97.2075. int = 97.
     expected_delta = -expected_penalty + 97 * 4.0
     assert w.state.treasury - treasury_before == pytest.approx(expected_delta)
 
@@ -578,6 +578,7 @@ def test_curtailment_revenue_includes_export_component() -> None:
 def test_renewables_build_via_api() -> None:
     """All four plant types are accepted via /build."""
     w = _fresh_world()
+    w.state.treasury = 1_000_000.0  # building four plants overruns the 300k default budget
     th = next(t for t in w.state.tiles if t.type == "town_hall")
     # Spread plants out so the wind/gas spacing halo (economy-rebalance 10)
     # doesn't fire on a smoke test that only cares about the build endpoint.
@@ -673,15 +674,16 @@ def test_step_size_invariance_with_plants() -> None:
 # -- Coal-proximity unhappiness ---------------------------------------------
 
 
-def test_coal_proximity_reduces_happiness_for_houses_within_3() -> None:
-    """0.05 × (houses_within_3 / max(1, house_count)) deducted from happiness."""
+def test_coal_proximity_reduces_happiness_for_residences_within_3() -> None:
+    """0.05 × (residences_within_3 / max(1, residence_count)) deducted."""
     w = _fresh_world()
     cx, cy = w.config.world_w // 2, w.config.world_h // 2
-    # Place a house adjacent to town hall, then a coal plant within chebyshev 3.
+    # Place a house adjacent to town hall, then a coal plant within chebyshev
+    # 3 of *both* residences (cx+3 is 3 from town_hall and 2 from house).
     w.build("house", cx + 1, cy)
-    _build_at(w, "coal_plant", cx + 4, cy)  # chebyshev distance = 3 from house.
+    _build_at(w, "coal_plant", cx + 3, cy)
     update_population(w)
-    # All 1 house within 3: penalty = 0.05 * 1 / 1 = 0.05.
+    # Both residences within 3: penalty = 0.05 * 2 / 2 = 0.05.
     # Baseline happiness = 1.0 (no parks, no blackouts) - 0.05 = 0.95.
     assert w.state.happiness == pytest.approx(0.95)
 

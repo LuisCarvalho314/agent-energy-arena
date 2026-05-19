@@ -33,7 +33,7 @@ def test_smoke_reset_step_state_reset(tmp_path: Path) -> None:
     # /state on a fresh world matches the spec defaults.
     s = client.get("/state").json()
     assert s["day"] == 0
-    assert s["treasury"] == 500_000
+    assert s["treasury"] == 300_000
     assert s["population"] == 100
     # Town hall (slice 02) is auto-placed at the world center on /reset.
     assert [t["type"] for t in s["tiles"]] == ["town_hall"]

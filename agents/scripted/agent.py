@@ -427,13 +427,9 @@ class ScriptedAgent(BaseAgent):
         for d in range(1, 7):
             for dx, dy in ((d, 0), (-d, 0), (0, d), (0, -d)):
                 plan.append(("road", cx + dx, cy + dy))
-        # Coal must run AFTER the road cross — needs road adjacency
-        # (economy-rebalance #05). (cx+5, cy) is a road from the loop above;
-        # (cx+5, cy+1) is the coal slot.
-        plan.append(("coal_plant", cx + 5, cy + 1))
         # 6 commercial up-front: 2 from PRD baseline + 4 to defeat the
         # int(pop) growth-truncation trap. With pop=100 and only 2
-        # commercial, jobs<0.7·pop triggers immediate decline.
+        # commercial, jobs<pop triggers immediate idle drain.
         # Each house is paired with a park on a road-adjacent square within
         # Chebyshev radius 2 (happiness-population-driver #02) — the same
         # window `world.population.update_population` uses for the spatial
@@ -451,6 +447,13 @@ class ScriptedAgent(BaseAgent):
             ("house", cx - 2, cy + 1),
             ("park", cx - 3, cy + 1),
         ]
+        # Coal must run AFTER the cheaper civilian builds — bootstrap
+        # budget is 300k and a duplicate coal plant ($200k) starves
+        # houses/commercial out otherwise. The starter grid already
+        # ships an operational coal plant at (cx-8, cy); the
+        # bootstrap coal is the second one earmarked for night-peak
+        # baseload during diversify. Skipped if budget is tight.
+        plan.append(("coal_plant", cx + 5, cy + 1))
 
         for tile_type, x, y in plan:
             if (x, y) in occupied or not _in_bounds(x, y, w, h):

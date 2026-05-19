@@ -1,6 +1,12 @@
-# Agent Energy Arena
+# Agent Energy Game
 
-A small, readable Python simulation of a city's energy economy, wrapped by a FastAPI server, used as a benchmark for autonomous agents. Site renewables, fossil plants, batteries, oil wells, and refineries. Keep the grid balanced hour-by-hour and grow population over a multi-year game. Submit an agent, compare it against the community on shared stress scenarios.
+A small, readable Python simulation of a city's energy economy, wrapped by a FastAPI server, used as an arena for autonomous agents. Site renewables, fossil plants, batteries, oil wells, and refineries. Keep the grid balanced hour-by-hour and grow population over a multi-year game.
+
+## Objective
+
+You run a city. Every simulated hour, supply must match demand or citizens go dark; every simulated day, the books must close in the black or the treasury dies. Over a 10-year horizon (3650 days for evaluation, 365 for manual play), an agent's job is to build a profitable, populous, and reasonably renewable city — without going bankrupt or letting any of those three collapse late in the run.
+
+`GET /score` summarises a finished (or in-progress) run as a single number in `[0, 100]` that rewards sustained level, healthy trend, and survivable troughs across treasury, population, and happiness — with bonuses for renewable share and solvency. A peak-and-collapse run cannot outscore a steady, prosperous one. The mechanics live in [RULES.md](RULES.md); the scoring formula and tunable anchors live in [`world/scoring.py`](world/scoring.py).
 
 The world is the single source of truth. Two clients consume the same API: a browser UI for manual play, and AI agents that play autonomously.
 
@@ -12,6 +18,7 @@ The world is the single source of truth. Two clients consume the same API: a bro
 | Look up an endpoint or response shape | [API.md](API.md) |
 | Write a stress scenario | [SCENARIOS.md](SCENARIOS.md) |
 | Submit an agent | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Read the domain glossary | [CONTEXT.md](CONTEXT.md) |
 
 ## 60-second tour
 
@@ -25,7 +32,7 @@ Each day the world:
 4. Steps 24 hours: weather, dispatch, grid balance, population, finance.
 5. Emits a daily summary; records the end-of-day state.
 
-`GET /score` returns an absolute score in `[0, 100]` derived from the active run's per-day `states.jsonl` on disk. The `trend_aware` formula decomposes treasury, population, and happiness into level / trend / trough triples, then adds a renewable-share term and a solvency term — a peak-and-collapse run cannot outscore a steady prosperous one. Empty / fresh-reset / no-recorder runs return `{"n_days": 0, "score": 0.0, "components": {}}` (HTTP 200) so polling clients can use a single code path. The formula and tunable scale anchors live in [`world/scoring_formula.py`](world/scoring_formula.py).
+`GET /score` returns an absolute score in `[0, 100]` derived from the active run's per-day `states.jsonl` on disk. The formula decomposes treasury, population, and happiness into level / trend / trough triples, then adds a renewable-share term and a solvency term — a peak-and-collapse run cannot outscore a steady prosperous one. Empty / fresh-reset / no-recorder runs return `{"n_days": 0, "score": 0.0, "components": {}}` (HTTP 200) so polling clients can use a single code path. See [`world/scoring.py`](world/scoring.py) for the formula and the tunable scale anchors; [RULES.md §Scoring](RULES.md#scoring) spells out the equations.
 
 ```bash
 curl http://localhost:8000/score
@@ -40,8 +47,6 @@ curl http://localhost:8000/score
 #   }
 # }
 ```
-
-The legacy scripted-baseline scoring path (`make score`, `arena/`) still lives in [`world/scoring.py`](world/scoring.py) and is used by the multi-agent runner; see [RULES.md §Scoring](RULES.md#scoring) for that workflow.
 
 ## Quickstart
 
@@ -58,6 +63,27 @@ Docker is also supported:
 docker compose up                                   # manual play at :8000
 docker compose --profile eval run --rm agent       # evaluate submit/agent.py
 ```
+
+## Talking to the world
+
+Every game state and every mutation is one HTTP call. A bare-hands agent loop is four lines:
+
+```python
+import requests
+
+api = "http://localhost:8000"
+requests.post(f"{api}/reset", json={"seed": 42})
+
+for _ in range(365):
+    state = requests.get(f"{api}/state").json()
+    # ... decide what to build/drill/set, then post actions:
+    requests.post(f"{api}/build", json={"x": 14, "y": 16, "type": "solar_farm"})
+    requests.post(f"{api}/step", json={"days": 1})
+
+print(requests.get(f"{api}/score").json())
+```
+
+The full endpoint list, request/response shapes, and error codes are in [API.md](API.md). The `Agent` protocol in [`agents/base.py`](agents/base.py) wraps the same surface in a typed Python class — `agents/scripted/` is the canonical worked example (rule-based, forms the regression baseline).
 
 ## Running an LLM agent
 
@@ -107,21 +133,33 @@ Full submission protocol: [CONTRIBUTING.md](CONTRIBUTING.md).
 world/              # the simulation, API, and UI (single source of truth)
 agents/             # reference agents + community submissions
   base.py             Agent protocol + BaseAgent helper
-  scripted.py         rule-based reference (forms baselines/seed_42.json)
-  llm_react.py        ReAct agent over OpenAI / Anthropic / Ollama / NVIDIA NIM
-  langgraph_agent.py  LangGraph variant (same provider set)
-  community/          one .py per community submission (created on first PR)
-scenarios/          # one Python file per shipped stress scenario
+  llm.py              shared LLM client factory (OpenAI / Anthropic / Ollama / NVIDIA)
+  api_client.py       thin HTTP wrapper over the world API
+  attach_runtime.py   shared runtime glue for LLM agents
+  prompts.py          system + per-turn prompt templates
+  state_summary.py    state-dict → LLM-friendly text reducer
+  scripted/           rule-based reference (forms baselines/seed_42.json)
+  llm_react/          ReAct agent
+  langgraph_agent/    LangGraph variant (same provider set)
+  community/          one folder per community submission (created on first PR)
+scenarios/          # one Python module per shipped stress scenario
   baseline.py         null scenario on seed 42
   grid_stress.py      sustained low-wind + heatwave cluster
   economy_stress.py   fuel shock + crude collapse + regulatory tightening
 arena/              # multi-(agent, scenario) runner
   runner.py           subprocess-isolated runner; `python -m arena.runner`
   baselines.py        regenerates baselines/arena/<scenario>-<seed>.json
-baselines/          # committed reference scores
-docs/               # internal agent-skill docs + archived design briefs
+  results.py          shared result schema for runner + baselines
+baselines/          # committed reference scores (seed_42.json + arena/<scenario>-<seed>.json)
+docs/               # ADRs (docs/adr/) + agent-skill docs (docs/agents/)
+scripts/            # one-off CLIs (bench_llm.py, score_run.py)
+submit/             # docker-compose `eval` entry point (agent.py + WRITEUP.md)
+tests/              # top-level replay-determinism test
 runs/               # gitignored; one folder per recorded game session
 evaluate.py         # CLI: play one game, or replay a run by ID
+Dockerfile          # base image used by docker-compose for serve + eval
+docker-compose.yml  # `up` for manual play, `--profile eval` for agent runs
+pyproject.toml      # package metadata, ruff/mypy config, dependency extras
 Makefile            # make check, make baselines, make play, make eval, make score
 ```
 
@@ -137,4 +175,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## History
 
-This project began as a 24-hour hackathon scaffold (EAGE Annual 2026 Energy–AI Nexus Hackathon). The original design briefs live under [docs/archive/](docs/archive/) for historical reference. Current docs target the new audience: external agent authors arriving cold.
+This project began as a 24-hour hackathon scaffold (EAGE Annual 2026 Energy–AI Nexus Hackathon). Current docs target the new audience: external agent authors arriving cold.

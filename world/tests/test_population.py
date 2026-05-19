@@ -76,39 +76,39 @@ def test_velocity_zero_at_happiness_1_0():
 def test_velocity_positive_when_happiness_above_neutral():
     """Above neutral: delta = b · pop · (h - 1) > 0 when headroom is abundant."""
     delta = happiness_velocity(100.0, 1.2, capacity=10_000, jobs=10_000)
-    assert delta == pytest.approx(0.012 * 100.0 * 0.2)
+    assert delta == pytest.approx(0.025 * 100.0 * 0.2)
     assert delta > 0
 
 
 def test_velocity_negative_when_happiness_below_neutral():
     """Below neutral: delta < 0 proportional to pop · (1 - h)."""
     delta = happiness_velocity(100.0, 0.7, capacity=10_000, jobs=10_000)
-    assert delta == pytest.approx(0.012 * 100.0 * -0.3)
+    assert delta == pytest.approx(0.025 * 100.0 * -0.3)
     assert delta < 0
 
 
 def test_velocity_max_negative_at_happiness_0():
-    """At h=0 the velocity reaches its maximum-magnitude negative: −0.012 · pop."""
+    """At h=0 the velocity reaches its maximum-magnitude negative: −0.025 · pop."""
     delta = happiness_velocity(500.0, 0.0, capacity=10_000, jobs=10_000)
-    assert delta == pytest.approx(-0.012 * 500.0)
+    assert delta == pytest.approx(-0.025 * 500.0)
 
 
 def test_velocity_max_positive_at_happiness_1_5_with_abundant_headroom():
-    """At h=1.5 (the clip cap) the velocity is +0.006 · pop with abundant headroom."""
+    """At h=1.5 (the clip cap) the velocity is +0.0125 · pop with abundant headroom."""
     delta = happiness_velocity(500.0, 1.5, capacity=10_000, jobs=10_000)
-    assert delta == pytest.approx(0.012 * 500.0 * 0.5)
+    assert delta == pytest.approx(0.025 * 500.0 * 0.5)
 
 
 def test_velocity_upward_clamps_to_jobs_headroom():
     """When `jobs - pop` is the binding constraint, growth is capped at that headroom."""
-    # raw = 0.012 × 1000 × 0.5 = 6.0; jobs headroom is 2.
+    # raw = 0.025 × 1000 × 0.5 = 12.5; jobs headroom is 2.
     delta = happiness_velocity(1000.0, 1.5, capacity=10_000, jobs=1002)
     assert delta == pytest.approx(2.0)
 
 
 def test_velocity_upward_clamps_to_capacity_headroom():
     """When `capacity - pop` is the binding constraint, growth is capped there."""
-    # raw = 0.012 × 1000 × 0.5 = 6.0; capacity headroom is 3.
+    # raw = 0.025 × 1000 × 0.5 = 12.5; capacity headroom is 3.
     delta = happiness_velocity(1000.0, 1.5, capacity=1003, jobs=10_000)
     assert delta == pytest.approx(3.0)
 
@@ -117,11 +117,11 @@ def test_velocity_downward_does_not_clamp_on_jobs_or_capacity():
     """Emigration is not bounded by structural state: a city with abundant
     jobs+housing still bleeds when unhappy."""
     delta = happiness_velocity(500.0, 0.5, capacity=10_000, jobs=10_000)
-    assert delta == pytest.approx(-3.0)
+    assert delta == pytest.approx(0.025 * 500.0 * -0.5)
     # And the same delta when jobs/capacity are exactly at pop (no upward
     # headroom) since the clamps only fire on positive raw.
     delta2 = happiness_velocity(500.0, 0.5, capacity=500, jobs=500)
-    assert delta2 == pytest.approx(-3.0)
+    assert delta2 == pytest.approx(0.025 * 500.0 * -0.5)
 
 
 def test_velocity_asymmetry_max_emigration_is_double_max_growth():
@@ -143,7 +143,7 @@ def test_velocity_neutral_constant_matches_prd():
 
 
 def test_clamps_no_op_when_within_bounds():
-    """pop ≤ capacity and jobs ≥ 0.7·pop → identity."""
+    """pop ≤ capacity and pop ≤ jobs → identity."""
     assert apply_structural_clamps(100.0, capacity=200, jobs=200) == 100.0
     assert apply_structural_clamps(100.5, capacity=200, jobs=200) == 100.5
 
@@ -158,32 +158,31 @@ def test_housing_exodus_floors_at_capacity():
     assert apply_structural_clamps(101.0, capacity=100, jobs=1000) == 100.0
 
 
-def test_jobs_floor_mild_deficit_decays_gradual():
-    """jobs slightly below 0.7·pop: result is max(jobs/0.7, pop·0.99) = pop·0.99."""
-    # pop=100, jobs=69 (just below 0.7·100=70). pop·0.99 = 99 > jobs/0.7 = 98.57.
-    assert apply_structural_clamps(100.0, capacity=1000, jobs=69) == 99.0
+def test_idle_drain_mild_deficit_decays_gradual():
+    """pop slightly above jobs: result is max(jobs, pop·0.997) = pop·0.997."""
+    # pop=100, jobs=99 (one idle). pop·0.997 = 99.7 → max(99, 99.7) = 99.7.
+    assert apply_structural_clamps(100.0, capacity=1000, jobs=99) == pytest.approx(99.7)
 
 
-def test_jobs_floor_snaps_when_deficit_is_severe():
-    """jobs far below 0.7·pop: result snaps to jobs/0.7."""
-    # pop=100, jobs=10. jobs/0.7 ≈ 14.28; pop·0.99 = 99. max = 99.
-    # So even severe deficit decays gradually; only after many ticks does
-    # pop converge toward jobs/0.7. Confirm one-tick step is pop·0.99.
+def test_idle_drain_snaps_to_jobs_when_deficit_is_severe():
+    """pop far above jobs: drains 0.3%/day until pop == jobs."""
+    # pop=100, jobs=10. pop·0.997 = 99.7 > jobs = 10 → first step lands at 99.7.
     result = apply_structural_clamps(100.0, capacity=1000, jobs=10)
-    assert result == 99.0
-    # Iterating drives pop down toward 10/0.7 ≈ 14.28.
+    assert result == pytest.approx(99.7)
+    # Iterating drives pop down to exactly jobs=10 (the floor). 0.997^N · 100
+    # crosses 10 around N≈767; 2000 ticks is well past the floor.
     pop = 100.0
-    for _ in range(500):
+    for _ in range(2000):
         pop = apply_structural_clamps(pop, capacity=1000, jobs=10)
-    assert pop == pytest.approx(10 / 0.7, abs=0.5)
+    assert pop == pytest.approx(10.0, abs=1e-6)
 
 
 def test_both_clamps_interact_when_both_conditions_hold():
-    """pop > capacity AND jobs < 0.7·pop: housing fires first, jobs floor second."""
+    """pop > capacity AND pop > jobs: housing fires first, idle drain second."""
     # pop=200, capacity=100, jobs=50. Step 1: max(100, 195) = 195. Step 2:
-    # 50 < 0.7·195 = 136.5 → max(50/0.7≈71.43, 195·0.99=193.05) = 193.05.
+    # 195 > 50 → max(50, 195·0.997=194.415) = 194.415.
     result = apply_structural_clamps(200.0, capacity=100, jobs=50)
-    assert result == pytest.approx(193.05)
+    assert result == pytest.approx(194.415)
 
 
 # -- update_population: integration tests ------------------------------------
@@ -203,7 +202,7 @@ def test_happy_city_grows_monotonically_over_30_ticks():
         update_population(w)
         assert w.state.population >= prev
         prev = w.state.population
-    # 30 ticks at 0.012 × pop × 0.2: pop should grow noticeably.
+    # 30 ticks at 0.025 × pop × 0.2: pop should grow noticeably.
     assert w.state.population > 500.0
 
 
@@ -220,13 +219,13 @@ def test_neutral_city_holds_population_over_30_ticks():
 
 
 def test_unhappy_city_bleeds_along_closed_form():
-    """h=0.7 with abundant headroom: pop_n+1 = pop_n · (1 + 0.012·(h−1))."""
+    """h=0.7 with abundant headroom: pop_n+1 = pop_n · (1 + 0.025·(h−1))."""
     w = _fresh_world()
     _inject_tile(w, type="commercial", x=5, y=5, jobs=10_000, housing_capacity=10_000)
     # Drive happiness to 0.7 via 6h blackout (1.0 - 0.05·6 = 0.7).
     w.state.population = 1000.0
     expected = 1000.0
-    factor = 1.0 + 0.012 * (0.7 - 1.0)
+    factor = 1.0 + 0.025 * (0.7 - 1.0)
     for _ in range(30):
         w.state.yesterday_blackout_hours = 6.0
         update_population(w)
@@ -238,28 +237,32 @@ def test_unhappy_city_bleeds_along_closed_form():
 def test_fractional_growth_accumulates_across_days():
     """Regression: small daily delta < 1 must accumulate across days.
 
-    A pop-100 city with happiness 1.2 has velocity 0.012·100·0.2 = 0.24/day.
-    After ~5 days the fractional residue crosses 1; integer pop must tick up.
+    A pop-100 city with happiness 1.2 has velocity 0.025·100·0.2 = 0.5/day.
+    After ~2 days the fractional residue crosses 1; integer pop must tick up.
     Under the old `int(pop)` truncation, the city was stuck at exactly 100.
     """
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
-    _inject_tile(w, type="park", x=1, y=1)  # +0.10
-    _inject_tile(w, type="park", x=-1, y=-1)  # +0.10 → h=1.20
+    # Parks within cheb-2 of *both* residences so the per-residence bonus is
+    # +0.20 at each and the average over [town_hall, house] is 0.20.
+    _inject_tile(w, type="park", x=1, y=1)  # near house
+    _inject_tile(w, type="park", x=-1, y=-1)  # near house
+    _inject_tile(w, type="park", x=15, y=15)  # near town_hall (16,16)
+    _inject_tile(w, type="park", x=17, y=17)  # near town_hall
     _inject_tile(w, type="commercial", x=5, y=5, jobs=10_000, housing_capacity=10_000)
     w.state.population = 100.0
 
     update_population(w)
-    # After 1 tick: float pop = 100 + 0.24 = 100.24; int(pop) = 100.
-    assert w.state.population == pytest.approx(100.24)
+    # After 1 tick: h=1.20, delta=0.5 → pop=100.5; int(pop)=100.
+    assert w.state.population == pytest.approx(100.5)
     assert int(w.state.population) == 100
 
     for _ in range(4):
         update_population(w)
-    # After 5 total ticks (compounding): pop = 100 · 1.0024^5 ≈ 101.205.
-    expected = 100.0 * (1.0024**5)
+    # After 5 total ticks (compounding): pop = 100 · 1.005^5 ≈ 102.525.
+    expected = 100.0 * (1.005**5)
     assert w.state.population == pytest.approx(expected, rel=1e-6)
-    assert int(w.state.population) == 101
+    assert int(w.state.population) == 102
 
 
 def test_workforce_hooks_fire_on_integer_transitions():
@@ -277,7 +280,7 @@ def test_workforce_hooks_fire_on_integer_transitions():
         staffed_jobs=0,
     )
     w.state.population = 100.0
-    w.state.yesterday_blackout_hours = 6.0  # h=0.7 → velocity ≈ -0.36
+    w.state.yesterday_blackout_hours = 6.0  # h=0.7 → velocity ≈ -0.75
     employed_before = sum(t.staffed_jobs for t in w.state.tiles) + sum(
         wl.staffed_jobs for wl in w.state.wells
     )
@@ -296,15 +299,17 @@ def test_workforce_hooks_skip_when_no_integer_crossing():
     """Sub-1/day delta that doesn't cross an integer leaves workforce untouched."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    # One park near each residence: house at (0,0) and town_hall at (16,16).
     _inject_tile(w, type="park", x=1, y=1)
+    _inject_tile(w, type="park", x=15, y=15)
     _inject_tile(w, type="commercial", x=5, y=5, jobs=10_000, housing_capacity=10_000)
     w.state.population = 100.0
-    # h = 1.10 → velocity = 0.012·100·0.10 = 0.12/day.
-    # After 1 tick: pop = 100.12, int still 100 → no hire/drain.
+    # h = 1.10 → velocity = 0.025·100·0.10 = 0.25/day.
+    # After 1 tick: pop = 100.25, int still 100 → no hire/drain.
     staff_before = [t.staffed_jobs for t in w.state.tiles]
     update_population(w)
     assert int(w.state.population) == 100
-    assert w.state.population == pytest.approx(100.12)
+    assert w.state.population == pytest.approx(100.25)
     staff_after = [t.staffed_jobs for t in w.state.tiles]
     assert staff_after == staff_before
 
@@ -338,7 +343,7 @@ def test_drain_fires_newest_producer_when_unemployed_zero():
     w = _fresh_world()
     _inject_tile(w, type="industrial", x=2, y=2, jobs=30, built_day=1)
     w.state.population = 60  # employed = 60, unemployed = 0
-    # 8h blackout → h=0.6 → velocity = 0.012·60·-0.4 = -0.288 → pop=59.7; int=59.
+    # 8h blackout → h=0.6 → velocity = 0.025·60·-0.4 = -0.6 → pop=59.4; int=59.
     w.state.yesterday_blackout_hours = 8.0
 
     update_population(w)
@@ -354,7 +359,7 @@ def test_drain_fires_newest_producer_when_unemployed_zero():
 def test_drain_silent_from_unemployed_when_buffer_exists():
     """Unhappy city with unemployed buffer → no firings."""
     w = _fresh_world()
-    # Pad jobs so the structural jobs floor never fires (jobs ≥ 0.7·pop). The
+    # Pad jobs so the structural idle drain never fires (jobs ≥ pop). The
     # injected commercial tile contributes its catalog demand but its
     # staffed_jobs is independent of pop; it just inflates the `jobs` total.
     _inject_tile(w, type="industrial", x=2, y=2, jobs=30, built_day=1)
@@ -364,7 +369,7 @@ def test_drain_silent_from_unemployed_when_buffer_exists():
 
     update_population(w)
 
-    # velocity = 0.012 · 100 · -0.4 = -0.48; pop_after ≈ 99.52 → int=99.
+    # velocity = 0.025 · 100 · -0.4 = -1.0; pop_after = 99.0 → int=99.
     assert int(w.state.population) == 99
     industrial = w.state.tiles[1]
     town_hall = _find_tile(w, "town_hall")
@@ -416,16 +421,21 @@ def test_first_park_within_chebyshev_2_of_house_contributes():
     """First park within cheb-2 of a house adds 0.10 happiness."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    # Park near each residence so the +0.10 contribution is uniform; this
+    # AC pin documents the per-residence rule, not the averaging behavior.
     _inject_tile(w, type="park", x=1, y=1)
+    _inject_tile(w, type="park", x=15, y=15)
 
     update_population(w)
     assert w.state.happiness == pytest.approx(1.10)
 
 
 def test_park_outside_chebyshev_2_contributes_zero():
-    """Park beyond chebyshev-2 of every house contributes nothing."""
+    """Park beyond chebyshev-2 of every residence contributes nothing."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    # Park is far from both house (5,5) at chebyshev=5, and town_hall (16,16)
+    # at chebyshev=11.
     _inject_tile(w, type="park", x=5, y=5)
 
     update_population(w)
@@ -433,21 +443,29 @@ def test_park_outside_chebyshev_2_contributes_zero():
 
 
 def test_park_benefit_caps_at_0_30_per_house():
-    """min(0.30, 0.10 × nearby_parks): 4 parks cap at 0.30."""
+    """min(0.30, 0.10 × nearby_parks): 4 parks cap at 0.30 per residence."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    # 4 parks near house, 4 near town_hall so both residences hit the cap.
     _inject_tile(w, type="park", x=1, y=1)
     _inject_tile(w, type="park", x=2, y=2)
     _inject_tile(w, type="park", x=-1, y=-1)
     _inject_tile(w, type="park", x=-2, y=-2)
+    _inject_tile(w, type="park", x=15, y=15)
+    _inject_tile(w, type="park", x=17, y=17)
+    _inject_tile(w, type="park", x=14, y=14)
+    _inject_tile(w, type="park", x=18, y=18)
 
     update_population(w)
     assert w.state.happiness == pytest.approx(1.30)
 
 
-def test_park_benefit_zero_when_no_houses():
-    """No house tiles → park_benefit=0 regardless of park count."""
+def test_park_benefit_zero_when_no_residences_have_nearby_parks():
+    """Parks placed far from every residence contribute 0."""
     w = _fresh_world()
+    # 50 parks along y=0, x=0..49. Town_hall at (16,16) → cheb dist to any
+    # of these parks is min(16-x, x-16, 16) ≥ 14 for x ∈ [0,49]; well past
+    # cheb-2. No house tile, so the only residence is the town_hall.
     for i in range(50):
         _inject_tile(w, type="park", x=i, y=0)
 
@@ -456,47 +474,53 @@ def test_park_benefit_zero_when_no_houses():
 
 
 def test_industrial_adjacent_to_house_drops_happiness():
-    """Industrial within cheb-2 of a house: -0.03 noise."""
+    """Industrial within cheb-2 of a residence: -0.03 noise on that residence."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
+    # Industrial near house only; town_hall is far away. With 2 residences
+    # the mean noise is (0.03 + 0)/2 = 0.015 → h = 0.985.
     _inject_tile(w, type="industrial", x=1, y=1, jobs=5)
 
     update_population(w)
-    assert w.state.happiness == pytest.approx(0.97)
+    assert w.state.happiness == pytest.approx(0.985)
 
 
 def test_park_between_industrial_and_house_halves_penalty():
-    """Park within cheb-2 of both house and source halves noise to -0.015."""
+    """Park within cheb-2 of both residence and source halves noise to -0.015."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
     _inject_tile(w, type="industrial", x=2, y=2, jobs=5)
     _inject_tile(w, type="park", x=1, y=1)
 
     update_population(w)
-    # park_benefit = 0.10, noise = -0.015 (shielded). h = 1.0 + 0.10 - 0.015 = 1.085.
-    assert w.state.happiness == pytest.approx(1.085)
+    # Per-residence: house gets +0.10 bonus, -0.015 shielded noise.
+    # Town_hall: 0 bonus, 0 noise (industrial is far). Averaged over 2 residences:
+    # park_benefit=0.05, noise=0.0075. h = 1.0 + 0.05 - 0.0075 = 1.0425.
+    assert w.state.happiness == pytest.approx(1.0425)
 
 
 def test_refinery_counts_as_noise_source():
-    """Refinery contributes -0.03 like industrial."""
+    """Refinery contributes -0.03 like industrial, on the affected residence."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
     _inject_tile(w, type="refinery", x=2, y=0, jobs=25)
 
     update_population(w)
-    assert w.state.happiness == pytest.approx(0.97)
+    # Mean over [town_hall (no noise), house (-0.03)] = -0.015 → h = 0.985.
+    assert w.state.happiness == pytest.approx(0.985)
 
 
-def test_noise_averaged_over_multiple_houses():
-    """Noise is mean over houses, not sum."""
+def test_noise_averaged_over_multiple_residences():
+    """Noise is mean over residences, not sum."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
     _inject_tile(w, type="house", x=10, y=10, housing_capacity=10)
     _inject_tile(w, type="industrial", x=1, y=1, jobs=5)
 
     update_population(w)
-    # House 1: -0.03; House 2: 0. Mean = -0.015 → h = 0.985.
-    assert w.state.happiness == pytest.approx(0.985)
+    # 3 residences (town_hall + 2 houses). Only house at (0,0) is within
+    # cheb-2 of the industrial. Mean = 0.03 / 3 = 0.01 → h = 0.99.
+    assert w.state.happiness == pytest.approx(0.99)
 
 
 def test_blackout_hours_lower_happiness():
@@ -526,9 +550,9 @@ def test_happiness_clipped_at_0_when_outage_extreme():
 # -- Negative-treasury happiness penalty -----------------------------------
 
 
-def test_negative_treasury_penalty_constant_is_0_05():
-    """The penalty is a flat 0.05 happiness drop per day in the red."""
-    assert NEGATIVE_TREASURY_HAPPINESS_PENALTY == 0.05
+def test_negative_treasury_penalty_constant_is_0_20():
+    """The penalty is a flat 0.20 happiness drop per day in the red."""
+    assert NEGATIVE_TREASURY_HAPPINESS_PENALTY == 0.20
 
 
 def test_positive_treasury_applies_no_penalty():
@@ -548,16 +572,16 @@ def test_zero_treasury_applies_no_penalty():
     assert w.state.happiness == pytest.approx(1.0)
 
 
-def test_negative_treasury_drops_happiness_by_exactly_0_05():
-    """Treasury < 0 → exactly 0.05 subtracted before the [0, 1.5] clamp."""
+def test_negative_treasury_drops_happiness_by_exactly_0_20():
+    """Treasury < 0 → exactly 0.20 subtracted before the [0, 1.5] clamp."""
     w = _fresh_world()
     w.state.treasury = -1.0
     update_population(w)
-    assert w.state.happiness == pytest.approx(0.95)
+    assert w.state.happiness == pytest.approx(0.80)
 
 
 def test_negative_treasury_penalty_does_not_scale_with_depth():
-    """Penalty is flat: -$1 and -$1,000,000 produce the same 0.05 drop."""
+    """Penalty is flat: -$1 and -$1,000,000 produce the same 0.20 drop."""
     w_shallow = _fresh_world()
     w_shallow.state.treasury = -1.0
     update_population(w_shallow)
@@ -567,11 +591,11 @@ def test_negative_treasury_penalty_does_not_scale_with_depth():
     update_population(w_deep)
 
     assert w_shallow.state.happiness == pytest.approx(w_deep.state.happiness)
-    assert w_deep.state.happiness == pytest.approx(0.95)
+    assert w_deep.state.happiness == pytest.approx(0.80)
 
 
 def test_negative_treasury_penalty_does_not_scale_with_duration():
-    """Sustained negative treasury → same flat 0.05 every day (no accumulation)."""
+    """Sustained negative treasury → same flat 0.20 every day (no accumulation)."""
     w = _fresh_world()
     # Park keeps things lively; tax revenue is small so treasury stays negative.
     _inject_tile(w, type="commercial", x=5, y=5, jobs=10_000, housing_capacity=10_000)
@@ -580,7 +604,7 @@ def test_negative_treasury_penalty_does_not_scale_with_duration():
 
     for _ in range(10):
         update_population(w)
-        assert w.state.happiness == pytest.approx(0.95)
+        assert w.state.happiness == pytest.approx(0.80)
 
 
 def test_negative_to_nonnegative_transition_removes_penalty_immediately():
@@ -588,7 +612,7 @@ def test_negative_to_nonnegative_transition_removes_penalty_immediately():
     w = _fresh_world()
     w.state.treasury = -1.0
     update_population(w)
-    assert w.state.happiness == pytest.approx(0.95)
+    assert w.state.happiness == pytest.approx(0.80)
 
     # Treasury back in the black on the next day.
     w.state.treasury = 100.0
@@ -611,20 +635,25 @@ def test_negative_treasury_penalty_applied_before_lower_clamp():
 
 
 def test_negative_treasury_penalty_applied_before_upper_clamp():
-    """At the upper clamp boundary, a -0.05 step is visible (it doesn't
+    """At the upper clamp boundary, a -0.20 step is visible (it doesn't
     silently push above the cap)."""
     w = _fresh_world()
     _inject_tile(w, type="house", x=0, y=0, housing_capacity=10)
-    # Four parks within cheb-2 → +0.30 (capped). h_raw = 1.30.
+    # Four parks within cheb-2 of house AND four near town_hall so the
+    # per-residence cap fires at both → average +0.30. h_raw = 1.30.
     _inject_tile(w, type="park", x=1, y=1)
     _inject_tile(w, type="park", x=2, y=2)
     _inject_tile(w, type="park", x=-1, y=-1)
     _inject_tile(w, type="park", x=-2, y=-2)
+    _inject_tile(w, type="park", x=15, y=15)
+    _inject_tile(w, type="park", x=17, y=17)
+    _inject_tile(w, type="park", x=14, y=14)
+    _inject_tile(w, type="park", x=18, y=18)
     w.state.treasury = -1.0
 
     update_population(w)
-    # 1.30 - 0.05 = 1.25, well inside the cap.
-    assert w.state.happiness == pytest.approx(1.25)
+    # 1.30 - 0.20 = 1.10, well inside the cap.
+    assert w.state.happiness == pytest.approx(1.10)
 
 
 # -- State surface -----------------------------------------------------------
