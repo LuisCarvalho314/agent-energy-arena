@@ -6,77 +6,139 @@ UI, agents, tests) consume these projectors to turn a single ``Tile`` or
 I/O — given the same ``(tile|well, world)`` they always return the same
 dict. Co-located here so the wire format is one grep target, not 120 lines
 buried at the top of the simulation loop.
+
+Popup economics live here as private ``_EconomicsRow`` helpers
+(``_plant_row``, ``_refinery_row``, …) rather than as public
+``*_for_tile`` helpers in ``world.economy``. The popup row is consumed
+only by ``tile_view``; the economy module owns the dual-consumer helpers
+(industrial / commercial revenue + CO2) that the end-of-day aggregator
+also reads.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from world.catalog import TILE_CATALOG
 from world.economy import (
     COMMERCIAL_RADIUS,
+    REFINERY_CO2_PER_BBL,
+    REFINERY_YIELD,
     commercial_revenue_for_tile,
     industrial_co2_for_tile,
     industrial_revenue_for_tile,
     occupancy_ratio,
-    plant_carbon_cost_for_tile,
-    plant_co2_for_tile,
-    plant_fuel_cost_for_tile,
-    plant_revenue_for_tile,
-    refinery_carbon_cost_for_tile,
-    refinery_co2_for_tile,
-    refinery_revenue_for_tile,
-    well_gross_crude_value_for_tile,
-    well_injection_kwh_per_day,
 )
 from world.power import PLANT_TYPES
-from world.subsurface import injector_supports
+from world.subsurface import INJECTION_KWH_PER_BBL, injector_supports
 
 if TYPE_CHECKING:
     from world.sim import World
-    from world.state import Tile, Well
+    from world.state import Tile, Well, WorldState
+
+
+class _EconomicsRow(NamedTuple):
+    """Popup-row five-tuple for one ``Tile``.
+
+    Spread into the wire-format dict by ``tile_view`` as
+    ``estimated_{revenue,co2,fuel_cost,carbon_cost,net}_per_day``. Defaults
+    are 0.0 across the board so per-type helpers (``_plant_row``,
+    ``_refinery_row``, …) only set the fields they care about.
+    """
+
+    revenue: float = 0.0
+    co2_t: float = 0.0
+    fuel_cost: float = 0.0
+    carbon_cost: float = 0.0
+    net: float = 0.0
+
+
+_ZERO_ROW = _EconomicsRow()
+
+
+def _industrial_row(state: WorldState, tile: Tile) -> _EconomicsRow:
+    revenue = industrial_revenue_for_tile(state, tile)
+    co2_t = industrial_co2_for_tile(tile)
+    carbon_cost = co2_t * state.carbon_price
+    return _EconomicsRow(
+        revenue=revenue,
+        co2_t=co2_t,
+        carbon_cost=carbon_cost,
+        net=revenue - tile.opex_per_day - carbon_cost,
+    )
+
+
+def _commercial_row(state: WorldState, tile: Tile) -> _EconomicsRow:
+    revenue = commercial_revenue_for_tile(state, tile)
+    return _EconomicsRow(
+        revenue=revenue,
+        net=revenue - tile.opex_per_day,
+    )
+
+
+def _plant_row(state: WorldState, tile: Tile) -> _EconomicsRow:
+    """Plant popup row, priced on yesterday's served kWh.
+
+    Non-operational plants return zero revenue/co2/fuel/carbon and
+    ``net = -opex`` so the popup shows the standing OPEX cost of a
+    plant that produced nothing today.
+    """
+    spec = TILE_CATALOG[tile.type]
+    if not tile.operational:
+        return _EconomicsRow(net=-tile.opex_per_day)
+    mwh = tile.kwh_served_yesterday / 1000.0
+    cost_per_mwh = state.plant_fuel_cost_per_mwh.get(tile.type, spec.fuel_cost_per_mwh)
+    revenue = tile.kwh_served_yesterday * state.grid_price_retail
+    fuel_cost = mwh * cost_per_mwh
+    co2_t = mwh * spec.co2_t_per_mwh
+    carbon_cost = co2_t * state.carbon_price
+    return _EconomicsRow(
+        revenue=revenue,
+        co2_t=co2_t,
+        fuel_cost=fuel_cost,
+        carbon_cost=carbon_cost,
+        net=revenue - tile.opex_per_day - fuel_cost - carbon_cost,
+    )
+
+
+def _refinery_row(state: WorldState, tile: Tile) -> _EconomicsRow:
+    """Refinery popup row, priced on yesterday's pinned throughput."""
+    if not tile.operational:
+        return _EconomicsRow(net=-tile.opex_per_day)
+    revenue = tile.current_throughput_bbl_day * REFINERY_YIELD * state.refined_price_usd_per_bbl
+    co2_t = tile.current_throughput_bbl_day * REFINERY_CO2_PER_BBL
+    carbon_cost = co2_t * state.carbon_price
+    return _EconomicsRow(
+        revenue=revenue,
+        co2_t=co2_t,
+        carbon_cost=carbon_cost,
+        net=revenue - tile.opex_per_day - carbon_cost,
+    )
 
 
 def tile_view(t: Tile, world: World) -> dict[str, Any]:
     """Wire-format dict for one ``Tile`` at its current operating state.
 
-    Includes the per-tile economics rows (revenue, CO2, fuel/carbon cost,
-    net) the hover popup surfaces, computed via the public ``economy``
-    helpers so the popup row and the city-wide aggregator share a source
-    of truth. ``residents_in_radius`` on commercial tiles is the
+    Dispatches by tile type to one of the ``_*_row`` helpers for the
+    popup economics; tiles with no economics row (``town_hall``,
+    ``road``, ``house``, ``pipeline``, ``battery``) report a zero row.
+    ``residents_in_radius`` on commercial tiles is the
     capacity-in-radius × city occupancy figure the popup needs and is
     computed locally — it exists only to feed this dict.
     """
+    state = world.state
     extra: dict[str, Any] = {}
-    fuel_cost = 0.0
     if t.type == "industrial":
-        revenue = industrial_revenue_for_tile(world.state, t)
-        co2_t = industrial_co2_for_tile(t)
-        carbon_cost = co2_t * world.state.carbon_price
-        net = revenue - t.opex_per_day - carbon_cost
+        row = _industrial_row(state, t)
     elif t.type == "commercial":
-        revenue = commercial_revenue_for_tile(world.state, t)
-        co2_t = 0.0
-        carbon_cost = 0.0
-        net = revenue - t.opex_per_day
-        extra["residents_in_radius"] = _residents_in_radius(world.state, t)
+        row = _commercial_row(state, t)
+        extra["residents_in_radius"] = _residents_in_radius(state, t)
     elif t.type in PLANT_TYPES:
-        spec = TILE_CATALOG[t.type]
-        revenue = plant_revenue_for_tile(world.state, t)
-        co2_t = plant_co2_for_tile(t, spec)
-        fuel_cost = plant_fuel_cost_for_tile(world.state, t, spec)
-        carbon_cost = plant_carbon_cost_for_tile(world.state, t, spec)
-        net = revenue - t.opex_per_day - fuel_cost - carbon_cost
+        row = _plant_row(state, t)
     elif t.type == "refinery":
-        revenue = refinery_revenue_for_tile(world.state, t)
-        co2_t = refinery_co2_for_tile(t)
-        carbon_cost = refinery_carbon_cost_for_tile(world.state, t)
-        net = revenue - t.opex_per_day - carbon_cost
+        row = _refinery_row(state, t)
     else:
-        revenue = 0.0
-        co2_t = 0.0
-        carbon_cost = 0.0
-        net = 0.0
+        row = _ZERO_ROW
     return {
         "id": t.id,
         "type": t.type,
@@ -95,11 +157,11 @@ def tile_view(t: Tile, world: World) -> dict[str, Any]:
         "kwh_served_yesterday": t.kwh_served_yesterday,
         "setpoint_rate_bbl_day": t.setpoint_rate_bbl_day,
         "current_throughput_bbl_day": t.current_throughput_bbl_day,
-        "estimated_revenue_per_day": revenue,
-        "estimated_co2_per_day": co2_t,
-        "estimated_fuel_cost_per_day": fuel_cost,
-        "estimated_carbon_cost_per_day": carbon_cost,
-        "estimated_net_per_day": net,
+        "estimated_revenue_per_day": row.revenue,
+        "estimated_co2_per_day": row.co2_t,
+        "estimated_fuel_cost_per_day": row.fuel_cost,
+        "estimated_carbon_cost_per_day": row.carbon_cost,
+        "estimated_net_per_day": row.net,
         **extra,
         **(
             {"soc_kwh": t.soc_kwh, "charge_setpoint_kw": t.charge_setpoint_kw}
@@ -112,18 +174,26 @@ def tile_view(t: Tile, world: World) -> dict[str, Any]:
 def well_view(w: Well, world: World) -> dict[str, Any]:
     """Wire-format dict for one ``Well`` at its current operating state.
 
-    ``supports_producer_ids`` mirrors the same-reservoir + Chebyshev > 1
-    gate that the day loop's ``pressure_boost`` resolution uses, so the
-    popup row and the simulator share one source of truth. Producer wells
-    carry an empty list for type symmetry; the UI ignores the field on
-    producer rows.
+    Two branches (production / injection); the math is small enough
+    that inlining beats extracting a row type. ``supports_producer_ids``
+    mirrors the same-reservoir + Chebyshev > 1 gate that the day loop's
+    ``pressure_boost`` resolution uses, so the popup row and the
+    simulator share one source of truth. Producer wells carry an empty
+    list for type symmetry; the UI ignores the field on producer rows.
     """
-    revenue = well_gross_crude_value_for_tile(world.state, w)
-    injection_kwh = well_injection_kwh_per_day(w)
-    # Injection wells: power cost is internalized through plants, so Net is
-    # -opex with no $-cost from kWh consumption.
-    net = revenue - w.opex_per_day if w.type == "production" else -w.opex_per_day
-    supports: list[str] = injector_supports(w, world.state.wells) if w.type == "injection" else []
+    state = world.state
+    if w.type == "production":
+        revenue = w.current_rate_bbl_day * state.crude_price_usd_per_bbl
+        injection_kwh = 0.0
+        net = revenue - w.opex_per_day
+        supports: list[str] = []
+    else:
+        revenue = 0.0
+        injection_kwh = w.current_rate_bbl_day * INJECTION_KWH_PER_BBL
+        # Injection wells: power cost is internalized through plants, so Net is
+        # -opex with no $-cost from kWh consumption.
+        net = -w.opex_per_day
+        supports = injector_supports(w, state.wells)
     return {
         "id": w.id,
         "type": w.type,

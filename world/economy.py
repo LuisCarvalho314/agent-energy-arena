@@ -1,21 +1,22 @@
-"""Tile/well economics: per-facility view helpers, refinery operations, and end-of-day settle.
+"""Civic economics, refinery operations, and end-of-day settle.
 
-Single source of truth for every $/CO2/bbl/kWh helper that prices a
-single ``Tile`` or ``Well``, plus the end-of-day settle/update functions
-that fold those per-facility figures into ``state.today`` and the
-treasury. Constants for industrial/commercial revenue, refinery yield,
-carbon prices, etc. live here too — colocated with both the per-tile
-helpers that read them (popup row) and the day-loop aggregators that
-sum them, so the per-tile and aggregate figures cannot drift.
+Owns the dual-consumer per-tile helpers that both the day-loop
+aggregator and ``world.state_view`` read (industrial / commercial
+revenue, industrial CO2, ``occupancy_ratio``); the end-of-day
+settle/update functions that fold per-facility figures into
+``state.today`` and the treasury; and the refinery operational
+helpers (``refine_one``, ``route_crude``, ``refinery_process_kw``)
+consumed by ``world.pipelines`` and ``world.hourly_tick``.
+
+Per-type popup-only helpers (plant, refinery, well) live in
+``world.state_view`` next to their sole caller; the constants
+(``REFINERY_YIELD``, ``REFINERY_CO2_PER_BBL``, …) stay here as the
+shared source of truth.
 
 The per-facility helpers are pure: pass a tile (or well) plus the
 ambient ``WorldState`` and read back floats. The settle functions
 write to ``state.today`` and ``state.treasury`` and are called from
-``World._advance_one_day``. Refinery operational helpers
-(``refine_one``, ``route_crude``, ``refinery_process_kw``) are also
-here — they share the ``REFINERY_*`` constants with the refinery view
-helpers and are consumed by ``world.pipelines`` and
-``world.hourly_tick`` to drive the sim loop.
+``World._advance_one_day``.
 
 Carbon (PRD §4.7): ``daily_emissions_t`` reads the day's running
 coal/gas/refined totals from ``state.today`` (DayLedger) plus the
@@ -44,12 +45,10 @@ from typing import TYPE_CHECKING
 from world import workforce
 from world.event_effects import fuel_price_shock_bill_mult
 from world.power import PLANT_TYPES, daily_met_demand_fraction
-from world.subsurface import INJECTION_KWH_PER_BBL, PRODUCTION_KWH_PER_BBL
 
 if TYPE_CHECKING:
-    from world.catalog import TileSpec
     from world.sim import World
-    from world.state import Tile, Well, WorldState
+    from world.state import Tile, WorldState
 
 # Refinery (PRD §4.6).
 REFINERY_MAX_BBL_DAY: float = 250.0
@@ -82,9 +81,9 @@ COMMERCIAL_RADIUS: int = 2
 
 
 # ---------------------------------------------------------------------------
-# Per-facility view helpers (pure: tile|well + state -> float).
-# Consumed by ``world.state_view`` (popup row) and by the settle/update
-# functions below (city-wide aggregates).
+# Dual-consumer per-tile helpers (pure: tile + state -> float).
+# Read by both ``world.state_view`` (popup row) and the settle/update
+# functions below (city-wide aggregates), so the two figures cannot drift.
 # ---------------------------------------------------------------------------
 
 
@@ -168,134 +167,6 @@ def commercial_revenue_for_tile(state: WorldState, tile: Tile) -> float:
         * state.commercial_revenue_per_resident_per_day
         * workforce.efficiency(tile)
     )
-
-
-def plant_revenue_for_tile(state: WorldState, tile: Tile) -> float:
-    """Daily revenue estimate for one plant tile at its current operating state.
-
-    Returns ``kwh_served_yesterday × state.grid_price_retail`` for plant
-    tiles (solar / wind / coal / gas). Day 0 has no completed dispatch yet
-    so ``kwh_served_yesterday == 0`` and revenue is 0; from day 1 onwards
-    the value reflects the just-completed day's gross dispatch output.
-
-    Non-plant tiles and non-operational plants return 0.0. This is an
-    estimate — total billable revenue at the city level still goes through
-    the dispatch/curtailment split in ``_advance_one_day``; this helper
-    surfaces a per-plant attribution for the hover popup.
-    """
-    if tile.type not in PLANT_TYPES or not tile.operational:
-        return 0.0
-    return tile.kwh_served_yesterday * state.grid_price_retail
-
-
-def plant_fuel_cost_for_tile(state: WorldState, tile: Tile, spec: TileSpec) -> float:
-    """Daily fuel cost for one plant tile, based on yesterday's served kWh.
-
-    Returns ``kwh_served_yesterday / 1000 × cost_per_mwh`` where
-    ``cost_per_mwh`` is sourced from ``state.plant_fuel_cost_per_mwh`` for
-    coal/gas (the mutable per-type dict scenarios can override) and falls
-    back to ``spec.fuel_cost_per_mwh`` for tiles outside the dict
-    (renewables, which have 0 there anyway). Non-plant tiles and
-    non-operational plants return 0.
-    """
-    if tile.type not in PLANT_TYPES or not tile.operational:
-        return 0.0
-    cost_per_mwh = state.plant_fuel_cost_per_mwh.get(tile.type, spec.fuel_cost_per_mwh)
-    return (tile.kwh_served_yesterday / 1000.0) * cost_per_mwh
-
-
-def plant_co2_for_tile(tile: Tile, spec: TileSpec) -> float:
-    """Daily CO2 in tonnes for one plant tile, based on yesterday's served kWh.
-
-    Returns ``kwh_served_yesterday / 1000 × spec.co2_t_per_mwh``. Renewables
-    have ``co2_t_per_mwh == 0`` so the result is 0. This is the popup-row
-    figure; the city-wide aggregator still drives carbon accounting via the
-    hourly dispatch path.
-    """
-    if tile.type not in PLANT_TYPES or not tile.operational:
-        return 0.0
-    return (tile.kwh_served_yesterday / 1000.0) * spec.co2_t_per_mwh
-
-
-def plant_carbon_cost_for_tile(state: WorldState, tile: Tile, spec: TileSpec) -> float:
-    """Daily carbon cost in $ for one plant tile.
-
-    Reads ``state.carbon_price`` at compute time so regulatory-tightening
-    events flow through into the Net row the same day they fire.
-    """
-    return plant_co2_for_tile(tile, spec) * state.carbon_price
-
-
-def refinery_revenue_for_tile(state: WorldState, tile: Tile) -> float:
-    """Daily revenue estimate for one refinery tile at its current throughput.
-
-    Returns ``current_throughput_bbl_day × REFINERY_YIELD ×
-    state.refined_price_usd_per_bbl``. Non-refinery and non-operational
-    tiles return 0. The throughput pinned on the tile is the previous day's
-    actual refining input (set by ``_advance_one_day`` via ``route_crude``),
-    so the popup row reflects yesterday's accounting window.
-    """
-    if tile.type != "refinery" or not tile.operational:
-        return 0.0
-    return tile.current_throughput_bbl_day * REFINERY_YIELD * state.refined_price_usd_per_bbl
-
-
-def refinery_co2_for_tile(tile: Tile) -> float:
-    """Daily CO2 in tonnes for one refinery tile.
-
-    Returns ``current_throughput_bbl_day × REFINERY_CO2_PER_BBL`` (0.30
-    t/bbl). Non-refinery / non-operational tiles return 0.
-    """
-    if tile.type != "refinery" or not tile.operational:
-        return 0.0
-    return tile.current_throughput_bbl_day * REFINERY_CO2_PER_BBL
-
-
-def refinery_carbon_cost_for_tile(state: WorldState, tile: Tile) -> float:
-    """Daily carbon cost in $ for one refinery tile.
-
-    Reads ``state.carbon_price`` at compute time so regulatory-tightening
-    events flow through into the Net row the same day they fire.
-    """
-    return refinery_co2_for_tile(tile) * state.carbon_price
-
-
-def well_gross_crude_value_for_tile(state: WorldState, well: Well) -> float:
-    """Daily gross crude value estimate for one production well.
-
-    Returns ``current_rate_bbl_day × state.crude_price_usd_per_bbl`` for
-    production wells. Injection wells return 0 (they consume bbl/day, not
-    produce it).
-    """
-    if well.type != "production":
-        return 0.0
-    return well.current_rate_bbl_day * state.crude_price_usd_per_bbl
-
-
-def well_injection_kwh_per_day(well: Well) -> float:
-    """Daily kWh consumed by one injection well at its current pump rate.
-
-    Returns ``current_rate_bbl_day × INJECTION_KWH_PER_BBL``. Production wells
-    return 0. This is informational — the player isn't billed in $ for it
-    (the cost is internalized through whichever plants serve the load), but
-    it's useful in the popup to gauge the operational power draw.
-    """
-    if well.type != "injection":
-        return 0.0
-    return well.current_rate_bbl_day * INJECTION_KWH_PER_BBL
-
-
-def well_production_kwh_per_day(well: Well) -> float:
-    """Daily kWh consumed by one production well at its current lift rate.
-
-    Returns ``current_rate_bbl_day × PRODUCTION_KWH_PER_BBL``. Injection wells
-    return 0. Symmetric to :func:`well_injection_kwh_per_day`; the cost is
-    internalized through dispatch (the player isn't billed $ for it), but the
-    figure is useful in the popup to gauge the operational power draw.
-    """
-    if well.type != "production":
-        return 0.0
-    return well.current_rate_bbl_day * PRODUCTION_KWH_PER_BBL
 
 
 # ---------------------------------------------------------------------------

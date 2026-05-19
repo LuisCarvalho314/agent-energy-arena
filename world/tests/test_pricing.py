@@ -24,7 +24,7 @@ from world.economy import (
     update_civic_revenue,
 )
 from world.sim import World
-from world.state import Tile, Well, WorldState
+from world.state import Tile, WorldState
 
 
 def _default_state() -> WorldState:
@@ -710,46 +710,6 @@ def test_tile_dataclass_has_kwh_served_today_and_yesterday_defaults() -> None:
     assert t.kwh_served_yesterday == 0.0
 
 
-# -- plant_revenue_for_tile unit -------------------------------------------
-
-
-def test_plant_revenue_for_tile_uses_yesterday_times_retail() -> None:
-    from world.config import load_config
-    from world.economy import plant_revenue_for_tile
-
-    cfg = load_config()
-    t = _coal_plant_tile()
-    t.kwh_served_yesterday = 1000.0
-    assert plant_revenue_for_tile(_default_state(), t) == pytest.approx(
-        1000.0 * cfg.grid_price_retail
-    )
-
-
-def test_plant_revenue_for_tile_zero_when_yesterday_zero() -> None:
-    from world.economy import plant_revenue_for_tile
-
-    t = _coal_plant_tile()
-    # Default kwh_served_yesterday == 0 (fresh tile, no /step yet).
-    assert plant_revenue_for_tile(_default_state(), t) == 0.0
-
-
-def test_plant_revenue_for_tile_zero_when_not_operational() -> None:
-    from world.economy import plant_revenue_for_tile
-
-    t = _coal_plant_tile()
-    t.kwh_served_yesterday = 1000.0
-    t.operational = False
-    assert plant_revenue_for_tile(_default_state(), t) == 0.0
-
-
-def test_plant_revenue_for_tile_zero_for_non_plant() -> None:
-    from world.economy import plant_revenue_for_tile
-
-    t = _industrial_tile()
-    t.kwh_served_yesterday = 1000.0  # set the field anyway, helper must gate
-    assert plant_revenue_for_tile(_default_state(), t) == 0.0
-
-
 # -- kwh accumulator behaviour through /step -------------------------------
 
 
@@ -931,135 +891,6 @@ def _gas_peaker_tile(x: int = 0, y: int = 0) -> Tile:
     )
 
 
-# -- plant_fuel_cost_for_tile unit -----------------------------------------
-
-
-def test_plant_fuel_cost_zero_when_no_kwh_served() -> None:
-    from world.economy import plant_fuel_cost_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    # Default kwh_served_yesterday == 0 → no fuel burned, no cost.
-    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == 0.0
-
-
-def test_plant_fuel_cost_scales_with_kwh_and_fuel_cost_per_mwh() -> None:
-    from world.economy import plant_fuel_cost_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    t.kwh_served_yesterday = 2000.0  # 2 MWh
-    # spec.fuel_cost_per_mwh = 20.0 → expected $40/day.
-    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == pytest.approx(
-        2.0 * spec.fuel_cost_per_mwh
-    )
-
-
-def test_plant_fuel_cost_uses_yesterday_not_today() -> None:
-    """Fuel cost is anchored to the just-completed day so the popup row
-    matches the revenue row's accounting window."""
-    from world.economy import plant_fuel_cost_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    t.kwh_served_today = 9999.0  # today's running total — must be ignored
-    t.kwh_served_yesterday = 1000.0
-    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == pytest.approx(
-        1.0 * spec.fuel_cost_per_mwh
-    )
-
-
-def test_plant_fuel_cost_zero_for_renewable() -> None:
-    """Solar/wind have ``fuel_cost_per_mwh == 0`` so the helper returns 0
-    even when the plant served real kWh."""
-    from world.economy import plant_fuel_cost_for_tile
-
-    spec = TILE_CATALOG["solar_farm"]
-    t = _solar_tile()
-    t.kwh_served_yesterday = 5000.0
-    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == 0.0
-
-
-def test_plant_fuel_cost_zero_when_not_operational() -> None:
-    from world.economy import plant_fuel_cost_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    t.kwh_served_yesterday = 1000.0
-    t.operational = False
-    assert plant_fuel_cost_for_tile(_default_state(), t, spec) == 0.0
-
-
-# -- plant_carbon_cost_for_tile unit ---------------------------------------
-
-
-def test_plant_carbon_cost_zero_when_no_kwh_served() -> None:
-    from world.economy import plant_carbon_cost_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    assert plant_carbon_cost_for_tile(state, t, spec) == 0.0
-
-
-def test_plant_carbon_cost_scales_with_kwh_and_intensity_and_price() -> None:
-    from world.economy import plant_carbon_cost_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    t.kwh_served_yesterday = 1000.0  # 1 MWh
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    expected = 1.0 * spec.co2_t_per_mwh * CARBON_PRICE_USD_PER_TON
-    assert plant_carbon_cost_for_tile(state, t, spec) == pytest.approx(expected)
-
-
-def test_plant_carbon_cost_tracks_state_carbon_price() -> None:
-    """A regulatory-tightening event that raises ``state.carbon_price`` must
-    flow into the per-tile carbon cost the same day it fires."""
-    from world.economy import plant_carbon_cost_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    t.kwh_served_yesterday = 1000.0
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    baseline = plant_carbon_cost_for_tile(state, t, spec)
-    state.carbon_price = CARBON_PRICE_USD_PER_TON * 2.0
-    after = plant_carbon_cost_for_tile(state, t, spec)
-    assert after == pytest.approx(baseline * 2.0)
-
-
-def test_plant_carbon_cost_zero_for_renewable() -> None:
-    from world.economy import plant_carbon_cost_for_tile
-
-    spec = TILE_CATALOG["solar_farm"]
-    t = _solar_tile()
-    t.kwh_served_yesterday = 5000.0
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    assert plant_carbon_cost_for_tile(state, t, spec) == 0.0
-
-
-# -- plant_co2_for_tile unit (kWh-based daily tonnage) ---------------------
-
-
-def test_plant_co2_for_tile_uses_yesterday_kwh() -> None:
-    from world.economy import plant_co2_for_tile
-
-    spec = TILE_CATALOG["coal_plant"]
-    t = _coal_plant_tile()
-    t.kwh_served_yesterday = 1000.0
-    # spec.co2_t_per_mwh = 0.9 → 0.9 t/day for 1 MWh.
-    assert plant_co2_for_tile(t, spec) == pytest.approx(spec.co2_t_per_mwh)
-
-
-def test_plant_co2_for_tile_zero_for_renewable() -> None:
-    from world.economy import plant_co2_for_tile
-
-    spec = TILE_CATALOG["solar_farm"]
-    t = _solar_tile()
-    t.kwh_served_yesterday = 5000.0
-    assert plant_co2_for_tile(t, spec) == 0.0
-
-
 # -- /state per-tile economics fields for plants (slice 04) ---------------
 
 
@@ -1138,111 +969,6 @@ def test_state_tile_dict_non_plant_has_zero_fuel_cost_field() -> None:
 # =========================================================================
 # Slice 05 — refinery revenue + carbon cost popup rows
 # =========================================================================
-
-
-def _refinery_tile(
-    rid: str = "ref_1",
-    throughput: float = 0.0,
-    x: int = 0,
-    y: int = 0,
-    staffed: int | None = None,
-) -> Tile:
-    spec = TILE_CATALOG["refinery"]
-    staffed_jobs = spec.jobs if staffed is None else staffed
-    return Tile(
-        id=rid,
-        type="refinery",
-        x=x,
-        y=y,
-        built_day=0,
-        operational=True,
-        capex_paid=spec.capex,
-        opex_per_day=spec.opex_per_day,
-        jobs=spec.jobs,
-        staffed_jobs=staffed_jobs,
-        current_throughput_bbl_day=throughput,
-    )
-
-
-# -- refinery_revenue_for_tile unit ----------------------------------------
-
-
-def test_refinery_revenue_zero_when_throughput_zero() -> None:
-    from world.economy import refinery_revenue_for_tile
-
-    assert refinery_revenue_for_tile(_default_state(), _refinery_tile(throughput=0.0)) == 0.0
-
-
-def test_refinery_revenue_scales_with_throughput() -> None:
-    from world.economy import REFINED_PRICE_USD_PER_BBL, REFINERY_YIELD, refinery_revenue_for_tile
-
-    t = _refinery_tile(throughput=400.0)
-    expected = 400.0 * REFINERY_YIELD * REFINED_PRICE_USD_PER_BBL
-    assert refinery_revenue_for_tile(_default_state(), t) == pytest.approx(expected)
-
-
-def test_refinery_revenue_linear_in_throughput() -> None:
-    from world.economy import refinery_revenue_for_tile
-
-    one = refinery_revenue_for_tile(_default_state(), _refinery_tile(throughput=100.0))
-    two = refinery_revenue_for_tile(_default_state(), _refinery_tile(throughput=200.0))
-    assert two == pytest.approx(2.0 * one)
-
-
-def test_refinery_revenue_zero_for_non_refinery() -> None:
-    from world.economy import refinery_revenue_for_tile
-
-    t = _industrial_tile()
-    t.current_throughput_bbl_day = 400.0  # spurious — ignored
-    assert refinery_revenue_for_tile(_default_state(), t) == 0.0
-
-
-def test_refinery_revenue_zero_when_not_operational() -> None:
-    from world.economy import refinery_revenue_for_tile
-
-    t = _refinery_tile(throughput=400.0)
-    t.operational = False
-    assert refinery_revenue_for_tile(_default_state(), t) == 0.0
-
-
-# -- refinery_carbon_cost_for_tile unit ------------------------------------
-
-
-def test_refinery_carbon_cost_zero_when_throughput_zero() -> None:
-    from world.economy import refinery_carbon_cost_for_tile
-
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    assert refinery_carbon_cost_for_tile(state, _refinery_tile(throughput=0.0)) == 0.0
-
-
-def test_refinery_carbon_cost_scales_with_throughput_and_price() -> None:
-    from world.economy import REFINERY_CO2_PER_BBL, refinery_carbon_cost_for_tile
-
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    t = _refinery_tile(throughput=400.0)
-    expected = 400.0 * REFINERY_CO2_PER_BBL * CARBON_PRICE_USD_PER_TON
-    assert refinery_carbon_cost_for_tile(state, t) == pytest.approx(expected)
-
-
-def test_refinery_carbon_cost_tracks_state_carbon_price() -> None:
-    """A regulatory-tightening event that raises ``state.carbon_price`` must
-    flow into the refinery carbon cost the same day it fires."""
-    from world.economy import refinery_carbon_cost_for_tile
-
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    t = _refinery_tile(throughput=400.0)
-    baseline = refinery_carbon_cost_for_tile(state, t)
-    state.carbon_price = CARBON_PRICE_USD_PER_TON * 2.0
-    assert refinery_carbon_cost_for_tile(state, t) == pytest.approx(baseline * 2.0)
-
-
-def test_refinery_carbon_cost_zero_for_non_refinery() -> None:
-    from world.economy import refinery_carbon_cost_for_tile
-
-    state = WorldState(seed=42, carbon_price=CARBON_PRICE_USD_PER_TON)
-    t = _industrial_tile()
-    t.current_throughput_bbl_day = 400.0
-    assert refinery_carbon_cost_for_tile(state, t) == 0.0
 
 
 # -- /state per-tile economics fields for refineries -----------------------
@@ -1330,111 +1056,6 @@ def test_catalog_economics_exposes_refinery_constants() -> None:
 # =========================================================================
 # Slice 06 — wells revenue + Net popup rows
 # =========================================================================
-
-
-def _production_well(rate: float = 0.0) -> Well:
-    spec = TILE_CATALOG["oil_well"]
-    return Well(
-        id="pw_1",
-        type="production",
-        x=0,
-        y=0,
-        target_z=0,
-        drilled_day=0,
-        setpoint_rate_bbl_day=rate,
-        current_rate_bbl_day=rate,
-        capex_paid=spec.capex,
-        opex_per_day=spec.opex_per_day,
-    )
-
-
-def _injection_well(rate: float = 0.0) -> Well:
-    spec = TILE_CATALOG["injection_well"]
-    return Well(
-        id="iw_1",
-        type="injection",
-        x=0,
-        y=0,
-        target_z=0,
-        drilled_day=0,
-        setpoint_rate_bbl_day=rate,
-        current_rate_bbl_day=rate,
-        capex_paid=spec.capex,
-        opex_per_day=spec.opex_per_day,
-    )
-
-
-# -- well_gross_crude_value_for_tile unit ----------------------------------
-
-
-def test_well_gross_crude_value_production_uses_rate_times_price() -> None:
-    from world.economy import well_gross_crude_value_for_tile
-    from world.subsurface import CRUDE_PRICE_USD_PER_BBL
-
-    well = _production_well(rate=150.0)
-    expected = 150.0 * CRUDE_PRICE_USD_PER_BBL
-    assert well_gross_crude_value_for_tile(_default_state(), well) == pytest.approx(expected)
-
-
-def test_well_gross_crude_value_zero_when_rate_zero() -> None:
-    from world.economy import well_gross_crude_value_for_tile
-
-    assert well_gross_crude_value_for_tile(_default_state(), _production_well(rate=0.0)) == 0.0
-
-
-def test_well_gross_crude_value_zero_for_injection_well() -> None:
-    from world.economy import well_gross_crude_value_for_tile
-
-    well = _injection_well(rate=200.0)
-    assert well_gross_crude_value_for_tile(_default_state(), well) == 0.0
-
-
-# -- well_injection_kwh_per_day unit ---------------------------------------
-
-
-def test_well_injection_kwh_scales_with_rate() -> None:
-    from world.economy import well_injection_kwh_per_day
-    from world.subsurface import INJECTION_KWH_PER_BBL
-
-    well = _injection_well(rate=100.0)
-    assert well_injection_kwh_per_day(well) == pytest.approx(100.0 * INJECTION_KWH_PER_BBL)
-
-
-def test_well_injection_kwh_zero_when_rate_zero() -> None:
-    from world.economy import well_injection_kwh_per_day
-
-    assert well_injection_kwh_per_day(_injection_well(rate=0.0)) == 0.0
-
-
-def test_well_injection_kwh_zero_for_production_well() -> None:
-    from world.economy import well_injection_kwh_per_day
-
-    well = _production_well(rate=150.0)
-    assert well_injection_kwh_per_day(well) == 0.0
-
-
-# -- well_production_kwh_per_day unit --------------------------------------
-
-
-def test_well_production_kwh_scales_with_rate() -> None:
-    from world.economy import well_production_kwh_per_day
-    from world.subsurface import PRODUCTION_KWH_PER_BBL
-
-    well = _production_well(rate=120.0)
-    assert well_production_kwh_per_day(well) == pytest.approx(120.0 * PRODUCTION_KWH_PER_BBL)
-
-
-def test_well_production_kwh_zero_when_rate_zero() -> None:
-    from world.economy import well_production_kwh_per_day
-
-    assert well_production_kwh_per_day(_production_well(rate=0.0)) == 0.0
-
-
-def test_well_production_kwh_zero_for_injection_well() -> None:
-    from world.economy import well_production_kwh_per_day
-
-    well = _injection_well(rate=200.0)
-    assert well_production_kwh_per_day(well) == 0.0
 
 
 def test_production_kwh_per_bbl_is_15() -> None:
@@ -1555,25 +1176,19 @@ def test_state_carries_pricing_default_fields() -> None:
 
 
 def test_pricing_state_fields_drive_default_accruals() -> None:
-    """With default state values, per-day fuel-cost, refinery revenue,
-    industrial revenue, commercial revenue, tax revenue, and blackout-
-    penalty accrual all read through state and match the pre-refactor
-    figures derived from the old module-level constants. Asserts on
-    helper outputs against a hand-built fixture so a future scenario can
-    flip a state field and observe an isolated accrual change."""
+    """With default state values, industrial revenue, commercial revenue,
+    and the tax field accrual all read through state and match the
+    pre-refactor figures derived from the old module-level constants. A
+    future scenario can flip a state field and observe an isolated
+    accrual change. Plant / refinery / well popup math is covered by the
+    ``state_dict`` integration tests in this file."""
     from world.economy import (
         COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY,
         INDUSTRIAL_REVENUE_PER_DAY,
-        REFINED_PRICE_USD_PER_BBL,
         commercial_revenue_for_tile,
         industrial_revenue_for_tile,
-        plant_fuel_cost_for_tile,
-        plant_revenue_for_tile,
-        refinery_revenue_for_tile,
-        well_gross_crude_value_for_tile,
     )
     from world.population import DAILY_TAX_PER_CAPITA
-    from world.subsurface import CRUDE_PRICE_USD_PER_BBL
 
     state = _default_state()
 
@@ -1614,45 +1229,6 @@ def test_pricing_state_fields_drive_default_accruals() -> None:
         COMMERCIAL_REVENUE_PER_RESIDENT_PER_DAY
     )
     state.tiles = []
-
-    # Plant revenue: 1000 kWh served × state.grid_price_retail.
-    plant = _coal_plant_tile()
-    plant.kwh_served_yesterday = 1000.0
-    assert plant_revenue_for_tile(state, plant) == pytest.approx(1000.0 * state.grid_price_retail)
-
-    # Plant fuel cost: 1000 kWh = 1 MWh × state.plant_fuel_cost_per_mwh[coal].
-    expected_fuel = 1.0 * state.plant_fuel_cost_per_mwh["coal_plant"]
-    coal_spec = TILE_CATALOG["coal_plant"]
-    assert plant_fuel_cost_for_tile(state, plant, coal_spec) == pytest.approx(expected_fuel)
-
-    # Refinery revenue: throughput × yield × state.refined_price.
-    refinery = Tile(
-        id="ref",
-        type="refinery",
-        x=0,
-        y=0,
-        built_day=0,
-        operational=True,
-        current_throughput_bbl_day=100.0,
-    )
-    expected_ref = 100.0 * 0.85 * state.refined_price_usd_per_bbl
-    assert refinery_revenue_for_tile(state, refinery) == pytest.approx(expected_ref)
-    assert state.refined_price_usd_per_bbl == pytest.approx(REFINED_PRICE_USD_PER_BBL)
-
-    # Well crude value: rate × state.crude_price.
-    well = Well(
-        id="w1",
-        type="production",
-        x=0,
-        y=0,
-        target_z=5,
-        drilled_day=0,
-        current_rate_bbl_day=50.0,
-    )
-    assert well_gross_crude_value_for_tile(state, well) == pytest.approx(
-        50.0 * state.crude_price_usd_per_bbl
-    )
-    assert state.crude_price_usd_per_bbl == pytest.approx(CRUDE_PRICE_USD_PER_BBL)
 
     # Tax: state.daily_tax_per_capita × int(pop) accumulates inside
     # update_population. Verify the constant equality (DAILY_TAX_PER_CAPITA).
