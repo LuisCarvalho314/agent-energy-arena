@@ -2405,6 +2405,7 @@
   // The loader explicitly excludes NullScenario itself, so we cannot
   // post `world.scenario.NullScenario` directly.
   const scenarioCurrentEl = document.getElementById("scenario-current");
+  const scenarioDescriptionEl = document.getElementById("scenario-description");
   const scenarioChooseBtn = document.getElementById("scenario-choose");
   const scenarioDetachBtn = document.getElementById("scenario-detach");
   const scenarioModal = document.getElementById("scenario-attach-modal");
@@ -2413,12 +2414,27 @@
   const scenarioCancelBtn = document.getElementById("scenario-attach-cancel");
   const DETACH_DOTTED_PATH = "scenarios.baseline";
 
+  function renderScenarioDescription(description) {
+    if (!scenarioDescriptionEl) return;
+    const text = typeof description === "string" ? description.trim() : "";
+    if (text) {
+      scenarioDescriptionEl.textContent = text;
+      scenarioDescriptionEl.classList.remove("hidden");
+    } else {
+      scenarioDescriptionEl.textContent = "";
+      scenarioDescriptionEl.classList.add("hidden");
+    }
+  }
+
   async function refreshScenarioReadout() {
     if (!scenarioCurrentEl) return;
     if (isReplay()) {
       const md = replay.metadata || {};
       const scenario = md.scenario == null ? "(none)" : md.scenario;
       scenarioCurrentEl.textContent = scenario;
+      // Replay metadata.json doesn't carry the live class docstring;
+      // hide the plan rather than render a stale one.
+      renderScenarioDescription(null);
       return;
     }
     try {
@@ -2427,6 +2443,7 @@
       const body = await res.json();
       const path = body.dotted_path;
       scenarioCurrentEl.textContent = path == null ? "(none)" : path;
+      renderScenarioDescription(body.description);
     } catch (err) {
       // ignore — boot race
     }

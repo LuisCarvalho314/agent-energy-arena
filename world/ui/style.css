@@ -159,8 +159,7 @@ body.peeking #sublist .modeItem {
 body.replay-mode #next-day,
 body.replay-mode #buildlist .buildItem,
 body.replay-mode #sublist .modeItem,
-body.replay-mode #scenario-input,
-body.replay-mode #scenario-attach,
+body.replay-mode #scenario-choose,
 body.replay-mode #scenario-detach {
   opacity: 0.4;
   pointer-events: none;
@@ -201,17 +200,7 @@ body.replay-mode #scenario-detach {
   align-items: center;
   margin-bottom: 0.5rem;
 }
-#scenario-input {
-  flex: 1;
-  padding: 0.4rem 0.6rem;
-  background: #1f2229;
-  color: #e6e7ea;
-  border: 1px solid #393d46;
-  border-radius: 4px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 0.8rem;
-}
-#scenario-attach, #scenario-detach {
+.scenario-btn {
   padding: 0.4rem 0.8rem;
   background: #2a2d34;
   color: #e6e7ea;
@@ -220,10 +209,21 @@ body.replay-mode #scenario-detach {
   cursor: pointer;
   font-size: 0.85rem;
 }
-#scenario-attach:hover, #scenario-detach:hover { background: #393d46; }
-#scenario-attach:disabled, #scenario-detach:disabled {
-  color: #5a5d65; cursor: not-allowed;
+.scenario-btn:hover { background: #393d46; }
+.scenario-btn:disabled { color: #5a5d65; cursor: not-allowed; }
+.scenario-description {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem 0.6rem;
+  background: #1f2229;
+  border: 1px solid #2a2d34;
+  border-radius: 4px;
+  color: #c8cad0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
 }
+.scenario-description.hidden { display: none; }
 .scenario-hint {
   font-size: 0.7rem;
   color: #8b8f9a;

@@ -371,10 +371,13 @@ def create_app(
         world = app.state.world
         # NullScenario surfaces as None for downstream consumers (UI,
         # evaluate.py replay) so they can distinguish "no scenario
-        # attached" from a real dotted path.
+        # attached" from a real dotted path. `description` mirrors that:
+        # null when nothing is attached, otherwise the scenario class's
+        # docstring (the "plan" the UI prints once a scenario is loaded).
         if isinstance(world.scenario, NullScenario):
-            return {"dotted_path": None}
-        return {"dotted_path": world.scenario_dotted_path}
+            return {"dotted_path": None, "description": None}
+        doc = (type(world.scenario).__doc__ or "").strip() or None
+        return {"dotted_path": world.scenario_dotted_path, "description": doc}
 
     @app.post("/scenario")
     def post_scenario(body: ScenarioBody) -> dict[str, Any]:
