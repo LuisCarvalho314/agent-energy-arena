@@ -18,7 +18,7 @@ Each team of 3 has to submit the following:
 
 ## Quickstart
 
-Launch the world in Docker: `docker compose up`, then open `localhost:8000` in a browser and play the game yourself.
+Launch the world in Docker: `docker compose up --build`, then open `localhost:8000` in a browser and play the game yourself.
 
 or install in virtual environment and run the server:
 

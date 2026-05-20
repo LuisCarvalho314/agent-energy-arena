@@ -14,7 +14,6 @@ RUN pip install --upgrade pip setuptools wheel && \
 
 COPY world ./world
 COPY agents ./agents
-COPY baselines ./baselines
 COPY evaluate.py ./
 
 EXPOSE 8000
