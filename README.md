@@ -106,6 +106,9 @@ Makefile            # make check, make serve, make install
 
 Approximate sizes: `world/` ~3000 lines, `agents/` ~1500 lines, tests ~3000 lines. Every file is meant to be readable in one sitting.
 
+## Credits
+The `agent-energy-arena` is originally developed by Oleg Ovcharenko for the EAGE 2026 Hackathon organized by EAGE AI Committee. The idea of the agentic energy challenge in a virtual tile-based world is by Roderick Perez.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
