@@ -16,6 +16,8 @@ Each team of 3 has to submit the following:
 2. A contribution to the world. This can be a new world component, mechanics, or something that makes the world more interesting (leverage your domain knowledge).
 3. A detailed analysis of the agent's behavior and the world balance.
 
+![gameplay_gif](docs/energy_game_gameplay-optimized.gif)
+
 ## Quickstart
 
 Launch the world in Docker: `docker compose up --build`, then open `localhost:8000` in a browser and play the game yourself.
