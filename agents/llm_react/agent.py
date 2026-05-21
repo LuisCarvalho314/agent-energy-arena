@@ -36,9 +36,10 @@ from typing import Any
 from agents.api_client import ApiClient
 from agents.attach_runtime import drive_one_turn
 from agents.base import BaseAgent
-from agents.llm import LLMClient, ToolCall, make_llm_from_env
+from agents.llm import LLMClient, make_llm_from_env
 from agents.prompts import ACTION_TOOLS, SYSTEM_PROMPT
 from agents.state_summary import summarize_state
+from agents.tool_dispatch import dispatch_tool_call
 
 TOKEN_BUDGET: int = 1_000_000
 TOKEN_WARN_THRESHOLD: int = 800_000  # 80% of budget — warn at this point
@@ -63,7 +64,6 @@ class LLMReactAgent(BaseAgent):
         action_tools: list[dict[str, Any]] | None = None,
         forecast_hours: int = 24,
         max_tokens_per_turn: int = MAX_TOKENS_PER_TURN,
-        stderr: Any = None,
     ) -> None:
         super().__init__(api, seed=seed)
         self.llm: LLMClient = llm if llm is not None else make_llm_from_env()
@@ -74,7 +74,6 @@ class LLMReactAgent(BaseAgent):
         self.cumulative_tokens: int = 0
         self.turns: int = 0
         self._warned_budget: bool = False
-        self._stderr = stderr if stderr is not None else sys.stderr
 
     # -- Attach hook ------------------------------------------------------
 
@@ -111,7 +110,7 @@ class LLMReactAgent(BaseAgent):
             print(
                 f"WARNING: cumulative LLM tokens {self.cumulative_tokens:,} "
                 f"exceeded 80% of {TOKEN_BUDGET:,} budget",
-                file=self._stderr,
+                file=sys.stderr,
             )
 
     # -- Main loop --------------------------------------------------------
@@ -123,7 +122,10 @@ class LLMReactAgent(BaseAgent):
         state = self.api.state()
         game_days = int(state["config"].get("active_game_days", state["config"]["game_days"]))
         while state["day"] < game_days:
-            forecast = self._safe_forecast()
+            try:
+                forecast: list[dict[str, Any]] | None = self.api.forecast(hours=self.forecast_hours)
+            except RuntimeError:
+                forecast = None
             stepped_days = self.decide(state, forecast, game_days=game_days)
             # If decide returned 0, the LLM ran out of budget or returned
             # nothing actionable — force a step so the world advances.
@@ -142,10 +144,13 @@ class LLMReactAgent(BaseAgent):
         *,
         game_days: int,
     ) -> int:
-        """One turn: prompt → tool calls → dispatch → step.
+        """One turn: prompt → walk tool calls → dispatch → step.
 
-        Returns the number of days actually stepped (0 means caller
-        should issue a fallback step).
+        Mutator tool calls route through `dispatch_tool_call`. `step`
+        terminates the turn after advancing the world by a (1..7)
+        clamped day count, bounded by the remaining game days. Returns
+        the days actually stepped (0 means the caller should issue a
+        fallback step).
         """
         user_msg = summarize_state(state, forecast)
         response = self.llm.chat(
@@ -157,90 +162,30 @@ class LLMReactAgent(BaseAgent):
         self._record_usage(response.usage.total)
 
         remaining_days = game_days - int(state["day"])
-        return self._dispatch_calls(response.tool_calls, remaining_days)
-
-    # -- Tool dispatch ----------------------------------------------------
-
-    def _dispatch_calls(self, calls: list[ToolCall], remaining_days: int) -> int:
-        """Apply each tool call in order. Stops at the first `step` (which
-        ends the turn). Returns the days actually advanced, or 0 if no
-        step was emitted (the play_game loop will then issue a fallback)."""
-        stepped = 0
-        for call in calls:
+        for call in response.tool_calls:
             if call.name == "step":
-                days = _clamp_days(call.arguments.get("days", DEFAULT_STEP_DAYS_FALLBACK))
+                try:
+                    days = int(call.arguments.get("days", DEFAULT_STEP_DAYS_FALLBACK))
+                except (TypeError, ValueError):
+                    days = DEFAULT_STEP_DAYS_FALLBACK
+                days = max(1, min(7, days))
                 days = min(days, max(1, remaining_days))
                 try:
                     self.api.step(days=days)
-                    stepped = days
+                    return days
                 except RuntimeError:
                     # /step rejected (e.g., bad days value past validation).
                     # Fall through; play_game emits a fallback.
-                    pass
-                return stepped
+                    return 0
             # Non-step tools: dispatch and continue. Catch the world's
             # rejection envelopes (RuntimeError from the ApiClient parse
-            # helper) so a bad arg from the LLM doesn't crash the game.
+            # helper) and malformed-argument errors (KeyError, TypeError,
+            # ValueError) so a bad call from the LLM doesn't crash the turn.
             try:
-                self._dispatch_one(call)
-            except RuntimeError:
+                dispatch_tool_call(self.api, call)
+            except (RuntimeError, KeyError, TypeError, ValueError):
                 continue
-            except (KeyError, TypeError, ValueError):
-                # Malformed arguments from the model — skip and keep going.
-                continue
-        return stepped
-
-    def _dispatch_one(self, call: ToolCall) -> None:
-        args = call.arguments
-        name = call.name
-        if name == "build":
-            self.api.build(
-                tile_type=str(args["tile_type"]),
-                x=int(args["x"]),
-                y=int(args["y"]),
-            )
-        elif name == "demolish":
-            self.api.demolish(x=int(args["x"]), y=int(args["y"]))
-        elif name == "survey":
-            self.api.survey(
-                x=int(args["x"]),
-                y=int(args["y"]),
-                size=int(args.get("size", 8)),
-            )
-        elif name == "drill":
-            self.api.drill(
-                x=int(args["x"]),
-                y=int(args["y"]),
-                target_z=int(args["target_z"]),
-                well_type=str(args.get("well_type", "production")),
-            )
-        elif name == "set_well_rate":
-            self.api.control_well(
-                well_id=str(args["well_id"]),
-                rate_bbl_day=float(args["rate_bbl_day"]),
-            )
-        elif name == "set_refinery_rate":
-            self.api.control_refinery(
-                refinery_id=str(args["refinery_id"]),
-                rate_bbl_day=float(args["rate_bbl_day"]),
-            )
-        # Unknown tool names: silently skip — the model hallucinated.
-
-    # -- Helpers ----------------------------------------------------------
-
-    def _safe_forecast(self) -> list[dict[str, Any]] | None:
-        try:
-            return self.api.forecast(hours=self.forecast_hours)
-        except RuntimeError:
-            return None
-
-
-def _clamp_days(raw: Any) -> int:
-    try:
-        days = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_STEP_DAYS_FALLBACK
-    return max(1, min(7, days))
+        return 0
 
 
 # ---------- CLI driver ------------------------------------------------------

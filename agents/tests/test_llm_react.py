@@ -13,6 +13,7 @@ of scripted) is HITL — see issue 15. AFK coverage focuses on:
 from __future__ import annotations
 
 import io
+import sys
 from typing import Any
 
 import pytest
@@ -470,7 +471,9 @@ def test_cumulative_tokens_accumulate_across_turns() -> None:
     assert agent.cumulative_tokens == 100 + 20 + 110 + 22
 
 
-def test_token_budget_warning_logs_to_stderr_once_over_threshold() -> None:
+def test_token_budget_warning_logs_to_stderr_once_over_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """At 800K cumulative tokens the agent emits a single stderr warning.
     Subsequent turns do not re-warn (would be noise)."""
     api, _ = _client()
@@ -479,7 +482,8 @@ def test_token_budget_warning_logs_to_stderr_once_over_threshold() -> None:
     later = _resp([ToolCall("step", {"days": 1})], in_tok=10, out_tok=10)
     mock = MockLLM(responses=[big, later, later])
     buf = io.StringIO()
-    agent = LLMReactAgent(api, seed=42, llm=mock, stderr=buf)
+    monkeypatch.setattr(sys, "stderr", buf)
+    agent = LLMReactAgent(api, seed=42, llm=mock)
     state = api.state()
     agent.decide(state, forecast=None, game_days=10)  # crosses threshold
     agent.decide(api.state(), forecast=None, game_days=10)  # still over, no re-warn
@@ -488,12 +492,13 @@ def test_token_budget_warning_logs_to_stderr_once_over_threshold() -> None:
     assert output.count("exceeded 80%") == 1
 
 
-def test_token_budget_no_warning_under_threshold() -> None:
+def test_token_budget_no_warning_under_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
     api, _ = _client()
     api.reset(seed=42)
     mock = MockLLM(responses=[_resp([ToolCall("step", {"days": 1})], in_tok=100, out_tok=20)])
     buf = io.StringIO()
-    agent = LLMReactAgent(api, seed=42, llm=mock, stderr=buf)
+    monkeypatch.setattr(sys, "stderr", buf)
+    agent = LLMReactAgent(api, seed=42, llm=mock)
     agent.decide(api.state(), forecast=None, game_days=10)
     assert buf.getvalue() == ""
 
