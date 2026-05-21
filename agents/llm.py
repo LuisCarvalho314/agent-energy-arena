@@ -1,27 +1,31 @@
 """Provider-agnostic LLM client for the ReAct agent.
 
-Four concrete adapters ship: `OpenAILLM` (OpenAI chat-completions REST,
+Five concrete adapters ship: `OpenAILLM` (OpenAI chat-completions REST,
 also compatible with any vendor that mirrors the same wire format),
 `AnthropicLLM` (Anthropic Messages REST), `OllamaLLM` (local Ollama
-`/api/chat`), and `NvidiaLLM` (NVIDIA NIM via the recommended
-`langchain_nvidia_ai_endpoints.ChatNVIDIA` client). The first three
-speak raw `httpx` — no vendor SDK. The NVIDIA adapter is the one
-exception: NVIDIA recommends ChatNVIDIA for their hosted NIM and
-private deployments, so we lazy-import it (gated behind the `[llm]`
-extra) rather than reproduce its auth and routing quirks.
+`/api/chat`), `NvidiaLLM` (hosted NVIDIA NIM via the recommended
+`langchain_nvidia_ai_endpoints.ChatNVIDIA` client), and `NimLLM`
+(self-hosted NIM container — any OpenAI-compatible inference server
+that exposes `/v1/chat/completions` without auth). Four of them
+speak raw `httpx`; only the hosted-NVIDIA adapter pulls in a vendor
+SDK because NVIDIA's own routing/auth quirks live there.
 
 The translation layer normalizes every vendor's tool-call shape into
 the same flat `ToolCall(name, arguments=dict)` so `LLMReactAgent`
 doesn't care which vendor is on the other end.
 
 Configure via env:
-  LLM_PROVIDER     "openai" (default) | "anthropic" | "ollama" | "nvidia"
+  LLM_PROVIDER     "openai" (default) | "anthropic" | "ollama" |
+                   "nvidia" | "nim"
   LLM_BASE_URL     override the vendor's default base URL
   LLM_API_KEY      bearer / x-api-key value (required for
-                   openai/anthropic/nvidia; not used by ollama)
+                   openai/anthropic/nvidia; not used by ollama/nim)
   LLM_MODEL        model id — provider-specific default if unset
   NVIDIA_API_KEY   accepted as a fallback for nvidia when LLM_API_KEY
                    is unset (the name `.env` files typically use)
+  NIM_BASE_URL     fallback base URL consumed by the nim provider when
+                   LLM_BASE_URL is unset (self-hosted NIMs have no
+                   canonical address, so one of the two MUST be set)
 
 Tests + offline runs use `MockLLM` which serves canned tool calls from
 a queue and tracks call counts.
@@ -447,6 +451,115 @@ class NvidiaLLM:
         return LLMResponse(tool_calls=tool_calls, text=text, usage=usage)
 
 
+# ---------- NIM adapter (self-hosted, no auth) ------------------------------
+
+
+class NimLLM:
+    """Self-hosted NVIDIA NIM container exposing OpenAI's chat-completions.
+
+    A NIM container speaks the OpenAI wire format on `/v1/chat/completions`
+    (same body shape, same tool-call schema, same `usage` block). The
+    only deviation worth modelling is auth: a local NIM has no bearer
+    token, so this adapter omits the `Authorization` header entirely
+    rather than send a placeholder. If a gateway in front of the NIM
+    later starts requiring a token, route through `OpenAILLM` instead.
+
+    `base_url` is required and must include the `/v1` suffix
+    (e.g. `http://localhost:8000/v1`). There is no canonical default —
+    self-hosted NIMs live at arbitrary hosts; the factory surfaces a
+    clear error when neither `LLM_BASE_URL` nor `NIM_BASE_URL` is set.
+
+    `chat_template_kwargs` is the per-request hook vLLM exposes for
+    chat-template variables. The load-bearing case: Nemotron-3 family
+    NIMs ship with chain-of-thought ON by default ("detailed thinking"
+    in NVIDIA's docs), which inflates per-turn latency ~10× by burning
+    output tokens on internal monologue. Passing
+    `{"enable_thinking": False}` flips it off — the agent loop never
+    consumes the thinking trace anyway, so paying for it is pure waste.
+    vLLM silently ignores unknown chat_template_kwargs on models whose
+    chat templates don't reference them, so the field is safe to pass
+    against any OpenAI-compatible NIM.
+    """
+
+    def __init__(
+        self,
+        *,
+        model: str,
+        base_url: str,
+        timeout: float = 120.0,
+        chat_template_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        import httpx
+
+        self.model = model
+        self.chat_template_kwargs = chat_template_kwargs
+        # See `OpenAILLM` for why `_client` is typed `Any`.
+        self._client: Any = httpx.Client(
+            base_url=base_url.rstrip("/"),
+            timeout=timeout,
+            headers={"Content-Type": "application/json"},
+        )
+
+    def chat(
+        self,
+        *,
+        system: str,
+        user: str,
+        tools: list[dict[str, Any]],
+        max_tokens: int = 2048,
+    ) -> LLMResponse:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        # NIM (vLLM-backed) validates the request body strictly and
+        # rejects `"tools": []` with HTTP 400 — the OpenAI reference
+        # accepts it leniently, but NIM demands the field be either
+        # absent or non-empty. Mirror that contract by omitting `tools`
+        # when the caller passed no tools. The agent loop always passes
+        # ACTION_TOOLS so this is a tests-and-smoke-tests-only path,
+        # but it's load-bearing for those paths.
+        if tools:
+            body["tools"] = [_openai_tool_schema(t) for t in tools]
+        if self.chat_template_kwargs:
+            body["chat_template_kwargs"] = self.chat_template_kwargs
+        r = self._client.post("/chat/completions", json=body)
+        if r.status_code >= 400:
+            raise RuntimeError(f"NIM HTTP {r.status_code}: {r.text}")
+        payload = r.json()
+        choice = (payload.get("choices") or [{}])[0]
+        message = choice.get("message", {})
+        text = message.get("content") or ""
+        tool_calls: list[ToolCall] = []
+        for tc in message.get("tool_calls") or []:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            raw_args = fn.get("arguments", "{}")
+            # Some NIM builds (and chat templates) return `arguments`
+            # as a dict; the OpenAI reference returns a JSON string.
+            # Accept both, degrade malformed strings to an empty dict.
+            if isinstance(raw_args, str):
+                try:
+                    args = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    args = {}
+            elif isinstance(raw_args, dict):
+                args = dict(raw_args)
+            else:
+                args = {}
+            tool_calls.append(ToolCall(name=name, arguments=args))
+        usage_payload = payload.get("usage") or {}
+        usage = Usage(
+            input_tokens=int(usage_payload.get("prompt_tokens", 0)),
+            output_tokens=int(usage_payload.get("completion_tokens", 0)),
+        )
+        return LLMResponse(tool_calls=tool_calls, text=text, usage=usage)
+
+
 # ---------- Mock for tests --------------------------------------------------
 
 
@@ -484,13 +597,15 @@ def make_llm_from_env(env: dict[str, str] | None = None) -> LLMClient:
     """Build an LLM client from environment variables.
 
     LLM_PROVIDER (default "openai") selects the adapter. LLM_API_KEY is
-    required for openai/anthropic/nvidia and ignored for ollama (local
-    daemon is unauthenticated). For convenience the nvidia branch also
-    accepts NVIDIA_API_KEY (the name `.env` files typically use) when
-    LLM_API_KEY is unset. LLM_BASE_URL and LLM_MODEL override the
+    required for openai/anthropic/nvidia and ignored for ollama and nim
+    (both target local, unauthenticated daemons). For convenience the
+    nvidia branch also accepts NVIDIA_API_KEY (the name `.env` files
+    typically use) when LLM_API_KEY is unset; the nim branch accepts
+    NIM_BASE_URL as a fallback for LLM_BASE_URL since self-hosted NIMs
+    have no canonical address. LLM_BASE_URL and LLM_MODEL override the
     provider-specific defaults: "gpt-4o-mini" (openai),
     "claude-haiku-4-5-20251001" (anthropic), "gemma4" (ollama),
-    "moonshotai/kimi-k2.6" (nvidia).
+    "moonshotai/kimi-k2.6" (nvidia), "openai/gpt-oss-120b" (nim).
     """
     e = env if env is not None else os.environ
     provider = (e.get("LLM_PROVIDER") or "openai").lower()
@@ -498,6 +613,35 @@ def make_llm_from_env(env: dict[str, str] | None = None) -> LLMClient:
     model = e.get("LLM_MODEL") or ""
     if provider == "ollama":
         return OllamaLLM(model=model or "gemma4", base_url=base_url)
+    if provider == "nim":
+        nim_base_url = base_url or e.get("NIM_BASE_URL") or ""
+        if not nim_base_url:
+            raise RuntimeError(
+                "LLM_BASE_URL or NIM_BASE_URL is required for LLM_PROVIDER=nim "
+                "(self-hosted NIMs have no canonical address)"
+            )
+        # NIM_CHAT_TEMPLATE_KWARGS lets the user pass per-request
+        # chat-template variables through to vLLM. The load-bearing
+        # case is `{"enable_thinking": false}` for Nemotron-3 family
+        # models, which otherwise burn 10× the output tokens on
+        # chain-of-thought we never read. Accept a JSON object; bail
+        # loudly on malformed JSON so a typo doesn't silently leave
+        # thinking on.
+        chat_template_kwargs: dict[str, Any] | None = None
+        raw_ctk = e.get("NIM_CHAT_TEMPLATE_KWARGS")
+        if raw_ctk:
+            try:
+                parsed = json.loads(raw_ctk)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"NIM_CHAT_TEMPLATE_KWARGS must be valid JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise RuntimeError("NIM_CHAT_TEMPLATE_KWARGS must decode to a JSON object")
+            chat_template_kwargs = parsed
+        return NimLLM(
+            model=model or "openai/gpt-oss-120b",
+            base_url=nim_base_url,
+            chat_template_kwargs=chat_template_kwargs,
+        )
     api_key = e.get("LLM_API_KEY") or ""
     if provider == "nvidia" and not api_key:
         api_key = e.get("NVIDIA_API_KEY") or ""
@@ -521,5 +665,6 @@ def make_llm_from_env(env: dict[str, str] | None = None) -> LLMClient:
             base_url=base_url,
         )
     raise RuntimeError(
-        f"unknown LLM_PROVIDER: {provider!r} (want 'openai', 'anthropic', 'ollama', or 'nvidia')"
+        f"unknown LLM_PROVIDER: {provider!r} "
+        "(want 'openai', 'anthropic', 'ollama', 'nvidia', or 'nim')"
     )

@@ -305,9 +305,29 @@ def test_short_game_runs_to_completion_with_mock_llm(
     assert agent.cumulative_tokens > 0
 
 
+_LLM_ENV_VARS = (
+    "LLM_API_KEY",
+    "LLM_PROVIDER",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+    "NIM_BASE_URL",
+    "NIM_CHAT_TEMPLATE_KWARGS",
+    "NVIDIA_API_KEY",
+)
+
+
+def _isolate_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`test_nim_live.py` calls `load_dotenv` at import time, which leaks
+    the user's local `.env` into `os.environ`. Tests that expect the
+    openai branch (the default) must clear every var that would route
+    the factory elsewhere — otherwise the assertion silently fails."""
+    for var in _LLM_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+
+
 def test_agent_requires_llm_when_env_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     api, _ = _make_client()
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    _isolate_llm_env(monkeypatch)
     with pytest.raises(RuntimeError, match="LLM_API_KEY"):
         LangGraphAgent(api, seed=42)
 
@@ -316,7 +336,7 @@ def test_cli_raises_without_llm_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """No MockLLM offline fallback — running without a key must raise."""
     from agents.langgraph_agent import agent as agent_module
 
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    _isolate_llm_env(monkeypatch)
     # `main` mutates os.environ; monkeypatch restores it after the test
     # so the GAME_DAYS / MANUAL_GAME_DAYS knobs don't leak into the
     # scripted-agent smoke tests.

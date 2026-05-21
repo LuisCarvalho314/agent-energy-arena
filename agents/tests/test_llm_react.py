@@ -87,35 +87,36 @@ def test_system_prompt_describes_step_final_requirement() -> None:
     assert "last" in SYSTEM_PROMPT.lower()
 
 
-def test_system_prompt_covers_oilfield_v2_mechanics() -> None:
-    """Primer must teach the new oilfield-v2 rules so the LLM's policy is
-    calibrated: reservoir_id, rate-based pressure (same-reservoir +
-    Chebyshev > 1, 0.5 cap), quadratic drill cost + world_depth, survey
-    `(size/4)²` + default 4, pipeline orthogonal/per-network routing,
-    orphan raw sale at $40/bbl."""
+def test_system_prompt_is_terse_and_does_not_bundle_rules_md() -> None:
+    """The prompt is intentionally short — it tells the agent what each
+    tool does, what the error envelope looks like, and where to find
+    the rest (RULES.md, /state, /catalog). Strategy is the participant's
+    job. A bundled RULES.md inflated this from ~2k chars to ~29k and
+    burned ~10x the per-turn input tokens for no agent-quality win, so
+    cap the length and pin out a few RULES.md-only landmarks."""
     p = SYSTEM_PROMPT
-    assert "reservoir_id" in p
-    assert "(size/4)" in p
-    assert "world_depth" in p
-    assert "Chebyshev" in p
-    # 0.5 boost cap.
-    assert "0.5" in p
-    # Orphan economics.
-    assert "$40/bbl" in p
-    # Per-network routing language.
-    assert "network" in p.lower()
+    # Length cap: 5k chars is comfortably above the briefing's ~2k size
+    # while still flagging if someone re-bundles RULES.md by accident.
+    assert len(p) < 5000, f"SYSTEM_PROMPT grew to {len(p):,} chars"
+    # These three landmarks only appear inside RULES.md — their absence
+    # is the cheapest signal that RULES.md is no longer being appended.
+    assert "Table of contents" not in p
+    assert "Determinism contract" not in p
+    assert "## Scoring" not in p
 
 
-def test_system_prompt_does_not_advertise_old_mechanics() -> None:
-    """Primer must not reference the retired cumulative-injection
-    pressure formula or the flat (size/8) survey cost. Match the
-    formula signature (`inj_total / V_init`), not the field name —
-    `cumulative_injected_bbl` is a live per-well telemetry counter
-    and legitimately appears in the appended RULES.md."""
+def test_system_prompt_names_tools_and_error_envelope() -> None:
+    """The prompt must point the agent at the API surface even though
+    it no longer spoon-feeds mechanics. Naming the tools and the error
+    keys is what lets the model react to rejections during play."""
     p = SYSTEM_PROMPT
-    assert "(size/8)" not in p
-    assert "inj_total / V_init" not in p
-    assert "cumulative-injection" not in p
+    for tool in ("build", "demolish", "survey", "drill", "step"):
+        assert tool in p
+    # At least one example error key — drives the "read the error
+    # field on rejection" behaviour the world depends on.
+    assert "no_road_adjacency" in p or "tile_occupied" in p
+    # Points participants at the canonical mechanic source instead.
+    assert "RULES.md" in p
 
 
 # ---------- state_summary ---------------------------------------------------
@@ -548,6 +549,20 @@ def test_agent_defers_llm_construction_when_passed_explicitly() -> None:
 
 def test_agent_requires_env_key_when_llm_not_passed(monkeypatch: pytest.MonkeyPatch) -> None:
     api, _ = _client()
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    # `test_nim_live.py` calls `load_dotenv` at import time, which leaks
+    # the user's local `.env` into `os.environ` for the rest of the
+    # pytest session. Clear every var that could route the factory away
+    # from the default openai branch — otherwise this test silently
+    # constructs a NimLLM (no API key required) and fails to raise.
+    for var in (
+        "LLM_API_KEY",
+        "LLM_PROVIDER",
+        "LLM_BASE_URL",
+        "LLM_MODEL",
+        "NIM_BASE_URL",
+        "NIM_CHAT_TEMPLATE_KWARGS",
+        "NVIDIA_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
     with pytest.raises(RuntimeError, match="LLM_API_KEY"):
         LLMReactAgent(api, seed=42)

@@ -19,6 +19,7 @@ from agents.llm import (
     AnthropicLLM,
     LLMResponse,
     MockLLM,
+    NimLLM,
     NvidiaLLM,
     OllamaLLM,
     OpenAILLM,
@@ -344,6 +345,144 @@ def test_ollama_chat_raises_on_http_error() -> None:
         llm.chat(system="", user="", tools=[])
 
 
+# ---------- NIM adapter -----------------------------------------------------
+
+
+def test_nim_chat_sends_chat_completions_payload_without_auth() -> None:
+    """NimLLM POSTs /chat/completions with the OpenAI body shape and
+    must NOT set an Authorization header — local NIM containers are
+    unauthenticated, and the curl reference for a deployed NIM omits
+    the header entirely."""
+    stub = _StubHTTPX(
+        _StubResponse(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "build",
+                                        "arguments": json.dumps(
+                                            {"tile_type": "solar_farm", "x": 3, "y": 7}
+                                        ),
+                                    }
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 140, "completion_tokens": 22},
+            },
+        )
+    )
+    llm = NimLLM.__new__(NimLLM)  # bypass __init__ (which calls httpx)
+    llm.model = "openai/gpt-oss-120b"
+    llm.chat_template_kwargs = None
+    llm._client = stub
+    resp = llm.chat(system="sys", user="usr", tools=[_toy_tool()], max_tokens=512)
+
+    assert stub.last_url == "/chat/completions"
+    body = stub.last_json
+    assert body is not None
+    assert body["model"] == "openai/gpt-oss-120b"
+    assert body["max_tokens"] == 512
+    assert body["messages"] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "usr"},
+    ]
+    assert body["tools"][0]["type"] == "function"
+    assert body["tools"][0]["function"]["name"] == "build"
+    # The stub never receives a separate headers arg from .post(), so
+    # any auth surface would have to leak through the body — verify
+    # we didn't smuggle one in there either.
+    assert "authorization" not in {k.lower() for k in body}
+
+    assert resp.tool_calls == [
+        ToolCall(name="build", arguments={"tile_type": "solar_farm", "x": 3, "y": 7})
+    ]
+    assert resp.usage == Usage(input_tokens=140, output_tokens=22)
+    assert resp.text == ""
+
+
+def test_nim_chat_accepts_dict_arguments_from_native_tool_callers() -> None:
+    """Some NIM builds (and chat templates that pre-parse tool args)
+    return `arguments` as a dict instead of a JSON string. The adapter
+    accepts both shapes; malformed strings degrade to an empty dict."""
+    stub = _StubHTTPX(
+        _StubResponse(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "ok",
+                            "tool_calls": [
+                                {
+                                    "function": {
+                                        "name": "step",
+                                        "arguments": {"days": 3},
+                                    }
+                                },
+                                {
+                                    "function": {
+                                        "name": "build",
+                                        "arguments": "not-json-{",
+                                    }
+                                },
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            },
+        )
+    )
+    llm = NimLLM.__new__(NimLLM)
+    llm.model = "openai/gpt-oss-120b"
+    llm.chat_template_kwargs = None
+    llm._client = stub
+    resp = llm.chat(system="", user="", tools=[])
+    assert resp.tool_calls == [
+        ToolCall(name="step", arguments={"days": 3}),
+        ToolCall(name="build", arguments={}),
+    ]
+    assert resp.text == "ok"
+
+
+def test_nim_chat_raises_on_http_error() -> None:
+    stub = _StubHTTPX(
+        _StubResponse(
+            200,
+            {
+                "choices": [{"message": {"content": "ok", "tool_calls": []}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    llm = NimLLM.__new__(NimLLM)
+    llm.model = "openai/gpt-oss-120b"
+    llm.chat_template_kwargs = None
+    llm._client = stub
+    llm.chat(system="", user="", tools=[])
+    # NIM rejects `"tools": []` with HTTP 400; the adapter must omit
+    # the field rather than send it empty. The agent loop always
+    # passes tools, but the smoke-test path (no tools) is load-bearing.
+    body = stub.last_json
+    assert body is not None
+    assert "tools" not in body
+
+    err_stub = _StubHTTPX(_StubResponse(503, {}, text="model not ready"))
+    err_llm = NimLLM.__new__(NimLLM)
+    err_llm.model = "openai/gpt-oss-120b"
+    err_llm.chat_template_kwargs = None
+    err_llm._client = err_stub
+    with pytest.raises(RuntimeError, match="NIM HTTP 503"):
+        err_llm.chat(system="", user="", tools=[{"name": "noop", "parameters": {}}])
+
+
 # ---------- MockLLM ---------------------------------------------------------
 
 
@@ -412,6 +551,129 @@ def test_make_llm_from_env_ollama_respects_model_override() -> None:
     llm = make_llm_from_env(env={"LLM_PROVIDER": "ollama", "LLM_MODEL": "llama3.2"})
     assert isinstance(llm, OllamaLLM)
     assert llm.model == "llama3.2"
+
+
+# ---------- Factory: NIM branch ---------------------------------------------
+
+
+def test_make_llm_from_env_selects_nim_without_api_key() -> None:
+    """NIM containers are unauthenticated; the factory must not demand
+    LLM_API_KEY for them, and must default the model to gpt-oss-120b."""
+    llm = make_llm_from_env(env={"LLM_PROVIDER": "nim", "LLM_BASE_URL": "http://localhost:8000/v1"})
+    assert isinstance(llm, NimLLM)
+    assert llm.model == "openai/gpt-oss-120b"
+
+
+def test_make_llm_from_env_nim_uses_nim_base_url_fallback() -> None:
+    """`.env` files store the location-shaped env var (NIM_BASE_URL);
+    the nim branch picks it up when LLM_BASE_URL is unset so users
+    don't have to alias it just to satisfy the factory."""
+    llm = make_llm_from_env(
+        env={"LLM_PROVIDER": "nim", "NIM_BASE_URL": "http://34.124.237.72:8000/v1"}
+    )
+    assert isinstance(llm, NimLLM)
+    # The fallback should not bleed into other providers — they have
+    # vendor-hosted defaults and don't read NIM_BASE_URL.
+    llm2 = make_llm_from_env(
+        env={"LLM_PROVIDER": "ollama", "NIM_BASE_URL": "http://34.124.237.72:8000/v1"}
+    )
+    assert isinstance(llm2, OllamaLLM)
+
+
+def test_make_llm_from_env_nim_prefers_llm_base_url_over_fallback() -> None:
+    """If both are set, LLM_BASE_URL wins — explicit beats convention."""
+    llm = make_llm_from_env(
+        env={
+            "LLM_PROVIDER": "nim",
+            "LLM_BASE_URL": "http://explicit:8000/v1",
+            "NIM_BASE_URL": "http://fallback:8000/v1",
+        }
+    )
+    assert isinstance(llm, NimLLM)
+    # The chosen base URL flows into the httpx client. NimLLM strips the
+    # trailing slash before handing it to httpx; httpx then normalises
+    # back to a trailing-slash form internally — assert the host+path
+    # match, ignoring the canonicalisation.
+    assert str(llm._client.base_url).rstrip("/") == "http://explicit:8000/v1"
+
+
+def test_make_llm_from_env_nim_requires_base_url() -> None:
+    """No HTTP attempt either — the missing-base-url branch fires before
+    we ever try to construct the httpx client."""
+    with pytest.raises(RuntimeError, match="NIM_BASE_URL"):
+        make_llm_from_env(env={"LLM_PROVIDER": "nim"})
+
+
+def test_make_llm_from_env_nim_forwards_chat_template_kwargs() -> None:
+    """`NIM_CHAT_TEMPLATE_KWARGS` is a JSON object forwarded to vLLM
+    per-request. The load-bearing case is `{"enable_thinking": false}`
+    for Nemotron-3 family NIMs — without it, the model burns ~10x the
+    output tokens on chain-of-thought the agent loop ignores."""
+    llm = make_llm_from_env(
+        env={
+            "LLM_PROVIDER": "nim",
+            "NIM_BASE_URL": "http://localhost:8000/v1",
+            "NIM_CHAT_TEMPLATE_KWARGS": '{"enable_thinking": false}',
+        }
+    )
+    assert isinstance(llm, NimLLM)
+    assert llm.chat_template_kwargs == {"enable_thinking": False}
+
+
+def test_make_llm_from_env_nim_rejects_malformed_chat_template_kwargs() -> None:
+    """A typo'd JSON value here would silently leave thinking on (since
+    vLLM ignores unknown kwargs), so the factory bails loudly instead."""
+    with pytest.raises(RuntimeError, match="NIM_CHAT_TEMPLATE_KWARGS"):
+        make_llm_from_env(
+            env={
+                "LLM_PROVIDER": "nim",
+                "NIM_BASE_URL": "http://localhost:8000/v1",
+                "NIM_CHAT_TEMPLATE_KWARGS": "{not-json",
+            }
+        )
+    with pytest.raises(RuntimeError, match="JSON object"):
+        make_llm_from_env(
+            env={
+                "LLM_PROVIDER": "nim",
+                "NIM_BASE_URL": "http://localhost:8000/v1",
+                "NIM_CHAT_TEMPLATE_KWARGS": "[1, 2, 3]",
+            }
+        )
+
+
+def test_nim_chat_forwards_chat_template_kwargs_in_body() -> None:
+    """When the adapter is constructed with chat_template_kwargs, every
+    chat() body must include that field — otherwise Nemotron-3 NIMs
+    would silently ignore the thinking-off directive."""
+    stub = _StubHTTPX(
+        _StubResponse(
+            200,
+            {
+                "choices": [{"message": {"content": "ok", "tool_calls": []}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+    )
+    llm = NimLLM.__new__(NimLLM)
+    llm.model = "nvidia/nemotron-3-super-120b-a12b"
+    llm.chat_template_kwargs = {"enable_thinking": False}
+    llm._client = stub
+    llm.chat(system="", user="", tools=[{"name": "noop", "parameters": {}}])
+    body = stub.last_json
+    assert body is not None
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_make_llm_from_env_nim_respects_model_override() -> None:
+    llm = make_llm_from_env(
+        env={
+            "LLM_PROVIDER": "nim",
+            "NIM_BASE_URL": "http://localhost:8000/v1",
+            "LLM_MODEL": "meta/llama-3.3-70b-instruct",
+        }
+    )
+    assert isinstance(llm, NimLLM)
+    assert llm.model == "meta/llama-3.3-70b-instruct"
 
 
 # ---------- NVIDIA adapter --------------------------------------------------
