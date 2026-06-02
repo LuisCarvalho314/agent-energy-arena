@@ -68,6 +68,16 @@ def test_catalog_subsurface_survey_cost_derivation_matches_helper() -> None:
         assert derived == survey_cost(size), size
 
 
+def test_catalog_economics_refinery_max_matches_constant() -> None:
+    """The refinery setpoint cap the UI slider reads from /catalog must
+    equal the backend clamp in world.economy. Hardcoding it in the UI
+    once drifted to 500 while the server clamped at 250."""
+    from world.economy import REFINERY_MAX_BBL_DAY
+
+    cat = build_catalog()
+    assert cat["economics"]["refinery_max_bbl_day"] == REFINERY_MAX_BBL_DAY
+
+
 def test_catalog_wells_array_unchanged_by_subsurface_extension() -> None:
     """The new subsurface block is additive — the wells list must still
     expose the same two well types so existing readers keep working."""

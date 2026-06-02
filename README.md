@@ -2,7 +2,7 @@
 
 A small, readable Python simulation of a city's energy economy, wrapped by a FastAPI server. Site renewables, fossil plants, batteries, oil wells, and refineries — keep the grid balanced hour-by-hour and grow population over a multi-year game.
 
-This is **v1** of the environment. The mechanics are deliberately compact (~3000 lines under `world/`) so they fit in one head and extend in one PR. New world components, scenarios, and agents are the point — see [Contributing](#contributing).
+This is **v1** of the environment. The mechanics are deliberately compact (~6,500 lines under `world/`, excluding the browser UI) so they fit in one head and extend in one PR. New world components, scenarios, and agents are the point — see [Contributing](#contributing).
 
 You run a city day-by-day. Every day a set of decisions are made by the agent and events occur such as weather, price changes, or population growth. Every simulated hour, supply must match demand or citizens go dark. Every simulated day, the books must close in the black or the treasury dies. An agent's job: build a profitable, populous, reasonably renewable city without bankruptcy and without letting treasury, population, or happiness collapse late. A scenario may be applied to the world to add stress to the game.
 
@@ -31,8 +31,6 @@ python evaluate.py --agent agents.scripted --seed 42      # play the scripted re
 make check                                                # lint + format-check + typecheck + test
 ```
 
-Manual 
-
 ## Talking to the world
 
 Every state and every mutation is one HTTP call. A bare-hands agent loop is four lines:
@@ -46,7 +44,7 @@ requests.post(f"{api}/reset", json={"seed": 42})
 for _ in range(365):
     state = requests.get(f"{api}/state").json()
     # ... decide what to build/drill/set, then post actions:
-    requests.post(f"{api}/build", json={"x": 14, "y": 16, "type": "solar_farm"})
+    requests.post(f"{api}/build", json={"tile_type": "solar_farm", "x": 14, "y": 16})
     requests.post(f"{api}/step", json={"days": 1})
 
 print(requests.get(f"{api}/score").json())
@@ -61,6 +59,8 @@ Full endpoint list, request/response shapes, and error codes: [API.md](API.md). 
 **LLM agents.** `agents/llm_react/` (ReAct) and `agents/langgraph_agent/` (LangGraph variant) build their client from env vars — `LLM_PROVIDER` ∈ {`openai`, `anthropic`, `ollama`, `nvidia`, `nim`}, `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`. `evaluate.py` calls `load_dotenv()` on a sibling `.env`. Local Ollama needs no key; hosted NVIDIA NIM uses `langchain_nvidia_ai_endpoints.ChatNVIDIA` (requires the `[llm]` extra); self-hosted NIM containers (`LLM_PROVIDER=nim`) speak the OpenAI wire format on `/v1/chat/completions` without auth and read `NIM_BASE_URL` (or `LLM_BASE_URL`) for the endpoint. The model must support tool calling.
 
 **Determinism + recorded runs.** A game is fully deterministic given the seed: replaying the same `(seed, scenario)` yields byte-identical state — `world/tests/test_determinism.py` pins this. Every API call lands in `runs/{run_id}/actions.jsonl`; every end-of-day state in `runs/{run_id}/states.jsonl`. Score an existing run folder offline with `python evaluate.py --score runs/{run_id}`.
+
+`evaluate.py` flags (see `python evaluate.py --help`): `--agent` (dotted module path), `--seed` (default 42), `--scenario` (dotted `Scenario` path), `--days` (override the day horizon and show a progress bar with ETA; in-process only), `--time-budget SECONDS` (wall-clock cap — when it elapses the next API call raises `BudgetExpired` and a `time_scaled_score = score × days_advanced / game_days` is emitted), `--api-url` (drive a live server instead of the in-process `TestClient`), and `--starting-cash` (override starting cash when scoring with `--score`).
 
 **Browser UI.** `make serve` opens an interactive city builder at `localhost:8000` — build, step, attach scenarios, watch the score evolve.
 
@@ -83,9 +83,10 @@ Worth a PR:
 world/              # the simulation, API, and UI (single source of truth)
 agents/             # reference agents and submissions
   base.py             Agent protocol + BaseAgent helper
-  llm.py              shared LLM client factory (OpenAI / Anthropic / Ollama / NVIDIA)
+  llm.py              shared LLM client factory (OpenAI / Anthropic / Ollama / NVIDIA / self-hosted NIM)
   api_client.py       thin HTTP wrapper over the world API
   attach_runtime.py   shared runtime glue for LLM agents
+  tool_dispatch.py    routes LLM tool calls → ApiClient mutators (shared by CLI + UI attach)
   prompts.py          system + per-turn prompt templates
   state_summary.py    state-dict → LLM-friendly text reducer
   scripted/           rule-based reference (regression-pinned by agents/tests/scripted_seed_42.json)
@@ -106,7 +107,7 @@ pyproject.toml      # package metadata, ruff/mypy config, dependency extras
 Makefile            # make check, make serve, make install
 ```
 
-Approximate sizes: `world/` ~3000 lines, `agents/` ~1500 lines, tests ~3000 lines. Every file is meant to be readable in one sitting.
+Approximate sizes: `world/` ~6,500 lines (plus a ~4,000-line browser UI under `world/ui/`), `agents/` ~3,300 lines, scenarios ~550 lines, tests ~17,000 lines. Every non-test file is meant to be readable in one sitting.
 
 ## Credits
 The `agent-energy-arena` is constructed by Oleg Ovcharenko for the EAGE 2026 Hackathon organized by EAGE AI Committee. Claude Code with skills by Matt Pocock is the primary development method. 

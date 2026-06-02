@@ -164,7 +164,12 @@
   let pendingDrill = null;
 
   const REFINERY_YIELD = 0.85;
-  const REFINERY_MAX_BBL_DAY = 500;
+  // Refinery setpoint cap — read from /catalog so the slider tracks the
+  // backend clamp in world.economy.REFINERY_MAX_BBL_DAY (250). Falls back
+  // to 250 until /catalog has loaded.
+  function refineryMaxBblDay() {
+    return (catalogRaw && catalogRaw.economics && catalogRaw.economics.refinery_max_bbl_day) || 250;
+  }
 
   function showToast(msg, kind = "error") {
     toastEl.textContent = msg;
@@ -1607,7 +1612,7 @@
           <td>${idCell}</td>
           <td>(${r.x}, ${r.y})</td>
           <td>
-            <input type="range" min="0" max="${REFINERY_MAX_BBL_DAY}" step="10" value="${setpoint}" data-id="${r.id}" ${isMutationLocked() ? "disabled" : ""} />
+            <input type="range" min="0" max="${refineryMaxBblDay()}" step="10" value="${setpoint}" data-id="${r.id}" ${isMutationLocked() ? "disabled" : ""} />
             <span class="setpoint-val">${Math.round(setpoint)}</span>
           </td>
           <td class="actual">${throughput.toFixed(1)}</td>
