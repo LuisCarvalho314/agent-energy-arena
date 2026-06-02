@@ -113,10 +113,14 @@ class World:
         session: str = "agent",
         scenario: Scenario | None = None,
         runs_root: str | None = None,
+        run_prefix: str = "run",
         seed_starter_grid: bool = False,
     ) -> None:
         self.config: Config = config or load_config()
         self.session: str = session
+        # Prefix for the per-reset run-folder name (`<prefix>-<timestamp>`):
+        # "eval" from evaluate.py, "play" from the interactive UI server.
+        self.run_prefix: str = run_prefix
         self.scenario: Scenario = scenario if scenario is not None else NullScenario()
         # open-source-arena slice 04: user-supplied dotted path captured
         # by `POST /scenario` / `POST /reset {"scenario": ...}` /
@@ -189,6 +193,7 @@ class World:
                 seed=seed_used,
                 scenario_name=_scenario_dotted_path(self.scenario, self.scenario_dotted_path),
                 session=self.session,
+                run_prefix=self.run_prefix,
             )
         master = np.random.SeedSequence(seed_used)
         # Three independent streams: sim drives world dynamics (weather, etc.),

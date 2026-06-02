@@ -8,13 +8,14 @@ and the action-log-co-tenancy invariant.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from world.action_log import ActionLog
 from world.api import create_app
-from world.recorder import Recorder
+from world.recorder import Recorder, _unique_run_id
 from world.scenario import Scenario
 from world.sim import World
 
@@ -212,6 +213,26 @@ def test_session_marker_propagates_to_metadata(tmp_path: Path) -> None:
     world.step(days=1)
     payload = json.loads(world.recorder.metadata_path.read_text())
     assert payload["session"] == "ui"
+
+
+def test_run_id_uses_prefix_and_timestamp(tmp_path: Path) -> None:
+    """Run folders are named `<prefix>-<YYYYMMDD-HHMMSS>` — readable at a
+    glance, with the origin prefix carried from the entry point ("eval"
+    for evaluate.py, "play" for the UI server)."""
+    world = World(runs_root=str(tmp_path), run_prefix="eval")
+    assert world.recorder is not None
+    assert re.fullmatch(r"eval-\d{8}-\d{6}", world.recorder.run_id)
+
+
+def test_unique_run_id_suffixes_on_same_second_collision(tmp_path: Path) -> None:
+    """A run reset within the same wall-clock second can't reuse the prior
+    (preserved) folder — `_unique_run_id` takes the next free suffix."""
+    base = "eval-20260601-120000"
+    assert _unique_run_id(tmp_path, base) == base  # no collision → unchanged
+    (tmp_path / base).mkdir()
+    assert _unique_run_id(tmp_path, base) == f"{base}-2"
+    (tmp_path / f"{base}-2").mkdir()
+    assert _unique_run_id(tmp_path, base) == f"{base}-3"
 
 
 def test_action_log_provided_takes_precedence_over_default(tmp_path: Path) -> None:

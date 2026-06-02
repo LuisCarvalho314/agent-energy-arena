@@ -32,8 +32,11 @@ import argparse
 import importlib
 import json
 import os
+import shutil
 import sys
+import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -72,11 +75,17 @@ def _load_agent_class(module_name: str) -> type[BaseAgent]:
     return cls
 
 
-def _make_inprocess_client() -> tuple[ApiClient, World]:
-    """Build an in-process API client + world.  No uvicorn, no socket."""
+def _make_inprocess_client(game_days: int | None = None) -> tuple[ApiClient, World]:
+    """Build an in-process API client + world.  No uvicorn, no socket.
+
+    ``game_days`` overrides the world's game-day horizon (``--days``),
+    so the agent's ``play_game`` loop — which runs until
+    ``active_game_days`` — stops at the requested day.
+    """
     from fastapi.testclient import TestClient
 
-    world = World(runs_root="runs", seed_starter_grid=True)
+    config = replace(load_config(), game_days=game_days) if game_days is not None else None
+    world = World(config=config, runs_root="runs", run_prefix="eval", seed_starter_grid=True)
     app = create_app(world=world)
     return ApiClient(transport=TestClient(app)), world
 
@@ -109,6 +118,98 @@ def _load_snapshots(path: Path) -> list[dict[str, Any]]:
     return snapshots
 
 
+# --- Progress bar -----------------------------------------------------------
+
+
+def _fmt_dur(seconds: float) -> str:
+    """Compact duration: ``1h02m`` / ``3m05s`` / ``45s``."""
+    s = int(max(0.0, seconds))
+    if s >= 3600:
+        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+    if s >= 60:
+        return f"{s // 60}m{s % 60:02d}s"
+    return f"{s}s"
+
+
+class _ProgressBar:
+    """Live progress bar rendered to stderr while the agent plays.
+
+    Two modes, chosen by which bound the caller passed:
+
+      - days mode (``--days``): fraction = current_day / total_days; the
+        bar feeds off ``/state`` responses via ``note_day`` and shows an
+        ETA extrapolated from the day rate.
+      - time mode (``--time-budget``): fraction = elapsed / budget; a
+        pure wall-clock countdown, independent of agent progress.
+
+    A daemon thread re-renders every 0.5s so the "time remaining"
+    estimate keeps ticking even while the agent blocks on a slow LLM
+    call. No-op when stderr is not a TTY, so Docker/CI logs stay clean.
+    """
+
+    def __init__(
+        self,
+        *,
+        started_at: float,
+        total_days: int | None = None,
+        time_budget: int | None = None,
+    ) -> None:
+        self._started_at = started_at
+        self._total_days = total_days
+        self._time_budget = time_budget
+        self._current_day = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._active = sys.stderr.isatty()
+
+    def note_day(self, day: int) -> None:
+        self._current_day = day
+
+    def start(self) -> None:
+        if self._active:
+            self._thread.start()
+
+    def stop(self) -> None:
+        if not self._active:
+            return
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+        self._render()
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    def _run(self) -> None:
+        while not self._stop.wait(0.5):
+            self._render()
+
+    def _render(self) -> None:
+        elapsed = time.monotonic() - self._started_at
+        if self._time_budget is not None:
+            frac = min(1.0, elapsed / self._time_budget) if self._time_budget else 1.0
+            tail = (
+                f"{_fmt_dur(elapsed)} / {_fmt_dur(self._time_budget)}"
+                f" · {_fmt_dur(self._time_budget - elapsed)} left"
+            )
+        else:
+            total = self._total_days or 1
+            day = min(self._current_day, total)
+            frac = day / total
+            if 0 < day < total:
+                eta = elapsed * (total - day) / day
+                tail = f"day {day}/{total} · ~{_fmt_dur(eta)} left"
+            else:
+                tail = f"day {day}/{total} · {_fmt_dur(elapsed)} elapsed"
+
+        width = shutil.get_terminal_size((80, 20)).columns
+        label = f" {int(frac * 100):3d}% {tail}"
+        bar_width = max(10, width - len(label) - 3)
+        filled = int(bar_width * frac)
+        bar = "#" * filled + "-" * (bar_width - filled)
+        # \033[K clears any trailing chars left by a longer prior line.
+        sys.stderr.write(f"\r[{bar}]{label}\033[K")
+        sys.stderr.flush()
+
+
 # --- Commands ---------------------------------------------------------------
 
 
@@ -118,6 +219,7 @@ def cmd_eval(
     api_url: str | None,
     scenario: str | None = None,
     time_budget: int | None = None,
+    days: int | None = None,
 ) -> int:
     AgentCls = _load_agent_class(module_name)
     world: World | None = None
@@ -130,7 +232,7 @@ def cmd_eval(
         run_dir = Path("runs") / f"live-{seed}"
         run_dir.mkdir(parents=True, exist_ok=True)
     else:
-        api, world = _make_inprocess_client()
+        api, world = _make_inprocess_client(game_days=days)
         run_dir = world.recorder.dir if world.recorder is not None else Path("runs")
 
     # Attach the scenario BEFORE the agent's first reset so the scenario
@@ -149,8 +251,29 @@ def cmd_eval(
     if time_budget is not None:
         api._deadline_monotonic = started_at + float(time_budget)
 
+    # A progress bar is shown only when a bound is given. Time mode
+    # (--time-budget) takes precedence over day mode (--days) when both
+    # are present, since wall time is then the binding constraint.
+    progress: _ProgressBar | None = None
+    if time_budget is not None:
+        progress = _ProgressBar(started_at=started_at, time_budget=time_budget)
+    elif days is not None:
+        progress = _ProgressBar(started_at=started_at, total_days=days)
+        # Feed the bar the current day off each /state response.
+        _orig_state = api.state
+
+        def _state_with_progress() -> dict[str, Any]:
+            state = _orig_state()
+            assert progress is not None
+            progress.note_day(int(state.get("day", 0)))
+            return state
+
+        api.state = _state_with_progress  # type: ignore[method-assign]
+
     final_state: dict[str, Any]
     try:
+        if progress is not None:
+            progress.start()
         final_state = agent.play_game()
     except BudgetExpired:
         # Stop the watchdog so the post-game state/score reads below
@@ -159,6 +282,8 @@ def cmd_eval(
         final_state = api.state()
     finally:
         api._deadline_monotonic = None
+        if progress is not None:
+            progress.stop()
     wall_time_seconds = time.monotonic() - started_at
 
     if world is not None and world.recorder is not None:
@@ -237,6 +362,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help=(
+            "Override the game-day horizon: the agent plays this many "
+            "days instead of the configured game_days, and evaluate.py "
+            "shows a day-by-day progress bar with an ETA. In-process "
+            "only (incompatible with --api-url)."
+        ),
+    )
+    parser.add_argument(
         "--time-budget",
         type=int,
         default=None,
@@ -256,12 +393,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.agent:
         parser.error("either --agent or --score is required")
+    if args.days is not None and args.api_url:
+        parser.error(
+            "--days overrides the in-process world's horizon; it cannot apply to --api-url"
+        )
     return cmd_eval(
         args.agent,
         int(args.seed),
         args.api_url,
         args.scenario,
         time_budget=args.time_budget,
+        days=args.days,
     )
 
 

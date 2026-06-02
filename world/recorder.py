@@ -35,7 +35,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -54,9 +53,12 @@ class Recorder:
         seed: int,
         scenario_name: str | None,
         session: str,
+        run_prefix: str = "run",
     ) -> None:
         self.root = Path(root)
-        self.run_id = run_id or _new_run_id()
+        self.run_id = (
+            run_id if run_id is not None else _unique_run_id(self.root, _new_run_id(run_prefix))
+        )
         self.dir = self.root / self.run_id
         self.metadata_path = self.dir / "metadata.json"
         self.states_path = self.dir / "states.jsonl"
@@ -120,8 +122,32 @@ class Recorder:
         self.final_path.write_text(json.dumps(payload, default=_json_default) + "\n")
 
 
-def _new_run_id() -> str:
-    return f"{int(time.time())}-{uuid.uuid4().hex[:8]}"
+def _new_run_id(prefix: str) -> str:
+    """Run-folder name: ``<prefix>-<YYYYMMDD-HHMMSS>`` in local time.
+
+    `prefix` marks the run's origin so a glance at `runs/` tells you
+    where it came from: "eval" for `evaluate.py`, "play" for the
+    interactive UI server, "run" for unspecified callers (tests,
+    library use).
+    """
+    return f"{prefix}-{time.strftime('%Y%m%d-%H%M%S')}"
+
+
+def _unique_run_id(root: Path, run_id: str) -> str:
+    """Disambiguate a same-second collision by appending ``-2``, ``-3``, ….
+
+    The timestamp resolves to the second, so a run reset within the same
+    wall-clock second (e.g. `World.reset`) would otherwise reuse the
+    prior folder. That folder is deliberately preserved across resets,
+    so the fresh run takes the next free suffix instead of appending its
+    `states.jsonl` into the finalized one.
+    """
+    candidate = run_id
+    n = 2
+    while (root / candidate).exists():
+        candidate = f"{run_id}-{n}"
+        n += 1
+    return candidate
 
 
 def _json_default(obj: Any) -> Any:
