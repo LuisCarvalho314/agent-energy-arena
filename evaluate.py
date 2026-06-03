@@ -44,8 +44,9 @@ from typing import Any
 from dotenv import load_dotenv
 
 # Load `.env` from the repo root before importing anything that reads
-# env vars. This lets users keep LLM_PROVIDER / LLM_API_KEY /
-# NVIDIA_API_KEY etc. in `.env` instead of exporting them in every shell.
+# env vars. This lets users keep LLM_PROVIDER and the per-provider
+# settings (ANTHROPIC_API_KEY, NIM_BASE_URL, etc.) in `.env` instead
+# of exporting them in every shell.
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from agents.api_client import ApiClient, BudgetExpired  # noqa: E402

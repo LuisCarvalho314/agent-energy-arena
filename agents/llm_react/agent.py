@@ -20,8 +20,9 @@ their `submit/agent.py`:
   - `decide`         (this module) — per-turn LLM call + dispatch.
   - `ACTION_TOOLS`   (agents.prompts) — the 7-tool action vocabulary.
 
-Configure the LLM provider via env (LLM_PROVIDER, LLM_API_KEY,
-LLM_MODEL, LLM_BASE_URL); see `agents.llm.make_llm_from_env`.
+Configure the LLM provider via env (LLM_PROVIDER selects the adapter;
+each provider reads its own namespaced *_API_KEY / *_BASE_URL /
+*_MODEL); see `agents.llm.make_llm_from_env`.
 """
 
 from __future__ import annotations

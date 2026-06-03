@@ -16,11 +16,6 @@ def _float(name: str, default: float) -> float:
     return float(raw) if raw is not None and raw != "" else default
 
 
-def _str(name: str, default: str) -> str:
-    raw = os.environ.get(name)
-    return raw if raw is not None and raw != "" else default
-
-
 @dataclass(frozen=True)
 class Config:
     world_seed: int
@@ -40,8 +35,6 @@ class Config:
     brownout_flat_penalty_hour: float
     industrial_process_co2_t_per_day: float
     api_port: int
-    llm_base_url: str
-    llm_model: str
     ui_play_ms: int
     ui_fast_play_ms: int
 
@@ -65,8 +58,6 @@ def load_config() -> Config:
         brownout_flat_penalty_hour=_float("BROWNOUT_FLAT_PENALTY_HOUR", 1000),
         industrial_process_co2_t_per_day=_float("INDUSTRIAL_PROCESS_CO2_T_PER_DAY", 2.0),
         api_port=_int("API_PORT", 8000),
-        llm_base_url=_str("LLM_BASE_URL", "https://api.openai.com/v1"),
-        llm_model=_str("LLM_MODEL", "gpt-4o-mini"),
         ui_play_ms=_int("UI_PLAY_MS", 1000),
         ui_fast_play_ms=_int("UI_FAST_PLAY_MS", 500),
     )

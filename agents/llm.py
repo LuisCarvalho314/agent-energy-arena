@@ -14,18 +14,29 @@ The translation layer normalizes every vendor's tool-call shape into
 the same flat `ToolCall(name, arguments=dict)` so `LLMReactAgent`
 doesn't care which vendor is on the other end.
 
-Configure via env:
+Configure via env. LLM_PROVIDER is the only switch; every other
+setting is namespaced by provider, so switching providers means
+changing LLM_PROVIDER alone — the inactive providers' settings sit
+inert and never collide.
+
   LLM_PROVIDER     "openai" (default) | "anthropic" | "ollama" |
                    "nvidia" | "nim"
-  LLM_BASE_URL     override the vendor's default base URL
-  LLM_API_KEY      bearer / x-api-key value (required for
-                   openai/anthropic/nvidia; not used by ollama/nim)
-  LLM_MODEL        model id — provider-specific default if unset
-  NVIDIA_API_KEY   accepted as a fallback for nvidia when LLM_API_KEY
-                   is unset (the name `.env` files typically use)
-  NIM_BASE_URL     fallback base URL consumed by the nim provider when
-                   LLM_BASE_URL is unset (self-hosted NIMs have no
-                   canonical address, so one of the two MUST be set)
+
+  OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
+  ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL / ANTHROPIC_MODEL
+  NVIDIA_API_KEY / NVIDIA_BASE_URL / NVIDIA_MODEL
+  OLLAMA_BASE_URL / OLLAMA_MODEL            (local daemon, no key)
+  NIM_BASE_URL / NIM_MODEL                  (self-hosted, no key)
+
+  *_API_KEY is the bearer / x-api-key value, required for
+  openai/anthropic/nvidia and not used by ollama/nim (both target
+  local, unauthenticated daemons). *_MODEL falls back to a
+  provider-specific default when unset. *_BASE_URL falls back to the
+  vendor endpoint, except NIM_BASE_URL which has no canonical address
+  (self-hosted NIMs live at arbitrary hosts) and is therefore required.
+
+  NIM_CHAT_TEMPLATE_KWARGS  optional JSON object of per-request
+                   chat-template variables forwarded to vLLM (nim only)
 
 Tests + offline runs use `MockLLM` which serves canned tool calls from
 a queue and tracks call counts.
@@ -35,6 +46,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -467,7 +479,7 @@ class NimLLM:
     `base_url` is required and must include the `/v1` suffix
     (e.g. `http://localhost:8000/v1`). There is no canonical default —
     self-hosted NIMs live at arbitrary hosts; the factory surfaces a
-    clear error when neither `LLM_BASE_URL` nor `NIM_BASE_URL` is set.
+    clear error when `NIM_BASE_URL` is unset.
 
     `chat_template_kwargs` is the per-request hook vLLM exposes for
     chat-template variables. The load-bearing case: Nemotron-3 family
@@ -593,76 +605,89 @@ class MockLLM:
 # ---------- Factory ---------------------------------------------------------
 
 
+def _require_api_key(env: Mapping[str, str], name: str) -> str:
+    """Read a provider's API key, raising a var-specific error if unset."""
+    key = env.get(name) or ""
+    if not key:
+        raise RuntimeError(f"{name} is required to construct an LLM client")
+    return key
+
+
+def _nim_chat_template_kwargs(env: Mapping[str, str]) -> dict[str, Any] | None:
+    """Parse NIM_CHAT_TEMPLATE_KWARGS — per-request chat-template
+    variables forwarded to vLLM. The load-bearing case is
+    `{"enable_thinking": false}` for Nemotron-3 family models, which
+    otherwise burn 10× the output tokens on chain-of-thought we never
+    read. Accept a JSON object; bail loudly on malformed JSON so a typo
+    doesn't silently leave thinking on."""
+    raw = env.get("NIM_CHAT_TEMPLATE_KWARGS")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"NIM_CHAT_TEMPLATE_KWARGS must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("NIM_CHAT_TEMPLATE_KWARGS must decode to a JSON object")
+    return parsed
+
+
 def make_llm_from_env(env: dict[str, str] | None = None) -> LLMClient:
     """Build an LLM client from environment variables.
 
-    LLM_PROVIDER (default "openai") selects the adapter. LLM_API_KEY is
-    required for openai/anthropic/nvidia and ignored for ollama and nim
-    (both target local, unauthenticated daemons). For convenience the
-    nvidia branch also accepts NVIDIA_API_KEY (the name `.env` files
-    typically use) when LLM_API_KEY is unset; the nim branch accepts
-    NIM_BASE_URL as a fallback for LLM_BASE_URL since self-hosted NIMs
-    have no canonical address. LLM_BASE_URL and LLM_MODEL override the
-    provider-specific defaults: "gpt-4o-mini" (openai),
+    LLM_PROVIDER (default "openai") is the only switch. Each provider
+    reads its own namespaced variables, so switching providers means
+    changing LLM_PROVIDER alone — the inactive providers' settings sit
+    inert and never collide:
+
+      openai     OPENAI_API_KEY (required), OPENAI_BASE_URL, OPENAI_MODEL
+      anthropic  ANTHROPIC_API_KEY (required), ANTHROPIC_BASE_URL, ANTHROPIC_MODEL
+      ollama     OLLAMA_BASE_URL, OLLAMA_MODEL (no key — local daemon)
+      nvidia     NVIDIA_API_KEY (required), NVIDIA_BASE_URL, NVIDIA_MODEL
+      nim        NIM_BASE_URL (required), NIM_MODEL, NIM_CHAT_TEMPLATE_KWARGS (no key)
+
+    *_MODEL defaults per provider: "gpt-4o-mini" (openai),
     "claude-haiku-4-5-20251001" (anthropic), "gemma4" (ollama),
     "moonshotai/kimi-k2.6" (nvidia), "openai/gpt-oss-120b" (nim).
+    *_BASE_URL defaults to the vendor endpoint, except NIM_BASE_URL
+    which has no canonical address and is therefore required.
     """
     e = env if env is not None else os.environ
     provider = (e.get("LLM_PROVIDER") or "openai").lower()
-    base_url = e.get("LLM_BASE_URL") or None
-    model = e.get("LLM_MODEL") or ""
-    if provider == "ollama":
-        return OllamaLLM(model=model or "gemma4", base_url=base_url)
-    if provider == "nim":
-        nim_base_url = base_url or e.get("NIM_BASE_URL") or ""
-        if not nim_base_url:
-            raise RuntimeError(
-                "LLM_BASE_URL or NIM_BASE_URL is required for LLM_PROVIDER=nim "
-                "(self-hosted NIMs have no canonical address)"
-            )
-        # NIM_CHAT_TEMPLATE_KWARGS lets the user pass per-request
-        # chat-template variables through to vLLM. The load-bearing
-        # case is `{"enable_thinking": false}` for Nemotron-3 family
-        # models, which otherwise burn 10× the output tokens on
-        # chain-of-thought we never read. Accept a JSON object; bail
-        # loudly on malformed JSON so a typo doesn't silently leave
-        # thinking on.
-        chat_template_kwargs: dict[str, Any] | None = None
-        raw_ctk = e.get("NIM_CHAT_TEMPLATE_KWARGS")
-        if raw_ctk:
-            try:
-                parsed = json.loads(raw_ctk)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"NIM_CHAT_TEMPLATE_KWARGS must be valid JSON: {exc}") from exc
-            if not isinstance(parsed, dict):
-                raise RuntimeError("NIM_CHAT_TEMPLATE_KWARGS must decode to a JSON object")
-            chat_template_kwargs = parsed
-        return NimLLM(
-            model=model or "openai/gpt-oss-120b",
-            base_url=nim_base_url,
-            chat_template_kwargs=chat_template_kwargs,
-        )
-    api_key = e.get("LLM_API_KEY") or ""
-    if provider == "nvidia" and not api_key:
-        api_key = e.get("NVIDIA_API_KEY") or ""
-    if not api_key:
-        raise RuntimeError(
-            "LLM_API_KEY is required to construct an LLM client"
-            + (" (or set NVIDIA_API_KEY)" if provider == "nvidia" else "")
-        )
     if provider == "openai":
-        return OpenAILLM(api_key=api_key, model=model or "gpt-4o-mini", base_url=base_url)
+        return OpenAILLM(
+            api_key=_require_api_key(e, "OPENAI_API_KEY"),
+            model=e.get("OPENAI_MODEL") or "gpt-4o-mini",
+            base_url=e.get("OPENAI_BASE_URL") or None,
+        )
     if provider == "anthropic":
         return AnthropicLLM(
-            api_key=api_key,
-            model=model or "claude-haiku-4-5-20251001",
-            base_url=base_url,
+            api_key=_require_api_key(e, "ANTHROPIC_API_KEY"),
+            model=e.get("ANTHROPIC_MODEL") or "claude-haiku-4-5-20251001",
+            base_url=e.get("ANTHROPIC_BASE_URL") or None,
+        )
+    if provider == "ollama":
+        return OllamaLLM(
+            model=e.get("OLLAMA_MODEL") or "gemma4",
+            base_url=e.get("OLLAMA_BASE_URL") or None,
         )
     if provider == "nvidia":
         return NvidiaLLM(
-            api_key=api_key,
-            model=model or "moonshotai/kimi-k2.6",
-            base_url=base_url,
+            api_key=_require_api_key(e, "NVIDIA_API_KEY"),
+            model=e.get("NVIDIA_MODEL") or "moonshotai/kimi-k2.6",
+            base_url=e.get("NVIDIA_BASE_URL") or None,
+        )
+    if provider == "nim":
+        nim_base_url = e.get("NIM_BASE_URL") or ""
+        if not nim_base_url:
+            raise RuntimeError(
+                "NIM_BASE_URL is required for LLM_PROVIDER=nim "
+                "(self-hosted NIMs have no canonical address)"
+            )
+        return NimLLM(
+            model=e.get("NIM_MODEL") or "openai/gpt-oss-120b",
+            base_url=nim_base_url,
+            chat_template_kwargs=_nim_chat_template_kwargs(e),
         )
     raise RuntimeError(
         f"unknown LLM_PROVIDER: {provider!r} "

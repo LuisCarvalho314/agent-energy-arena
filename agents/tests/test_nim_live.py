@@ -63,7 +63,7 @@ def _build_llm() -> object:
         env={
             "LLM_PROVIDER": "nim",
             "NIM_BASE_URL": os.environ["NIM_BASE_URL"],
-            "LLM_MODEL": os.environ.get("NIM_TEST_MODEL", "openai/gpt-oss-120b"),
+            "NIM_MODEL": os.environ.get("NIM_TEST_MODEL", "openai/gpt-oss-120b"),
         }
     )
 

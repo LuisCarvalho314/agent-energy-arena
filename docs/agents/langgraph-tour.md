@@ -12,7 +12,8 @@ Install the optional `langgraph` extra:
 pip install -e ".[llm]"
 ```
 
-Run a short demo (requires `LLM_API_KEY` — there is no offline fallback):
+Run a short demo (requires the active provider's API key, e.g.
+`ANTHROPIC_API_KEY` — there is no offline fallback):
 
 ```
 python -m agents.langgraph_agent.agent --seed 42 --days 30

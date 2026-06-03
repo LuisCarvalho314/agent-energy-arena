@@ -12,7 +12,7 @@ Coverage:
 - Rejection reasons appear in the user message on the re-plan pass.
 - `_execute` silently skips unknown tool names.
 - One MockLLM-driven end-to-end smoke test that reaches game_days.
-- The CLI raises when `LLM_API_KEY` is missing (same as ReAct).
+- The CLI raises when the provider's API key is missing (same as ReAct).
 """
 
 from __future__ import annotations
@@ -225,13 +225,21 @@ def test_short_game_runs_to_completion_with_mock_llm(
 
 
 _LLM_ENV_VARS = (
-    "LLM_API_KEY",
     "LLM_PROVIDER",
-    "LLM_BASE_URL",
-    "LLM_MODEL",
-    "NIM_BASE_URL",
-    "NIM_CHAT_TEMPLATE_KWARGS",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_MODEL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
     "NVIDIA_API_KEY",
+    "NVIDIA_BASE_URL",
+    "NVIDIA_MODEL",
+    "OLLAMA_BASE_URL",
+    "OLLAMA_MODEL",
+    "NIM_BASE_URL",
+    "NIM_MODEL",
+    "NIM_CHAT_TEMPLATE_KWARGS",
 )
 
 
@@ -247,7 +255,7 @@ def _isolate_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_agent_requires_llm_when_env_key_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     api, _ = _make_client()
     _isolate_llm_env(monkeypatch)
-    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         LangGraphAgent(api, seed=42)
 
 
@@ -264,7 +272,7 @@ def test_cli_raises_without_llm_key(monkeypatch: pytest.MonkeyPatch) -> None:
     # Patch in-process client construction so we don't accidentally hit a live URL.
     with (
         patch.object(agent_module, "_make_inprocess_client", _make_client_for_cli),
-        pytest.raises(RuntimeError, match="LLM_API_KEY"),
+        pytest.raises(RuntimeError, match="OPENAI_API_KEY"),
     ):
         agent_module.main(["--seed", "42", "--days", "1"])
 

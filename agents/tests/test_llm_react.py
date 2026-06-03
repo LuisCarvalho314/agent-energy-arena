@@ -539,7 +539,7 @@ def test_short_game_runs_to_completion_with_mock_llm(
 
 def test_agent_defers_llm_construction_when_passed_explicitly() -> None:
     """Passing llm= avoids the make_llm_from_env path, so the agent is
-    constructible without LLM_API_KEY in the environment."""
+    constructible without any provider API key in the environment."""
     api, _ = _client()
     mock = MockLLM(responses=[_resp([ToolCall("step", {"days": 1})])])
     # Would raise inside make_llm_from_env if it ran. The mock arg short-circuits it.
@@ -555,14 +555,22 @@ def test_agent_requires_env_key_when_llm_not_passed(monkeypatch: pytest.MonkeyPa
     # from the default openai branch — otherwise this test silently
     # constructs a NimLLM (no API key required) and fails to raise.
     for var in (
-        "LLM_API_KEY",
         "LLM_PROVIDER",
-        "LLM_BASE_URL",
-        "LLM_MODEL",
-        "NIM_BASE_URL",
-        "NIM_CHAT_TEMPLATE_KWARGS",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_MODEL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
         "NVIDIA_API_KEY",
+        "NVIDIA_BASE_URL",
+        "NVIDIA_MODEL",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_MODEL",
+        "NIM_BASE_URL",
+        "NIM_MODEL",
+        "NIM_CHAT_TEMPLATE_KWARGS",
     ):
         monkeypatch.delenv(var, raising=False)
-    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         LLMReactAgent(api, seed=42)

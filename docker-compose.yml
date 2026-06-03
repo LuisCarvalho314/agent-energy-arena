@@ -22,10 +22,24 @@ services:
     profiles: ["eval"]
     environment:
       WORLD_API_URL: "http://world:8000"
+      # LLM_PROVIDER is the only switch; each provider reads its own
+      # namespaced vars. Pass through every provider's settings so a
+      # single `.env` works regardless of which one LLM_PROVIDER selects.
       LLM_PROVIDER: "${LLM_PROVIDER:-openai}"
-      LLM_BASE_URL: "${LLM_BASE_URL:-}"
-      LLM_API_KEY: "${LLM_API_KEY:-}"
-      LLM_MODEL: "${LLM_MODEL:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
+      ANTHROPIC_MODEL: "${ANTHROPIC_MODEL:-}"
+      NVIDIA_API_KEY: "${NVIDIA_API_KEY:-}"
+      NVIDIA_BASE_URL: "${NVIDIA_BASE_URL:-}"
+      NVIDIA_MODEL: "${NVIDIA_MODEL:-}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:-}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-}"
+      NIM_BASE_URL: "${NIM_BASE_URL:-}"
+      NIM_MODEL: "${NIM_MODEL:-}"
+      NIM_CHAT_TEMPLATE_KWARGS: "${NIM_CHAT_TEMPLATE_KWARGS:-}"
     volumes:
       - ./submit:/app/submit:ro
       - ./runs:/app/runs

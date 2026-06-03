@@ -31,7 +31,8 @@ CLI:
   python -m agents.langgraph_agent.agent --seed 42 --days 30   # short demo
   python -m agents.langgraph_agent.agent --seed 42 --full      # full game
 
-Requires an LLM key (`LLM_API_KEY`) — same contract as the ReAct CLI.
+Requires the active provider's API key (e.g. `ANTHROPIC_API_KEY`) —
+same contract as the ReAct CLI.
 """
 
 from __future__ import annotations

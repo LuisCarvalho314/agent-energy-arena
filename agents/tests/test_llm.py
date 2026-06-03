@@ -516,39 +516,47 @@ def test_mock_llm_empty_returns_empty_response() -> None:
 
 
 def test_make_llm_from_env_requires_api_key() -> None:
-    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
+    """The default (openai) provider reads its own namespaced key."""
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         make_llm_from_env(env={})
 
 
 def test_make_llm_from_env_defaults_to_openai() -> None:
-    llm = make_llm_from_env(env={"LLM_API_KEY": "k"})
+    llm = make_llm_from_env(env={"OPENAI_API_KEY": "k"})
     assert isinstance(llm, OpenAILLM)
     assert llm.model == "gpt-4o-mini"
 
 
 def test_make_llm_from_env_selects_anthropic() -> None:
     llm = make_llm_from_env(
-        env={"LLM_API_KEY": "k", "LLM_PROVIDER": "anthropic", "LLM_MODEL": "claude-x"}
+        env={"LLM_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "k", "ANTHROPIC_MODEL": "claude-x"}
     )
     assert isinstance(llm, AnthropicLLM)
     assert llm.model == "claude-x"
 
 
+def test_make_llm_from_env_anthropic_requires_anthropic_api_key() -> None:
+    """Each provider reads only its own namespace — an OPENAI_API_KEY in
+    the environment must not satisfy the anthropic branch."""
+    with pytest.raises(RuntimeError, match="ANTHROPIC_API_KEY"):
+        make_llm_from_env(env={"LLM_PROVIDER": "anthropic", "OPENAI_API_KEY": "k"})
+
+
 def test_make_llm_from_env_rejects_unknown_provider() -> None:
     with pytest.raises(RuntimeError, match="unknown LLM_PROVIDER"):
-        make_llm_from_env(env={"LLM_API_KEY": "k", "LLM_PROVIDER": "google"})
+        make_llm_from_env(env={"LLM_PROVIDER": "google"})
 
 
 def test_make_llm_from_env_selects_ollama_without_api_key() -> None:
     """Ollama runs locally and unauthenticated; the factory must not
-    demand LLM_API_KEY for it, and must default the model to gemma4."""
+    demand an API key for it, and must default the model to gemma4."""
     llm = make_llm_from_env(env={"LLM_PROVIDER": "ollama"})
     assert isinstance(llm, OllamaLLM)
     assert llm.model == "gemma4"
 
 
 def test_make_llm_from_env_ollama_respects_model_override() -> None:
-    llm = make_llm_from_env(env={"LLM_PROVIDER": "ollama", "LLM_MODEL": "llama3.2"})
+    llm = make_llm_from_env(env={"LLM_PROVIDER": "ollama", "OLLAMA_MODEL": "llama3.2"})
     assert isinstance(llm, OllamaLLM)
     assert llm.model == "llama3.2"
 
@@ -558,43 +566,22 @@ def test_make_llm_from_env_ollama_respects_model_override() -> None:
 
 def test_make_llm_from_env_selects_nim_without_api_key() -> None:
     """NIM containers are unauthenticated; the factory must not demand
-    LLM_API_KEY for them, and must default the model to gpt-oss-120b."""
-    llm = make_llm_from_env(env={"LLM_PROVIDER": "nim", "LLM_BASE_URL": "http://localhost:8000/v1"})
+    an API key for them, and must default the model to gpt-oss-120b."""
+    llm = make_llm_from_env(env={"LLM_PROVIDER": "nim", "NIM_BASE_URL": "http://localhost:8000/v1"})
     assert isinstance(llm, NimLLM)
     assert llm.model == "openai/gpt-oss-120b"
 
 
-def test_make_llm_from_env_nim_uses_nim_base_url_fallback() -> None:
-    """`.env` files store the location-shaped env var (NIM_BASE_URL);
-    the nim branch picks it up when LLM_BASE_URL is unset so users
-    don't have to alias it just to satisfy the factory."""
+def test_make_llm_from_env_nim_reads_nim_base_url() -> None:
+    """NIM_BASE_URL is the endpoint; it flows into the httpx client.
+    NimLLM strips the trailing slash before handing it to httpx; httpx
+    then normalises back to a trailing-slash form internally — assert
+    the host+path match, ignoring the canonicalisation."""
     llm = make_llm_from_env(
         env={"LLM_PROVIDER": "nim", "NIM_BASE_URL": "http://34.124.237.72:8000/v1"}
     )
     assert isinstance(llm, NimLLM)
-    # The fallback should not bleed into other providers — they have
-    # vendor-hosted defaults and don't read NIM_BASE_URL.
-    llm2 = make_llm_from_env(
-        env={"LLM_PROVIDER": "ollama", "NIM_BASE_URL": "http://34.124.237.72:8000/v1"}
-    )
-    assert isinstance(llm2, OllamaLLM)
-
-
-def test_make_llm_from_env_nim_prefers_llm_base_url_over_fallback() -> None:
-    """If both are set, LLM_BASE_URL wins — explicit beats convention."""
-    llm = make_llm_from_env(
-        env={
-            "LLM_PROVIDER": "nim",
-            "LLM_BASE_URL": "http://explicit:8000/v1",
-            "NIM_BASE_URL": "http://fallback:8000/v1",
-        }
-    )
-    assert isinstance(llm, NimLLM)
-    # The chosen base URL flows into the httpx client. NimLLM strips the
-    # trailing slash before handing it to httpx; httpx then normalises
-    # back to a trailing-slash form internally — assert the host+path
-    # match, ignoring the canonicalisation.
-    assert str(llm._client.base_url).rstrip("/") == "http://explicit:8000/v1"
+    assert str(llm._client.base_url).rstrip("/") == "http://34.124.237.72:8000/v1"
 
 
 def test_make_llm_from_env_nim_requires_base_url() -> None:
@@ -669,7 +656,7 @@ def test_make_llm_from_env_nim_respects_model_override() -> None:
         env={
             "LLM_PROVIDER": "nim",
             "NIM_BASE_URL": "http://localhost:8000/v1",
-            "LLM_MODEL": "meta/llama-3.3-70b-instruct",
+            "NIM_MODEL": "meta/llama-3.3-70b-instruct",
         }
     )
     assert isinstance(llm, NimLLM)
@@ -835,7 +822,7 @@ def test_make_llm_from_env_nvidia_builds_nvidia_llm(
     """The factory routes LLM_PROVIDER=nvidia to NvidiaLLM (ChatNVIDIA-
     backed), with moonshotai/kimi-k2.6 as the default model."""
     captured = _install_fake_chat_nvidia(monkeypatch)
-    llm = make_llm_from_env(env={"LLM_PROVIDER": "nvidia", "LLM_API_KEY": "k"})
+    llm = make_llm_from_env(env={"LLM_PROVIDER": "nvidia", "NVIDIA_API_KEY": "k"})
     assert isinstance(llm, NvidiaLLM)
     assert llm.model == "moonshotai/kimi-k2.6"
     assert captured["base_url"] == NvidiaLLM.DEFAULT_BASE_URL
@@ -843,53 +830,24 @@ def test_make_llm_from_env_nvidia_builds_nvidia_llm(
 
 def test_make_llm_from_env_nvidia_requires_api_key() -> None:
     """No HTTP attempt either — the missing-key branch fires before we
-    ever try to construct ChatNVIDIA."""
+    ever try to construct ChatNVIDIA. Each provider reads only its own
+    namespace, so an OPENAI_API_KEY must not satisfy nvidia."""
     with pytest.raises(RuntimeError, match="NVIDIA_API_KEY"):
-        make_llm_from_env(env={"LLM_PROVIDER": "nvidia"})
-
-
-def test_make_llm_from_env_nvidia_falls_back_to_nvidia_api_key(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`.env` files typically store the vendor-named key (NVIDIA_API_KEY).
-    The nvidia branch picks it up so users don't have to alias it to
-    LLM_API_KEY just to satisfy the factory."""
-    captured = _install_fake_chat_nvidia(monkeypatch)
-    llm = make_llm_from_env(env={"LLM_PROVIDER": "nvidia", "NVIDIA_API_KEY": "nvapi-test"})
-    assert isinstance(llm, NvidiaLLM)
-    assert captured["api_key"] == "nvapi-test"
-    # The vendor name fallback should not bleed into other providers.
-    with pytest.raises(RuntimeError, match="LLM_API_KEY"):
-        make_llm_from_env(env={"LLM_PROVIDER": "openai", "NVIDIA_API_KEY": "nvapi-test"})
-
-
-def test_make_llm_from_env_nvidia_prefers_llm_api_key_over_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """If both are set, LLM_API_KEY wins — explicit beats convention."""
-    captured = _install_fake_chat_nvidia(monkeypatch)
-    make_llm_from_env(
-        env={
-            "LLM_PROVIDER": "nvidia",
-            "LLM_API_KEY": "explicit",
-            "NVIDIA_API_KEY": "fallback",
-        }
-    )
-    assert captured["api_key"] == "explicit"
+        make_llm_from_env(env={"LLM_PROVIDER": "nvidia", "OPENAI_API_KEY": "k"})
 
 
 def test_make_llm_from_env_nvidia_respects_base_url_and_model_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Private NIM deployments live at custom URLs; LLM_BASE_URL +
-    LLM_MODEL flow through to ChatNVIDIA."""
+    """Private NIM deployments live at custom URLs; NVIDIA_BASE_URL +
+    NVIDIA_MODEL flow through to ChatNVIDIA."""
     captured = _install_fake_chat_nvidia(monkeypatch)
     llm = make_llm_from_env(
         env={
             "LLM_PROVIDER": "nvidia",
-            "LLM_API_KEY": "k",
-            "LLM_BASE_URL": "https://nim.internal/v1",
-            "LLM_MODEL": "meta/llama-3.3-70b-instruct",
+            "NVIDIA_API_KEY": "k",
+            "NVIDIA_BASE_URL": "https://nim.internal/v1",
+            "NVIDIA_MODEL": "meta/llama-3.3-70b-instruct",
         }
     )
     assert isinstance(llm, NvidiaLLM)
