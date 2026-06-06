@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from world.scenario import Scenario
+from world.scenario import Scenario, inject_display_marker
 
 if TYPE_CHECKING:
     from world.sim import World
@@ -82,6 +82,16 @@ class EconomyStress(Scenario):
                         "gas_usd_per_mwh": self.FUEL_SHOCK_GAS_USD_PER_MWH,
                     }
                 )
+                # Display-only marker so the fuel shock is trackable in the
+                # Active-events panel; auto-expires to History on END_DAY.
+                inject_display_marker(
+                    state,
+                    marker_type="fuel_cost_shock",
+                    started_day=day,
+                    ends_day=self.FUEL_SHOCK_END_DAY,
+                    coal_usd_per_mwh=self.FUEL_SHOCK_COAL_USD_PER_MWH,
+                    gas_usd_per_mwh=self.FUEL_SHOCK_GAS_USD_PER_MWH,
+                )
         elif day == self.FUEL_SHOCK_END_DAY:
             state.plant_fuel_cost_per_mwh["coal_plant"] = self._BASELINE_COAL_USD_PER_MWH
             state.plant_fuel_cost_per_mwh["gas_peaker"] = self._BASELINE_GAS_USD_PER_MWH
@@ -97,6 +107,13 @@ class EconomyStress(Scenario):
                         "kind": "crude_collapse_start",
                         "crude_usd_per_bbl": self.CRUDE_COLLAPSE_USD_PER_BBL,
                     }
+                )
+                inject_display_marker(
+                    state,
+                    marker_type="crude_collapse",
+                    started_day=day,
+                    ends_day=self.CRUDE_COLLAPSE_END_DAY,
+                    crude_usd_per_bbl=self.CRUDE_COLLAPSE_USD_PER_BBL,
                 )
         elif day == self.CRUDE_COLLAPSE_END_DAY:
             state.crude_price_usd_per_bbl = self._BASELINE_CRUDE_USD_PER_BBL

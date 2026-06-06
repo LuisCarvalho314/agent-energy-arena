@@ -1820,6 +1820,19 @@
       const occ = e.occurrences_after != null ? ` (#${e.occurrences_after})` : "";
       return `carbon_price → $${(e.severity || 0).toFixed(2)}${occ}`;
     }
+    // Scenario display-only markers — silent levers (price-field / weather
+    // mutations) surfaced so they can be tracked here and in History. See
+    // world.scenario.inject_display_marker.
+    if (e.type === "fuel_cost_shock")
+      return `coal → $${(e.coal_usd_per_mwh || 0).toFixed(0)}/MWh, gas → $${(e.gas_usd_per_mwh || 0).toFixed(0)}/MWh`;
+    if (e.type === "crude_collapse")
+      return `crude → $${(e.crude_usd_per_bbl || 0).toFixed(0)}/bbl`;
+    if (e.type === "oil_collapse")
+      return `crude → $${(e.crude_usd_per_bbl || 0).toFixed(0)}/bbl, refined → $${(e.refined_usd_per_bbl || 0).toFixed(0)}/bbl`;
+    if (e.type === "low_wind")
+      return `wind pinned ${(e.wind_mps || 0).toFixed(1)} m/s (below 3 m/s cut-in)`;
+    if (e.type === "solar_dark")
+      return `cloud_factor → ${(e.cloud_factor || 0).toFixed(2)}`;
     return `×${(e.severity || 1).toFixed(2)}`;
   }
 

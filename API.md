@@ -332,7 +332,7 @@ Body: `{ "days": int }` (1–7, default 7).
 
 `day_completed` is the last simulated day; on `days > 1` the summary's `*_start` fields span the whole window while `treasury_end` / `population_end` / `happiness` reflect the final day. The full per-day P&L breakdown (revenue by source, opex, fuel, carbon, kWh served) lives in `state.today` (see `GET /state`) and in each `runs/{run_id}/states.jsonl` line, written for every stepped day.
 
-Errors: `400` if `days` is out of `[1, 7]`.
+Errors: `422` if `days` is out of `[1, 7]` (Pydantic body validation).
 
 When an agent is attached via `POST /agent/attach`, `/step` first calls the agent's `act(state)` before advancing (honoring its skip cooldown); if `act` raises, the call returns `500` with the exception in `detail` and the day does not advance.
 
@@ -420,16 +420,26 @@ Body: `{ "well_id": "well_3", "rate_bbl_day": 180 }`. Clamped to `[0, 200]`.
 
 Out-of-band rates are silently clamped (not rejected), so the call succeeds with the clamped value.
 
+Use: a **production** well's rate sells crude (revenue); an **injection** well's rate supports reservoir pressure (`pressure_boost = injection_rate / producer_rate`, capped 0.5) to sustain nearby producers, at a power cost of `injection_kwh_per_bbl`.
+
 Errors: `unknown_well`.
 
 ### `POST /control/battery`
 
-Body: `{ "tile_id": "tile_42", "charge_kw": 100 }`. Positive charges, negative discharges, 0 returns to auto policy. The 200 kW battery clamps charge/discharge to `[-200, +200]` in dispatch.
+Body: `{ "tile_id": "tile_42", "charge_kw": 100 }`. Sign of `charge_kw` selects the mode; dispatch clamps to `[-200, +200]`:
+
+- `0` — **auto** (default): charge from renewable surplus, then discharge to close demand the plants couldn't meet.
+- `> 0` — **charge-only**, capped at the setpoint. Won't discharge.
+- `< 0` — **discharge-only**, capped at `|setpoint|`. Won't charge.
+
+Always: charges only from renewable surplus (never fossil), discharge is capped by unmet demand (no export for profit), round-trip costs `√η` each way.
 
 ```json
 { "ok": true, "treasury_after": 432100.5,
   "result": { "tile_id": "tile_42", "charge_setpoint_kw": 100.0, "soc_kwh": 540.0 } }
 ```
+
+Use: auto bleeds SoC at the first dip. When `/forecast` shows a coming crunch, set `charge_kw > 0` to bank SoC, then `0`/`< 0` to release and shave the peak (displacing gas).
 
 Errors: `unknown_battery` (no tile with that id, or the tile is not a battery).
 
@@ -441,6 +451,8 @@ Body: `{ "refinery_id": "tile_55", "rate_bbl_day": 200 }`. Clamped to `[0, REFIN
 { "ok": true, "treasury_after": 432100.5,
   "result": { "refinery_id": "tile_55", "setpoint_rate_bbl_day": 200.0 } }
 ```
+
+Use: refines produced crude into product at `refinery_yield`, selling at `refined_price_usd_per_bbl` (vs. raw `crude_price_usd_per_bbl`) — set the rate to your sustainable crude supply; it emits `refinery_co2_t_per_bbl`.
 
 Errors: `unknown_refinery` (no tile with that id, or the tile is not a refinery).
 

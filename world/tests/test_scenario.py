@@ -9,7 +9,13 @@ from typing import Any
 
 import pytest
 
-from world.scenario import NullScenario, Scenario, discover_scenarios, load_scenario
+from world.scenario import (
+    NullScenario,
+    Scenario,
+    discover_scenarios,
+    inject_display_marker,
+    load_scenario,
+)
 from world.sim import World
 
 # -- Scenario base + NullScenario ------------------------------------------
@@ -292,6 +298,90 @@ def test_world_state_has_weather_overrides_and_scenario_trace() -> None:
     world.state.scenario_trace.append({"day": 0, "event": "test"})
     assert world.state.weather_overrides["cloud_factor"] == 0.5
     assert world.state.scenario_trace == [{"day": 0, "event": "test"}]
+
+
+# -- inject_display_marker -------------------------------------------------
+
+
+def test_inject_display_marker_appends_with_detail() -> None:
+    world = World()
+    world.reset(seed=42)
+    appended = inject_display_marker(
+        world.state,
+        marker_type="fuel_cost_shock",
+        started_day=7,
+        ends_day=90,
+        coal_usd_per_mwh=30.0,
+        gas_usd_per_mwh=75.0,
+    )
+    assert appended is True
+    markers = [e for e in world.state.active_events if e.get("type") == "fuel_cost_shock"]
+    assert len(markers) == 1
+    assert markers[0]["started_day"] == 7
+    assert markers[0]["ends_day"] == 90
+    assert markers[0]["coal_usd_per_mwh"] == 30.0
+    assert markers[0]["gas_usd_per_mwh"] == 75.0
+
+
+def test_inject_display_marker_is_idempotent() -> None:
+    world = World()
+    world.reset(seed=42)
+    first = inject_display_marker(
+        world.state, marker_type="crude_collapse", started_day=14, ends_day=365
+    )
+    second = inject_display_marker(
+        world.state, marker_type="crude_collapse", started_day=14, ends_day=365
+    )
+    assert first is True
+    assert second is False
+    assert sum(e.get("type") == "crude_collapse" for e in world.state.active_events) == 1
+
+
+def test_inject_display_marker_consumes_no_rng() -> None:
+    world = World()
+    world.reset(seed=42)
+    sim_before = world.sim_rng.bit_generator.state
+    event_before = world.event_rng.bit_generator.state
+    inject_display_marker(world.state, marker_type="low_wind", started_day=5, ends_day=25)
+    assert world.sim_rng.bit_generator.state == sim_before
+    assert world.event_rng.bit_generator.state == event_before
+
+
+def test_inject_display_marker_rejects_effect_bearing_types() -> None:
+    """Reusing an effect-bearing type would double-count its multiplier on
+    top of the scenario's own mutation — the guardrail must reject it."""
+    world = World()
+    world.reset(seed=42)
+    for effect_type in (
+        "heatwave",
+        "fuel_price_shock",
+        "demand_surprise",
+        "plant_failure",
+        "regulatory_tightening",
+    ):
+        with pytest.raises(ValueError, match="effect-bearing event type"):
+            inject_display_marker(world.state, marker_type=effect_type, started_day=0, ends_day=5)
+
+
+def test_display_marker_expires_into_history() -> None:
+    """A marker with `ends_day == D` moves from active to historical on day
+    D via `expire_finite_events` — so it shows in the Active panel during
+    the window and in History afterwards."""
+
+    class MarkerScenario(Scenario):
+        def apply(self, world: World, day: int) -> None:
+            if day == 1:
+                inject_display_marker(
+                    world.state, marker_type="low_wind", started_day=1, ends_day=3, wind_mps=1.0
+                )
+
+    world = World(scenario=MarkerScenario())
+    world.reset(seed=42, scenario=MarkerScenario())
+    world.step(days=2)  # through day 1: marker active
+    assert any(e.get("type") == "low_wind" for e in world.state.active_events)
+    world.step(days=2)  # past day 3: marker expired to history
+    assert not any(e.get("type") == "low_wind" for e in world.state.active_events)
+    assert any(e.get("type") == "low_wind" for e in world.state.historical_events)
 
 
 # -- Helpers for type checker ---------------------------------------------

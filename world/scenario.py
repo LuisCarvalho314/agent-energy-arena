@@ -28,10 +28,11 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from world.sim import World
+    from world.state import WorldState
 
 
 # Mirrors the agent-folder walk in `world/api.py`: hidden dirs are
@@ -62,6 +63,61 @@ class NullScenario(Scenario):
     """Default scenario: does nothing. Attached to every fresh world."""
 
     pass
+
+
+# Effect-bearing event types — read by `world.event_effects` /
+# `world.events`. A display marker MUST NOT reuse one of these (see
+# `inject_display_marker`).
+_EFFECT_EVENT_TYPES: frozenset[str] = frozenset(
+    {"heatwave", "fuel_price_shock", "demand_surprise", "plant_failure", "regulatory_tightening"}
+)
+
+
+def inject_display_marker(
+    state: WorldState,
+    *,
+    marker_type: str,
+    started_day: int,
+    ends_day: int,
+    severity: float = 1.0,
+    **detail: float,
+) -> bool:
+    """Append a *display-only* event marker to ``state.active_events`` so a
+    scenario lever applied by silent state mutation — a pricing field, a
+    weather override — becomes visible in the UI's Active-events panel and,
+    once ``ends_day`` passes, its History panel (`expire_finite_events`
+    moves any event with `ends_day <= today`, regardless of type).
+
+    Returns True if a marker was appended, False if one with the same
+    ``(marker_type, started_day)`` was already present in either queue —
+    idempotent across replays and repeated same-day applies.
+
+    CONSTRAINT: ``marker_type`` must NOT be one of the five effect-bearing
+    event types (heatwave, fuel_price_shock, demand_surprise, plant_failure,
+    regulatory_tightening). Those are read for their multipliers by
+    `world.event_effects` / `world.events`; reusing one here would apply
+    that multiplier on TOP of the scenario's own mutation — double-counting.
+    Use a distinct name (e.g. ``fuel_cost_shock``, not ``fuel_price_shock``).
+    Extra keyword ``detail`` (coal_usd_per_mwh=…, wind_mps=…) is stored on
+    the dict for the UI's ``eventDetail`` formatter and is inert to the sim.
+    """
+    if marker_type in _EFFECT_EVENT_TYPES:
+        raise ValueError(
+            f"{marker_type!r} is an effect-bearing event type; a display marker "
+            "must use a distinct name to avoid double-counting its multiplier"
+        )
+    for queue in (state.active_events, state.historical_events):
+        if any(e.get("type") == marker_type and e.get("started_day") == started_day for e in queue):
+            return False
+    marker: dict[str, Any] = {
+        "type": marker_type,
+        "started_day": started_day,
+        "ends_day": ends_day,
+        "severity": severity,
+    }
+    marker.update(detail)
+    state.active_events.append(marker)
+    return True
 
 
 def discover_scenarios(scenarios_root: Path) -> list[str]:

@@ -68,6 +68,36 @@ def test_fuel_shock_fires_and_clears_on_documented_days() -> None:
     )
 
 
+def test_fuel_shock_marker_visible_then_expires_to_history() -> None:
+    """The fuel shock is applied by a silent price mutation, so a
+    display-only `fuel_cost_shock` marker must surface it in active_events
+    during the window and move to historical_events once it closes."""
+    start = EconomyStress.FUEL_SHOCK_START_DAY
+    end = EconomyStress.FUEL_SHOCK_END_DAY
+    w = _fresh_world()
+
+    _step_to_day(w, start + 1)
+    active = [e for e in w.state.active_events if e.get("type") == "fuel_cost_shock"]
+    assert len(active) == 1
+    assert active[0]["started_day"] == start
+    assert active[0]["ends_day"] == end
+    assert active[0]["coal_usd_per_mwh"] == EconomyStress.FUEL_SHOCK_COAL_USD_PER_MWH
+    assert active[0]["gas_usd_per_mwh"] == EconomyStress.FUEL_SHOCK_GAS_USD_PER_MWH
+
+    _step_to_day(w, end + 1)
+    assert not any(e.get("type") == "fuel_cost_shock" for e in w.state.active_events)
+    assert any(e.get("type") == "fuel_cost_shock" for e in w.state.historical_events)
+
+
+def test_crude_collapse_marker_visible_in_active_events() -> None:
+    start = EconomyStress.CRUDE_COLLAPSE_START_DAY
+    w = _fresh_world()
+    _step_to_day(w, start + 1)
+    markers = [e for e in w.state.active_events if e.get("type") == "crude_collapse"]
+    assert len(markers) == 1
+    assert markers[0]["crude_usd_per_bbl"] == EconomyStress.CRUDE_COLLAPSE_USD_PER_BBL
+
+
 def test_crude_collapse_fires_on_documented_day() -> None:
     start = EconomyStress.CRUDE_COLLAPSE_START_DAY
     w = _fresh_world()
