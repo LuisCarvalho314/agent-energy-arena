@@ -41,7 +41,7 @@ The agent decides at hour 0 of each day. Build/demolish/survey/drill actions sub
 
 | Field | Default | Env var |
 |---|---|---|
-| Treasury | $500,000 | `STARTING_CASH` |
+| Treasury | $300,000 | `STARTING_CASH` |
 | Population | 100 | `STARTING_POP` |
 | Town hall | center, +100 housing, +30 jobs | hardcoded |
 

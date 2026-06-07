@@ -38,18 +38,24 @@ TILE_TYPES: list[str] = [
 
 
 SYSTEM_PROMPT: str = """\
-You manage a city-energy simulation over a 10-year horizon (3650 days
-by default). Each turn you observe a compressed state summary and emit
+You manage a city-energy simulation evaluated over a 2-year horizon
+(730 days). Each turn you observe a compressed state summary and emit
 tool calls that mutate the world. Maximise the final score, which
-weighs treasury, population, happiness, renewable share, and solvency
-over the full per-day trace — no single metric dominates.
+weighs treasury, population, happiness, renewable share, solvency, and
+longevity over the full per-day trace — no single metric dominates, and
+it rewards a city held on an upward trajectory, not one that peaks then
+collapses. The longevity term reaches full credit at 2 years (730 days),
+so survive and keep prospering at least that long.
 
 World shape:
 - 32x32 surface grid. 16-voxel deep subsurface (z=0 top, z=15 bottom).
   24 hours/day. Step cadence is 1-7 days per /step; you choose via the
   `step` tool.
-- Starting treasury $500,000, population 100. A town hall at the centre
-  counts as a road and provides housing + jobs at no cost.
+- Starting treasury $300,000, population 100. A town hall at the centre
+  counts as a road and provides housing + jobs at no cost. A starter
+  coal plant and a road bridge to it are pre-placed for free, so you
+  begin with working power — extend, clean up, or replace it as you see
+  fit.
 
 How the tools relate:
 - `build` / `demolish` mutate the surface. Civilian tiles (house,
