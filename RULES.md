@@ -430,19 +430,21 @@ Active events surface in `state.active_events`. Expired events move to `state.hi
 
 Implementation: `world/scoring.py`. The score is an absolute number in `[0, 100]` computed from the full per-day trace of `(treasury, population, happiness, cumulative_renewable_served_kwh, cumulative_total_served_kwh)` — no reference agent, no relative comparison.
 
-Three axes (treasury, population, happiness) each decompose into a level / trend / trough triple. Two extra terms (renewable share, solvency) round out the headline.
+Three axes (treasury, population, happiness) each decompose into a level / trend / trough triple. Three extra terms (renewable share, solvency, longevity) round out the headline.
 
 ```
 # Per-day utility maps in [0, 1]
-u_t(day) = 0.5 · (1 + tanh((treasury - starting_cash) / TREASURY_SCALE))   # 5_000_000
-u_p(day) = 1 - exp(-population / POP_TARGET)                                # 1000
+u_t(day) = 0.5 · (1 + tanh((treasury - starting_cash) / TREASURY_SCALE))   # 1_000_000
+u_p(day) = min(1, population / POP_TARGET)                                  # 400 (completion target)
 u_h(day) = clip(happiness, 0, HAPPINESS_CEIL) / HAPPINESS_CEIL              # 1.2
 
 # Per-axis: level = mean over the run.
 level_X = mean(u_X over all days)
 
-# Per-axis: trend lifts level when the signal saturates at its ceiling.
-trend_treasury = max( 0.5 + 0.5·tanh(linear_slope(treasury - starting_cash) / 13_700),
+# Per-axis: trend. The max() lifts a signal parked at its ceiling out of
+# the zero-slope/zero-CAGR fixed point. Treasury uses the RECENT-window
+# slope (last n//4 days), so a late collapse is not hidden by an early climb.
+trend_treasury = max( 0.5 + 0.5·tanh(linear_slope(last n//4 of (treasury - starting_cash)) / 2_740),
                       mean(u_t over last n//4 days) )
 trend_pop      = max( 0.5 + 0.5·tanh(daily_CAGR(population) / 0.003),
                       mean(u_p over last n//4 days) )
@@ -461,11 +463,14 @@ R = min(1.0, renewable_share / 0.5)
 # Solvency: fraction of days with treasury > 0.
 solvency = (# days with treasury > 0) / n
 
-score = clip(100 · ( 0.30·axis_treasury
-                   + 0.30·axis_pop
-                   + 0.20·axis_happy
-                   + 0.10·R
-                   + 0.10·solvency ), 0, 100)
+# Longevity: linear ramp to full credit at LONGEVITY_TARGET_DAYS = 730
+# (2 years), flat at 1.0 above.
+longevity = min(1.0, n_days / 730)
+
+# Headline. The five base terms (summing to 1.0) are scaled by
+# (1 - 0.15) to make room for the additive longevity term.
+base  = 0.30·axis_treasury + 0.30·axis_pop + 0.10·axis_happy + 0.20·R + 0.10·solvency
+score = clip(100 · ( 0.85·base + 0.15·longevity ), 0, 100)
 ```
 
 Properties:
@@ -474,7 +479,7 @@ Properties:
 - Cash-hoarding saturates: the treasury level term plateaus near 1 well below the tanh anchor.
 - Trough terms (CVaR over the worst 5% of days) make late-game survival mandatory — one catastrophic stretch erodes the score even if the level looks fine on average.
 - A signal pinned at its utility ceiling for the whole run still scores 1.0 on the trend term (the trailing-window fallback handles the zero-CAGR case).
-- The renewable share contributes up to 10%; `solvency` contributes up to 10%.
+- The renewable share contributes up to 20%; `happiness` and `solvency` each up to 10%; `longevity` (survival to the 2-year horizon) adds up to 15% on top.
 
 `GET /score` reads the on-disk `runs/{run_id}/states.jsonl` trace and computes the score from it directly — there is no reference agent and no baseline lookup.
 

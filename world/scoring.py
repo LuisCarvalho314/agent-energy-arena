@@ -90,8 +90,8 @@ _AXIS_TROUGH_WEIGHT = 0.2
 # via the (1 - _W_LONGEVITY) / _W_LONGEVITY split in `compute_score`.
 _W_AXIS_TREASURY = 0.30
 _W_AXIS_POP = 0.30
-_W_AXIS_HAPPY = 0.20
-_W_R = 0.10
+_W_AXIS_HAPPY = 0.10
+_W_R = 0.20
 _W_SOLVENCY = 0.10
 
 _W_LONGEVITY = 0.15
