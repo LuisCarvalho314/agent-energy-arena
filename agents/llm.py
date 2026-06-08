@@ -321,6 +321,15 @@ class OllamaLLM:
     return `tool_calls: []` regardless of the request shape.
 
     No API key is sent; Ollama's local daemon is unauthenticated.
+
+    `think` controls Ollama's top-level `think` flag (Ollama 0.6+).
+    Qwen3 family models default to chain-of-thought thinking mode, which
+    burns `num_predict` tokens on internal reasoning before emitting any
+    tool call.  With `think=False` (the default here) the model skips
+    the thinking pass and outputs tool calls directly, preventing both
+    the 120 s timeout on long CoT traces and the silent no-op caused by
+    exhausting the token budget on reasoning rather than actions.
+    Set `OLLAMA_THINK=true` in the environment to re-enable thinking.
     """
 
     DEFAULT_BASE_URL = "http://localhost:11434"
@@ -330,11 +339,13 @@ class OllamaLLM:
         *,
         model: str,
         base_url: str | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
+        think: bool = True,
     ) -> None:
         import httpx
 
         self.model = model
+        self.think = think
         # See `OpenAILLM` for why `_client` is typed `Any`.
         self._client: Any = httpx.Client(
             base_url=(base_url or self.DEFAULT_BASE_URL).rstrip("/"),
@@ -358,6 +369,7 @@ class OllamaLLM:
             ],
             "tools": [_openai_tool_schema(t) for t in tools],
             "stream": False,
+            "think": self.think,
             "options": {"num_predict": max_tokens},
         }
         r = self._client.post("/api/chat", json=body)
@@ -667,9 +679,11 @@ def make_llm_from_env(env: dict[str, str] | None = None) -> LLMClient:
             base_url=e.get("ANTHROPIC_BASE_URL") or None,
         )
     if provider == "ollama":
+        think_raw = (e.get("OLLAMA_THINK") or "false").strip().lower()
         return OllamaLLM(
             model=e.get("OLLAMA_MODEL") or "gemma4",
             base_url=e.get("OLLAMA_BASE_URL") or None,
+            think=think_raw not in {"0", "false", "no"},
         )
     if provider == "nvidia":
         return NvidiaLLM(
