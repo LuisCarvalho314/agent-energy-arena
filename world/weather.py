@@ -45,11 +45,13 @@ INITIAL_WIND_DIRECTION_DEG: float = 180.0
 
 
 def sunrise(D: int) -> float:
-    return 6.0 - 2.0 * math.sin(2.0 * math.pi * D / 365.0)
+    # Phase-offset so the shortest day (latest sunrise) falls near Dec 21.
+    # Amplitude ±1.5 h gives an 8 h window in winter, 14 h in summer at 55°N.
+    return 6.5 - 1.5 * math.sin(2.0 * math.pi * (D - 80) / 365.0)
 
 
 def sunset(D: int) -> float:
-    return 18.0 + 2.0 * math.sin(2.0 * math.pi * D / 365.0)
+    return 17.5 + 1.5 * math.sin(2.0 * math.pi * (D - 80) / 365.0)
 
 
 def day_length(D: int) -> float:
@@ -70,7 +72,9 @@ def P_solar_kw(D: int, h: int, cloud_factor: float) -> float:
 
 
 def v_mean(D: int, phi_seed: float) -> float:
-    return 7.0 + 2.0 * math.sin(2.0 * math.pi * D / 365.0 + phi_seed)
+    # Amplitude increased to ±3.5 m/s for a more pronounced seasonal swing
+    # (real mid-latitude sites vary by ~40-50% between seasons).
+    return 7.0 + 3.5 * math.sin(2.0 * math.pi * D / 365.0 + phi_seed)
 
 
 def turbine_kw(v: float) -> float:

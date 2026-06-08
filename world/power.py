@@ -38,6 +38,12 @@ if TYPE_CHECKING:
 
 PER_CAPITA_KW: float = 0.333  # 8 kWh/day continuous; brief §4.3
 
+# Seasonal heating/cooling amplitude applied to residential demand.
+# Peaks at 1.40 near January 15 (winter heating), troughs at 0.60 near
+# July 15 (no heating). Models ~55°N heating degree-day variation.
+SEASONAL_DEMAND_AMPLITUDE: float = 0.40
+SEASONAL_DEMAND_PEAK_DAY: int = 15  # January 15
+
 # Dispatch ramp/min-run (brief §4.4).
 COAL_RAMP_PER_HOUR: float = 0.10
 GAS_RAMP_PER_HOUR: float = 0.50
@@ -96,6 +102,18 @@ _HOURLY_RESIDENTIAL_FACTOR: tuple[float, ...] = (
 )
 
 
+def seasonal_demand_factor(D: int) -> float:
+    """Seasonal multiplier on residential demand.
+
+    Returns a value in [0.60, 1.40]: high in winter (heating load), low
+    in summer. Independent of events — always applied to the residential
+    term in ``total_demand_kw``.
+    """
+    return 1.0 + SEASONAL_DEMAND_AMPLITUDE * math.cos(
+        2.0 * math.pi * (D - SEASONAL_DEMAND_PEAK_DAY) / 365.0
+    )
+
+
 def hourly_factor(h: int) -> float:
     return _HOURLY_RESIDENTIAL_FACTOR[h]
 
@@ -125,7 +143,11 @@ def _process_loads_kw(state: WorldState) -> float:
 
 
 def total_demand_kw(state: WorldState, h: int) -> float:
-    res = residential_kw(h, int(state.population)) * heatwave_residential_mult(state)
+    res = (
+        residential_kw(h, int(state.population))
+        * heatwave_residential_mult(state)
+        * seasonal_demand_factor(state.day)
+    )
     ic = (_industrial_kw(state) + _commercial_peak_kw(state) * commercial_factor(h)) * (
         demand_surprise_ic_mult(state)
     )

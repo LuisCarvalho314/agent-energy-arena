@@ -159,10 +159,33 @@ def test_wind_direction_wraps_modulo_360() -> None:
 
 
 def test_v_mean_seasonal_swing_in_brief_range() -> None:
-    # 7 ± 2 m/s seasonal swing.
+    # 7 ± 3.5 m/s seasonal swing (amplified for more realistic mid-latitude variation).
     samples = [v_mean(D, 0.0) for D in range(0, 365, 30)]
-    assert min(samples) == pytest.approx(5.0, abs=0.2)
-    assert max(samples) == pytest.approx(9.0, abs=0.2)
+    assert min(samples) == pytest.approx(3.5, abs=0.2)
+    assert max(samples) == pytest.approx(10.5, abs=0.2)
+
+
+def test_solar_window_shorter_in_winter_than_summer() -> None:
+    """Solar window should be ~8 h in winter and ~14 h in summer."""
+    winter_window = sunset(355) - sunrise(355)  # near Dec 21
+    summer_window = sunset(172) - sunrise(172)  # near Jun 21
+    assert winter_window < summer_window
+    assert winter_window == pytest.approx(8.0, abs=0.5)
+    assert summer_window == pytest.approx(14.0, abs=0.5)
+
+
+def test_solar_noon_is_still_midday_at_equinox() -> None:
+    """At the spring equinox (D≈80), mid-arc should still fall on hour 12."""
+    D = 80
+    mid = (sunrise(D) + sunset(D)) / 2.0
+    assert mid == pytest.approx(12.0, abs=0.1)
+
+
+def test_v_mean_full_year_range() -> None:
+    """v_mean over the full year should span [3.5, 10.5] with phi_seed=0."""
+    full_year = [v_mean(D, 0.0) for D in range(365)]
+    assert min(full_year) == pytest.approx(3.5, abs=0.1)
+    assert max(full_year) == pytest.approx(10.5, abs=0.1)
 
 
 def test_phi_seed_is_deterministic_per_seed() -> None:

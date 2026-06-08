@@ -26,6 +26,7 @@ from world.power import (
     commercial_factor,
     hourly_factor,
     residential_kw,
+    seasonal_demand_factor,
     total_demand_kw,
 )
 from world.sim import World
@@ -209,21 +210,22 @@ def test_heatwave_multiplies_residential_only() -> None:
     _inject_tile(w, tile_type="commercial", x=6, y=6)
     w.state.population = 100
 
-    h = 12  # midday: factor 0.8
+    h = 12  # midday
     base_residential = residential_kw(h, w.state.population)
+    seasonal = seasonal_demand_factor(w.state.day)
     base_industrial = 300.0
     base_commercial = 50.0  # full during 8-20h
-    expected_no_event = base_residential + base_industrial + base_commercial
+    expected_no_event = base_residential * seasonal + base_industrial + base_commercial
     assert total_demand_kw(w.state, h) == pytest.approx(expected_no_event)
 
     w.state.active_events = [{"type": "heatwave", "days_left": 5}]
     expected_heatwave = (
-        base_residential * HEATWAVE_RESIDENTIAL_MULT + base_industrial + base_commercial
+        base_residential * seasonal * HEATWAVE_RESIDENTIAL_MULT + base_industrial + base_commercial
     )
     assert total_demand_kw(w.state, h) == pytest.approx(expected_heatwave)
-    # Industrial + commercial untouched: difference == residential * 0.4.
+    # Industrial + commercial untouched: difference == residential * seasonal * 0.4.
     assert total_demand_kw(w.state, h) - expected_no_event == pytest.approx(
-        base_residential * (HEATWAVE_RESIDENTIAL_MULT - 1.0)
+        base_residential * seasonal * (HEATWAVE_RESIDENTIAL_MULT - 1.0)
     )
 
 
@@ -235,7 +237,8 @@ def test_demand_surprise_multiplies_industrial_and_commercial_only() -> None:
     w.state.population = 100
 
     h = 14  # business hours
-    base_residential = residential_kw(h, w.state.population)
+    seasonal = seasonal_demand_factor(w.state.day)
+    base_residential = residential_kw(h, w.state.population) * seasonal
     base_ic = 300.0 + 50.0
     expected_no_event = base_residential + base_ic
     assert total_demand_kw(w.state, h) == pytest.approx(expected_no_event)
@@ -243,7 +246,7 @@ def test_demand_surprise_multiplies_industrial_and_commercial_only() -> None:
     w.state.active_events = [{"type": "demand_surprise", "days_left": 10}]
     expected = base_residential + base_ic * DEMAND_SURPRISE_IC_MULT
     assert total_demand_kw(w.state, h) == pytest.approx(expected)
-    # Residential untouched.
+    # Residential untouched by demand_surprise.
     assert total_demand_kw(w.state, h) - expected_no_event == pytest.approx(
         base_ic * (DEMAND_SURPRISE_IC_MULT - 1.0)
     )
@@ -261,10 +264,48 @@ def test_both_multipliers_compose_on_their_own_scopes() -> None:
 
     h = 14
     expected = (
-        residential_kw(h, w.state.population) * HEATWAVE_RESIDENTIAL_MULT
+        residential_kw(h, w.state.population)
+        * seasonal_demand_factor(w.state.day)
+        * HEATWAVE_RESIDENTIAL_MULT
         + (300.0 + 50.0) * DEMAND_SURPRISE_IC_MULT
     )
     assert total_demand_kw(w.state, h) == pytest.approx(expected)
+
+
+# -- Seasonal demand factor --------------------------------------------------
+
+
+def test_seasonal_demand_factor_peaks_in_january_troughs_in_july() -> None:
+    peak = seasonal_demand_factor(15)   # Jan 15
+    trough = seasonal_demand_factor(196)  # Jul 15
+    assert peak == pytest.approx(1.40, abs=0.02)
+    assert trough == pytest.approx(0.60, abs=0.02)
+
+
+def test_seasonal_demand_factor_range() -> None:
+    all_days = [seasonal_demand_factor(D) for D in range(365)]
+    assert min(all_days) >= 0.59
+    assert max(all_days) <= 1.41
+
+
+def test_seasonal_demand_applies_to_residential_not_ic() -> None:
+    """Seasonal factor only scales residential; I+C are unaffected."""
+    w = _fresh_world()
+    _inject_tile(w, tile_type="industrial", x=5, y=5)
+    w.state.population = 0  # zero out residential
+
+    h = 12
+    base_industrial = total_demand_kw(w.state, h)
+
+    # Force summer (low seasonal factor) vs winter (high seasonal factor).
+    w.state.day = 196  # July 15 — seasonal factor ≈ 0.60
+    summer_demand = total_demand_kw(w.state, h)
+    w.state.day = 15  # Jan 15 — seasonal factor ≈ 1.40
+    winter_demand = total_demand_kw(w.state, h)
+
+    # With pop=0 there is no residential component, so season must not change demand.
+    assert summer_demand == pytest.approx(base_industrial)
+    assert winter_demand == pytest.approx(base_industrial)
 
 
 # -- Sim integration ---------------------------------------------------------
