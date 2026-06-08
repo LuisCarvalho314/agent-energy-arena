@@ -65,7 +65,9 @@ Returns the full world snapshot.
     {
       "id": "tile_42", "type": "solar_farm",
       "x": 12, "y": 8, "built_day": 23,
-      "operational": true, "current_output_kw": 95.2
+      "operational": true, "current_output_kw": 95.2,
+      "connected_to_power": true,
+      "grid_factor": 1.0
     }
   ],
   "wells": [
@@ -201,6 +203,8 @@ Returns the machine-readable build catalog. Shape:
 ```
 
 The `tiles` / `wells` entries are the full `TileSpec` (only `wells` carry `buildable: false`). Use this rather than hardcoding numbers — re-tunes land here automatically. (Illustrative values above; the live `economics` numbers come from `world/economy.py`.)
+
+Buildable grid infrastructure includes `transmission_line` and `substation`. Their catalog descriptions are agent-facing: they describe how power connectivity works and should be preferred over hardcoded rule text in agents.
 
 ### `GET /events`
 
@@ -340,15 +344,20 @@ When an agent is attached via `POST /agent/attach`, `/step` first calls the agen
 
 Body: `{ "tile_type": "solar_farm", "x": 4, "y": 4 }`.
 
+`tile_type` must be a buildable entry from `GET /catalog.tiles`. Current buildable power-grid components include `transmission_line` and `substation` in addition to roads, demand tiles, generators, batteries, pipelines, refineries, and parks.
+
 On success `result` is the full tile view (same shape as an entry in `/state.tiles`):
 
 ```json
 {
   "ok": true, "treasury_after": 475000.0,
   "result": { "id": "solar_farm-3", "type": "solar_farm", "x": 4, "y": 4,
-              "built_day": 145, "operational": true, "capex_paid": 25000.0, ... }
+              "built_day": 145, "operational": true, "capex_paid": 25000.0,
+              "connected_to_power": false, "grid_factor": 0.60, ... }
 }
 ```
+
+Power connectivity is not a build-validity rule. You can build a generator, consumer, battery, transmission line, or substation in a currently unpowered location; the tile view reports `connected_to_power` so agents can decide whether to extend transmission or add a substation. Unconnected generators produce 0 kW, unconnected batteries do not dispatch, and unconnected houses/commercial/industrial/town hall do not produce demand or civic/economic output.
 
 Errors (returned as `ok: false`):
 
@@ -513,6 +522,8 @@ forecast = api.forecast(hours=24)
 
 api.survey(x=10, y=10, size=8)
 api.build("solar_farm", x=4, y=4)
+api.build("transmission_line", x=5, y=4)
+api.build("substation", x=6, y=4)
 api.control_well("well_3", rate_bbl_day=180)
 
 summary = api.step(days=1)

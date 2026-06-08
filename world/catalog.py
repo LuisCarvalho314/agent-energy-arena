@@ -47,14 +47,22 @@ TILE_CATALOG: dict[str, TileSpec] = {
         capex=500,
         opex_per_day=0,
         requires_road=False,
-        description="Enables connectivity for civilian tiles.",
+        description=(
+            "Road network for construction access. Houses, commercial, industrial, "
+            "coal plants, and refineries need an orthogonal neighbor connected back "
+            "to town hall by road."
+        ),
     ),
     "house": TileSpec(
         tile_type="house",
         capex=3_000,
         opex_per_day=20,
         requires_road=True,
-        description="+8 housing capacity. Requires road adjacency.",
+        description=(
+            "+8 housing capacity. Requires road adjacency and power from a generator, "
+            "connected substation, or connected town hall within 7x7 to count as "
+            "powered housing."
+        ),
         housing_capacity=8,
     ),
     "commercial": TileSpec(
@@ -65,7 +73,7 @@ TILE_CATALOG: dict[str, TileSpec] = {
         description=(
             "+12 jobs. 50 kW peak demand (8-20h, 20% otherwise). "
             "Earns ~$2/resident/day from houses within 5×5 × occupancy × staffing. "
-            "Requires road adjacency."
+            "Requires road adjacency and 7x7 power service to demand power and earn revenue."
         ),
         jobs=12,
         demand_kw=50,
@@ -77,7 +85,8 @@ TILE_CATALOG: dict[str, TileSpec] = {
         requires_road=True,
         description=(
             "+30 jobs. 300 kW continuous demand. Earns $500/day × staffing, "
-            "emits 2 t CO2/day × staffing. Requires road adjacency."
+            "emits 2 t CO2/day × staffing. Requires road adjacency and power. "
+            "Can use 7x7 service or direct adjacency to a powered transmission line."
         ),
         jobs=30,
         demand_kw=300,
@@ -102,8 +111,9 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=3,
         requires_road=False,
         description=(
-            "Power transmission infrastructure. Buildable placeholder for the "
-            "planned transmission-network mechanic; no dispatch effect yet."
+            "Carries power from generators. A line is powered when it touches a "
+            "generator in any of the 8 surrounding squares, or is orthogonally "
+            "connected to another powered line."
         ),
     ),
     "substation": TileSpec(
@@ -112,8 +122,9 @@ TILE_CATALOG: dict[str, TileSpec] = {
         opex_per_day=45,
         requires_road=False,
         description=(
-            "Power-grid interconnection node. Buildable placeholder for the "
-            "planned substation mechanic; no dispatch effect yet."
+            "Power distribution node. Connected when a powered line or generator is "
+            "in one of its 8 surrounding squares; supplies houses, commercial, "
+            "industrial, and batteries within a 7x7 service area."
         ),
         jobs=3,
     ),
@@ -122,7 +133,11 @@ TILE_CATALOG: dict[str, TileSpec] = {
         capex=25_000,
         opex_per_day=50,
         requires_road=False,
-        description="Up to 150 kW (sun-dependent). No road requirement.",
+        description=(
+            "Up to 150 kW, sun-dependent. No road requirement. Produces only when "
+            "it can reach at least one consumer directly within 7x7 or through "
+            "transmission/substation service."
+        ),
         jobs=2,
         capacity_kw=150,
     ),
@@ -133,7 +148,8 @@ TILE_CATALOG: dict[str, TileSpec] = {
         requires_road=False,
         description=(
             "Up to 200 kW (wind-dependent). No road requirement. "
-            "One-cell no-build halo; roads and batteries admitted inside it."
+            "Produces only when it can reach at least one consumer. One-cell "
+            "no-build halo; roads and batteries admitted inside it."
         ),
         jobs=2,
         capacity_kw=200,
@@ -146,8 +162,8 @@ TILE_CATALOG: dict[str, TileSpec] = {
         description=(
             "0-500 kW. Ramp 50%/h. Fuel $30/MWh. "
             "Dispatches only when sharing a pipeline network with an "
-            "operational refinery. One-cell no-build halo; roads and "
-            "batteries admitted inside it."
+            "operational refinery and when it can reach at least one power consumer. "
+            "One-cell no-build halo; roads and batteries admitted inside it."
         ),
         jobs=4,
         capacity_kw=500,
@@ -161,8 +177,8 @@ TILE_CATALOG: dict[str, TileSpec] = {
         requires_road=True,
         description=(
             "375-1500 kW. Min run 25%, ramp 10%/h. Fuel $12/MWh. "
-            "Needs 30 workers and a road-adjacent site. One-cell "
-            "no-build halo; roads and batteries admitted inside it."
+            "Needs 30 workers, a road-adjacent site, and at least one reachable "
+            "power consumer. One-cell no-build halo; roads and batteries admitted inside it."
         ),
         jobs=30,
         capacity_kw=1500,
@@ -177,7 +193,8 @@ TILE_CATALOG: dict[str, TileSpec] = {
         description=(
             "Grid-scale battery. 200 kW rated charge/discharge, 800 kWh storage, "
             "85% round-trip. Auto-charges from renewable surplus and discharges "
-            "to cover residual demand; manual override via /control/battery."
+            "to cover residual demand. Works only when adjacent to a generator or "
+            "inside a connected substation/town-hall 7x7 service area."
         ),
         jobs=0,
         capacity_kw=200,
@@ -189,7 +206,11 @@ TILE_CATALOG: dict[str, TileSpec] = {
         capex=150_000,
         opex_per_day=300,
         requires_road=True,
-        description="+25 jobs. Up to 250 bbl/day. 200 kWh/bbl. 0.3 t CO2/bbl. Requires road.",
+        description=(
+            "+25 jobs. Up to 250 bbl/day. 200 kWh/bbl. 0.3 t CO2/bbl. "
+            "Requires road and a pipeline path from producers; counts as a power "
+            "consumer for generator reachability."
+        ),
         jobs=25,
     ),
     "oil_well": TileSpec(
@@ -215,7 +236,11 @@ TILE_CATALOG: dict[str, TileSpec] = {
         capex=0,
         opex_per_day=0,
         requires_road=False,
-        description="Civic center; counts as road for adjacency. Immutable.",
+        description=(
+            "Civic center; counts as road for adjacency. Immutable starter service node. "
+            "When connected by a powered transmission line in its 8 surrounding squares, "
+            "it supplies power within a 7x7 area."
+        ),
         housing_capacity=100,
         jobs=30,
         buildable=False,

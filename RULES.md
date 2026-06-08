@@ -9,6 +9,7 @@ If you're after API shapes, see [API.md](API.md). If you're writing a stress sce
 - [Time and map](#time-and-map)
 - [Starting conditions](#starting-conditions)
 - [Build catalog](#build-catalog)
+- [Power connectivity](#power-connectivity)
 - [Weather (solar, wind, forecasts)](#weather-solar-wind-forecasts)
 - [Demand](#demand)
 - [Dispatch and grid balance](#dispatch-and-grid-balance)
@@ -47,25 +48,29 @@ The agent decides at hour 0 of each day. Build/demolish/survey/drill actions sub
 
 The town hall is immutable, counts as a road for adjacency, and provides housing + jobs at no cost. All other tiles start empty. The subsurface is hidden until surveyed.
 
+Production/evaluation and interactive sessions may enable the starter grid (`seed_starter_grid=True`). In that setup, reset also places a free coal plant, a free road bridge to town hall, and a free transmission-line bridge one tile north of that starter road. The free transmission bridge connects starter coal to town hall so the opening remains playable after power-connectivity rules.
+
 ## Build catalog
 
 CAPEX is paid up-front at build time; OPEX is deducted daily as long as the tile exists. Demolition refunds 25% of the original CAPEX. The full machine-readable catalog ships through `GET /catalog`; the source of truth is `world/catalog.py`.
 
 | Tile | CAPEX | OPEX/day | Spec |
 |---|---:|---:|---|
-| `road` | 500 | 0 | Connectivity for civilian tiles. |
-| `house` | 3,000 | 20 | +8 housing capacity. Road-adjacent. |
-| `commercial` | 8,000 | 50 | +12 jobs. 50 kW peak (8–20h), 20% otherwise. Earns commercial revenue per nearby resident. Road-adjacent. |
-| `industrial` | 20,000 | 200 | +30 jobs. 300 kW continuous. Earns `industrial_revenue_per_day` per staffed slot. Emits CO₂. Road-adjacent. |
+| `road` | 500 | 0 | Construction access. Road-required tiles need an orthogonal neighbor connected back to town hall by road. |
+| `house` | 3,000 | 20 | +8 housing capacity. Road-adjacent. Needs power service to count as effective housing. |
+| `commercial` | 8,000 | 50 | +12 jobs. 50 kW peak (8–20h), 20% otherwise. Earns commercial revenue per nearby resident when powered. Road-adjacent. |
+| `industrial` | 20,000 | 200 | +30 jobs. 300 kW continuous. Earns `industrial_revenue_per_day` per staffed slot and emits CO₂ when powered. Road-adjacent. |
 | `park` | 5,000 | 30 | Boosts happiness with radius-2 effect. |
-| `solar_farm` | 25,000 | 50 | Up to 150 kW (sun + cloud-dependent). |
-| `wind_turbine` | 40,000 | 80 | Up to 200 kW (wind-dependent). |
-| `gas_peaker` | 80,000 | 150 | 0–500 kW. Ramp 50%/h. Fuel $30/MWh. 0.4 t CO₂/MWh. |
-| `coal_plant` | 200,000 | 400 | 375–1500 kW. Min run 25%. Ramp 10%/h. Fuel $12/MWh. 0.9 t CO₂/MWh. |
-| `battery` | 60,000 | 40 | 200 kW rated, 800 kWh storage, 85% round-trip. |
+| `transmission_line` | 1,500 | 3 | Carries power from generators. Powered by generator adjacency or orthogonal connection to a powered line. |
+| `substation` | 22,000 | 45 | +3 jobs. Distribution node. Connects from a nearby powered line/generator and serves a 7×7 area. |
+| `solar_farm` | 25,000 | 50 | Up to 150 kW (sun + cloud-dependent). Produces only if it can reach a consumer. |
+| `wind_turbine` | 40,000 | 80 | Up to 200 kW (wind-dependent). Produces only if it can reach a consumer. |
+| `gas_peaker` | 80,000 | 150 | 0–500 kW. Ramp 50%/h. Fuel $30/MWh. 0.4 t CO₂/MWh. Needs refinery pipeline supply and a reachable power consumer. |
+| `coal_plant` | 200,000 | 400 | 375–1500 kW. Min run 25%. Ramp 10%/h. Fuel $12/MWh. 0.9 t CO₂/MWh. Produces only if it can reach a consumer. |
+| `battery` | 60,000 | 40 | 200 kW rated, 800 kWh storage, 85% round-trip. Must be connected to participate in charge/discharge. |
 | `oil_well` | 50,000 base | 100 | Production well. Setpoint 0–200 bbl/day. Drilled via `/drill`; actual CAPEX scales quadratically with `target_z` (see Subsurface). |
 | `injection_well` | 30,000 base | 50 | Injection well. Setpoint 0–200 bbl/day. Power 50 kWh/bbl (shed during brownout/blackout, 2× during curtailment). Drilled via `/drill`; quadratic depth-CAPEX. |
-| `refinery` | 150,000 | 300 | +25 jobs. Up to 250 bbl/day. 200 kWh/bbl. 0.3 t CO₂/bbl. Road-adjacent. |
+| `refinery` | 150,000 | 300 | +25 jobs. Up to 250 bbl/day. 200 kWh/bbl. 0.3 t CO₂/bbl. Road-adjacent and pipeline-fed. Counts as a power consumer for generator reachability. |
 | `pipeline` | 2,000 | 5 | Crude transport. Routes producer→refinery on the 4-connected component. |
 | `town_hall` | n/a | 0 | Placed at start. Immutable. +100 housing, +30 jobs. |
 
@@ -77,6 +82,28 @@ Adjacency rules:
 - Wells are placed via `/drill`, not `/build`; the call specifies `target_z`. Two wells may share the same surface tile **only** if their `target_z` differs by ≥ 3 voxels (stacked completion); otherwise the call returns `completion_overlap`. A road or other built tile at (x, y) returns `tile_occupied` regardless of depth.
 
 Validity errors returned by mutating endpoints: `insufficient_funds`, `tile_occupied`, `completion_overlap`, `out_of_bounds`, `no_road_adjacency`, `spacing_violation`, `voxel_out_of_bounds`, `unknown_tile_type`, and a handful of endpoint-specific cases (see [API.md](API.md)). `spacing_violation` carries the offending neighbor's `(x, y)` in the `result` field.
+
+## Power connectivity
+
+Power connectivity is dynamic: `/build` does not reject unpowered sites, but unconnected tiles lose the output/demand/revenue behavior that depends on power. Agents should read `connected_to_power` from `/state.tiles` or from successful `/build` results and use `/catalog` descriptions instead of hardcoding rules.
+
+Core rules:
+
+- `transmission_line` is powered if it is in one of the 8 squares around a generator, or orthogonally connected to another powered line. Diagonal line-to-line contact does not propagate.
+- `substation` is connected if a powered line or generator is in one of its 8 surrounding squares. A connected substation serves a 7×7 area.
+- `town_hall` is a starter service node. It is not powered by default; it becomes connected when a powered line is in one of its 8 surrounding squares, then serves a 7×7 area.
+- `house` and `commercial` are powered when inside the 7×7 area of a generator, connected substation, or connected town hall.
+- `industrial` uses the same 7×7 rule, and also counts as powered when adjacent to a powered transmission line.
+- `battery` is connected when it is in the 8 squares around a generator, or inside the 7×7 area of a connected substation/town hall.
+- Generators (`solar_farm`, `wind_turbine`, `coal_plant`, `gas_peaker`) produce only if they can reach at least one consumer. Consumers include houses, commercial, industrial, town hall, refineries, and wells.
+
+Effects of missing power:
+
+- Unconnected generators produce 0 kW; fossil fuel use and emissions are also 0 because they depend on generated kWh.
+- Unconnected batteries do not charge or discharge.
+- Unconnected `house`, `commercial`, `industrial`, and `town_hall` tiles produce no demand and no civic/economic output.
+- Unconnected civic/consumer tiles contribute a happiness penalty.
+- Unconnected industrial tiles produce no industrial CO₂.
 
 ## Weather (solar, wind, forecasts)
 
@@ -145,7 +172,7 @@ hourly_factor(h):
     else:   0.7
 ```
 
-Industrial tiles draw their full `demand_kw` continuously. Commercial tiles draw full `demand_kw` between 08:00 and 20:00, 20% otherwise. Injection wells and refineries add their process load (computed from yesterday's throughput so dispatch is causal).
+Only powered housing contributes residential demand capacity. Powered industrial tiles draw their full `demand_kw` continuously. Powered commercial tiles draw full `demand_kw` between 08:00 and 20:00, 20% otherwise. Injection wells and refineries add their process load (computed from yesterday's throughput so dispatch is causal).
 
 Multipliers (state-mutable, scenario-targetable):
 
@@ -179,6 +206,8 @@ Curtailed kWh sold to the external grid (`grid_price_export`, default $0.04/kWh)
 
 Per-source dispatch totals land in `state.power_now.by_source_kw` and the hourly arrays `last_day_supply_kw_by_hour`, `last_day_demand_kw_by_hour`, and `last_day_balance_state_by_hour`.
 
+Connectivity gate: before dispatch, non-operational plants, gas peakers without refinery pipeline supply, and generators without a reachable consumer are filtered out and emit 0 kW. This is why an isolated solar farm or coal plant can appear built but show `connected_to_power: false` and produce no energy.
+
 ## Batteries
 
 `battery` tile fields: `soc_kwh` (state of charge, kWh), `charge_setpoint_kw` (>0 charge, <0 discharge, 0 = auto).
@@ -198,6 +227,8 @@ if cmd < 0:  soc_kwh += cmd / √η         # discharging burns √η of output
 ```
 
 API knob: `POST /control/battery {tile_id, charge_kw}`. `charge_kw = 0` returns to auto.
+
+Batteries must be connected to participate. Disconnected batteries keep their stored `soc_kwh` but are skipped by both charge and discharge dispatch until connected.
 
 ## Subsurface and wells
 
@@ -344,8 +375,8 @@ daily_carbon_cost = daily_emissions_t · state.carbon_price
 Implementation: `world/population.py`. Each day:
 
 ```
-capacity  = Σ housing_capacity over housing + town hall
-jobs      = Σ jobs over job-providing tiles
+capacity  = Σ housing_capacity over powered housing + powered town hall
+jobs      = Σ jobs over powered civic/consumer tiles + other job-providing tiles
 
 happiness  = 1.0
             + 0.05 · park_count
@@ -377,6 +408,8 @@ world.happiness  = happiness
 ```
 
 Population is stored as a float so sub-1/day deltas accumulate; `/state` reports `int(population)`.
+
+Unconnected houses, commercial, industrial, and town hall do not contribute effective housing/jobs and apply a daily happiness penalty. Parks, plants, roads, pipelines, refineries, wells, transmission lines, substations, and batteries are not part of this civic power penalty.
 
 ## Revenue, taxes, and finance
 

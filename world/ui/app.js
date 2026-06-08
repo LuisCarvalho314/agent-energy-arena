@@ -667,6 +667,7 @@
       const li = document.createElement("li");
       li.dataset.type = tt;
       li.className = "buildItem";
+      li.title = spec.description || tt;
       li.innerHTML = `
         <span class="swatch" style="${swatchStyle(tt)}"></span>
         <div class="bi-text">
@@ -790,6 +791,34 @@
   }
   const sep = () => `<div class="hp-sep"></div>`;
 
+  function powerRuleHint(t) {
+    if (t.type === "transmission_line") {
+      return "Powered by generator in 8 squares, then orthogonal line chain.";
+    }
+    if (t.type === "substation") {
+      return "Connects from powered line/generator in 8; supplies 7x7.";
+    }
+    if (t.type === "town_hall") {
+      return "Starter service node; powered by line in 8, supplies 7x7.";
+    }
+    if (t.type === "house" || t.type === "commercial") {
+      return "Needs generator or connected substation/town hall within 7x7.";
+    }
+    if (t.type === "industrial") {
+      return "Needs 7x7 service, or adjacency to powered transmission line.";
+    }
+    if (t.type === "battery") {
+      return "Needs generator in 8 or connected substation/town hall within 7x7.";
+    }
+    if (PLANT_TYPES.includes(t.type)) {
+      return "Produces only when it can reach at least one consumer.";
+    }
+    if (t.type === "refinery") {
+      return "Pipeline-fed crude processor; counts as a reachable power consumer.";
+    }
+    return null;
+  }
+
   function buildTilePopup(t) {
     const spec = catalogSpec(t.type);
     const title = `<div class="hp-title"><span>${t.type.replace(/_/g, " ")}</span><span class="hp-coord">(${t.x}, ${t.y}) · day ${t.built_day}</span></div>`;
@@ -802,6 +831,8 @@
         row("Power connection", connected ? "connected" : "not connected", connected ? "pos" : "neg")
       );
     }
+    const hint = powerRuleHint(t);
+    if (hint) rows.push(row("Power rule", hint));
     if (t.housing_capacity > 0) {
       rows.push(row("Housing capacity", `${t.housing_capacity}`, "pos"));
     }

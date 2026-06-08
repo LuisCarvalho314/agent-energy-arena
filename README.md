@@ -91,7 +91,24 @@ print(requests.get(f"{api}/score").json())
 
 Full endpoint list, request/response shapes, and error codes: [API.md](API.md). The `Agent` protocol in [`agents/base.py`](agents/base.py) wraps the same surface in a typed Python class; `agents/scripted/` is the canonical worked example.
 
+### Agent-facing grid infrastructure
+
+The build catalog now includes power-grid infrastructure:
+
+- `transmission_line` — low-cost line tile that carries power from generators through orthogonal line chains.
+- `substation` — distribution node that connects from a nearby powered line/generator and supplies a 7×7 local service area.
+
+Agents do not need a new endpoint. Use the existing surfaces:
+
+- `GET /catalog` to discover `transmission_line`, `substation`, costs, OPEX, jobs, and current tooltip descriptions.
+- `POST /build` with `{"tile_type": "transmission_line", ...}` or `{"tile_type": "substation", ...}` to place them.
+- `GET /state` and successful `/build.result` tile views to read `connected_to_power` on grid-relevant tiles.
+
+Power connectivity is dynamic rather than a build rejection. An isolated generator, consumer, or battery can be built, but it may show `connected_to_power: false` and then produce no power, no battery dispatch, or no demand/economic output until connected. Practical agent heuristic: after building a generator, make sure it can reach at least one consumer directly, through a powered transmission line, or through a connected substation/town-hall service area. The production/manual starter grid includes a free transmission bridge from starter coal to town hall so the opening remains compatible with older agents.
+
 ## Features
+
+**Transmission and substations.** The world now models basic grid proximity. Generators must be able to reach at least one consumer to produce; houses/commercial/industrial/town hall need power service for demand/output; batteries must be connected to charge/discharge. The browser catalog and hover popups explain the per-tile rule, and the same descriptions are exposed through `/catalog` for agents.
 
 **Scenarios.** Thin overlays that steer weather, prices, or the event mix to stress one part of an agent's policy. Three ship under [`scenarios/`](scenarios/): `baseline` (identity run), `grid_stress` (low-wind + heatwave cluster), `economy_stress` (fuel shock + crude collapse + regulatory tightening). Attach one with `python evaluate.py --agent agents.scripted --scenario scenarios.grid_stress --seed 42`. The browser UI's **Events → Choose scenario** picker attaches one live; the plan + module source render inline. Author guide: [scenarios/SCENARIOS.md](scenarios/SCENARIOS.md).
 
