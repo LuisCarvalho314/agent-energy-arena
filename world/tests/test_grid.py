@@ -212,6 +212,9 @@ def test_tile_views_expose_consumer_and_substation_power_features():
     house_tile = next(t for t in w.state.tiles if t.id == house["result"]["id"])
     town_hall = next(t for t in w.state.tiles if t.type == "town_hall")
 
+    assert w.build("solar_farm", cx + 2, cy + 2)["ok"] is True
+    assert w.build("transmission_line", cx + 1, cy + 1)["ok"] is True
+
     assert is_active_substation(town_hall, w.state.tiles) is True
     assert has_power_connection(house_tile, w.state.tiles) is True
 
