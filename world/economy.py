@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 
 from world import workforce
 from world.event_effects import fuel_price_shock_bill_mult
+from world.grid import connected_to_power
 from world.power import PLANT_TYPES, daily_met_demand_fraction
 
 if TYPE_CHECKING:
@@ -104,7 +105,7 @@ def industrial_revenue_for_tile(
     so direct unit-test callers that don't model the grid keep the
     workforce-only contract.
     """
-    if tile.type != "industrial" or not tile.operational:
+    if tile.type != "industrial" or not tile.operational or not connected_to_power(tile, state.tiles):
         return 0.0
     return state.industrial_revenue_per_day * workforce.efficiency(tile) * power_supply_ratio
 
@@ -132,7 +133,11 @@ def occupancy_ratio(state: WorldState) -> float:
     popup's ``residents_in_radius`` field; commercial revenue here uses
     the same call so the two figures stay reconciled.
     """
-    capacity = sum(t.housing_capacity for t in state.tiles)
+    capacity = sum(
+        t.housing_capacity
+        for t in state.tiles
+        if t.housing_capacity > 0 and connected_to_power(t, state.tiles)
+    )
     return min(1.0, state.population / max(1, capacity))
 
 
@@ -150,11 +155,11 @@ def commercial_revenue_for_tile(state: WorldState, tile: Tile) -> float:
     cross-commercial deduplication in v1. Two adjacent commercials over the
     same housing both earn the full amount.
     """
-    if tile.type != "commercial" or not tile.operational:
+    if tile.type != "commercial" or not tile.operational or not connected_to_power(tile, state.tiles):
         return 0.0
     capacity_in_radius = 0
     for other in state.tiles:
-        if other.housing_capacity <= 0:
+        if other.housing_capacity <= 0 or not connected_to_power(other, state.tiles):
             continue
         if max(abs(other.x - tile.x), abs(other.y - tile.y)) <= COMMERCIAL_RADIUS:
             capacity_in_radius += other.housing_capacity

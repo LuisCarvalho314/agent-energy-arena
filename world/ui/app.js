@@ -796,6 +796,12 @@
     const rows = [];
     rows.push(row("CAPEX paid", fmtMoney(t.capex_paid || 0)));
     rows.push(row("OPEX / day", fmtMoney(-(t.opex_per_day || 0)), "neg"));
+    if (Object.prototype.hasOwnProperty.call(t, "connected_to_power")) {
+      const connected = Boolean(t.connected_to_power);
+      rows.push(
+        row("Power connection", connected ? "connected" : "not connected", connected ? "pos" : "neg")
+      );
+    }
     if (t.housing_capacity > 0) {
       rows.push(row("Housing capacity", `${t.housing_capacity}`, "pos"));
     }

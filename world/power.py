@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 from world import workforce
 from world.catalog import TILE_CATALOG
 from world.event_effects import demand_surprise_ic_mult, heatwave_residential_mult
+from world.grid import connected_to_power
 from world.snapshots import BalanceState, WeatherNow
 from world.weather import P_solar_kw, turbine_kw
 
@@ -127,11 +128,19 @@ def commercial_factor(h: int) -> float:
 
 
 def _industrial_kw(state: WorldState) -> float:
-    return sum(t.demand_kw * workforce.efficiency(t) for t in state.tiles if t.type == "industrial")
+    return sum(
+        t.demand_kw * workforce.efficiency(t)
+        for t in state.tiles
+        if t.type == "industrial" and connected_to_power(t, state.tiles)
+    )
 
 
 def _commercial_peak_kw(state: WorldState) -> float:
-    return sum(t.demand_kw * workforce.efficiency(t) for t in state.tiles if t.type == "commercial")
+    return sum(
+        t.demand_kw * workforce.efficiency(t)
+        for t in state.tiles
+        if t.type == "commercial" and connected_to_power(t, state.tiles)
+    )
 
 
 def _process_loads_kw(state: WorldState) -> float:
@@ -143,8 +152,14 @@ def _process_loads_kw(state: WorldState) -> float:
 
 
 def total_demand_kw(state: WorldState, h: int) -> float:
+    powered_housing_capacity = sum(
+        t.housing_capacity
+        for t in state.tiles
+        if t.housing_capacity > 0 and connected_to_power(t, state.tiles)
+    )
+    powered_residents = min(int(state.population), powered_housing_capacity)
     res = (
-        residential_kw(h, int(state.population))
+        residential_kw(h, powered_residents)
         * heatwave_residential_mult(state)
         * seasonal_demand_factor(state.day)
     )

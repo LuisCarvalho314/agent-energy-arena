@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from world.grid import road_connected_set
+from world.grid import (
+    grid_factor,
+    has_power_connection,
+    is_active_substation,
+    is_grid_connected,
+    road_connected_set,
+    transmission_connected_set,
+    transmission_line_touches_power_source,
+)
 from world.sim import World
+from world.state import Tile
 
 
 def _fresh_world() -> World:
@@ -91,13 +100,136 @@ def test_transmission_line_and_substation_are_buildable_placeholders():
     line = w.build("transmission_line", 5, 5)
     assert line["ok"] is True, line
     assert line["result"]["type"] == "transmission_line"
+    assert line["result"]["connected_to_power"] is False
     assert w.state.treasury == pytest.approx(treasury_before - 1_500)
 
     substation = w.build("substation", 6, 5)
     assert substation["ok"] is True, substation
     assert substation["result"]["type"] == "substation"
     assert substation["result"]["jobs"] == 3
+    assert substation["result"]["connected_to_power"] is False
     assert w.state.treasury == pytest.approx(treasury_before - 1_500 - 22_000)
+
+
+def test_transmission_line_can_corner_connect_to_town_hall():
+    w = _fresh_world()
+    cx = w.config.world_w // 2
+    cy = w.config.world_h // 2
+
+    line = w.build("transmission_line", cx + 1, cy + 1)
+    assert line["ok"] is True, line
+    assert line["result"]["connected_to_power"] is False
+
+    network = transmission_connected_set(w.state.tiles)
+    assert (cx, cy) in network
+    assert (cx + 1, cy + 1) in network
+
+
+def test_transmission_line_can_corner_connect_to_generator():
+    w = _fresh_world()
+    solar = w.build("solar_farm", 5, 5)
+    assert solar["ok"] is True, solar
+
+    line = w.build("transmission_line", 6, 6)
+    assert line["ok"] is True, line
+    assert line["result"]["connected_to_power"] is True
+
+
+def test_transmission_line_detects_adjacent_coal_plant_as_power_source():
+    w = _fresh_world()
+    coal = Tile(id="coal-test", type="coal_plant", x=5, y=5, built_day=0)
+    w.state.tiles.append(coal)
+
+    line = w.build("transmission_line", 6, 6)
+    assert line["ok"] is True, line
+    line_tile = next(t for t in w.state.tiles if t.id == line["result"]["id"])
+    assert transmission_line_touches_power_source(line_tile, w.state.tiles) is True
+    assert line["result"]["connected_to_power"] is True
+
+
+def test_transmission_connected_set_flood_fills_from_town_hall():
+    w = _fresh_world()
+    cx = w.config.world_w // 2
+    cy = w.config.world_h // 2
+
+    assert w.build("transmission_line", cx + 1, cy)["ok"] is True
+    assert w.build("substation", cx + 2, cy)["ok"] is True
+    assert w.build("transmission_line", 0, 0)["ok"] is True
+
+    network = transmission_connected_set(w.state.tiles)
+    assert (cx, cy) in network
+    assert (cx + 1, cy) in network
+    assert (cx + 2, cy) in network
+    assert (0, 0) not in network
+
+
+def test_transmission_connected_set_does_not_connect_diagonal_line_segments():
+    w = _fresh_world()
+    cx = w.config.world_w // 2
+    cy = w.config.world_h // 2
+
+    assert w.build("transmission_line", cx + 1, cy)["ok"] is True
+    w.state.tiles.append(
+        Tile(id="diagonal-line", type="transmission_line", x=cx + 2, y=cy + 1, built_day=0)
+    )
+
+    network = transmission_connected_set(w.state.tiles)
+    assert (cx + 1, cy) in network
+    assert (cx + 2, cy + 1) not in network
+
+
+def test_tile_views_expose_transmission_connectivity_features():
+    w = _fresh_world()
+    cx = w.config.world_w // 2
+    cy = w.config.world_h // 2
+
+    isolated_substation = w.build("substation", 0, 0)
+    assert isolated_substation["ok"] is True
+    assert isolated_substation["result"]["is_active_substation"] is False
+
+    solar = w.build("solar_farm", cx + 4, cy)
+    assert solar["ok"] is True
+    solar_tile = next(t for t in w.state.tiles if t.id == solar["result"]["id"])
+    assert is_grid_connected(solar_tile, w.state.tiles) is False
+    assert grid_factor(solar_tile, w.state.tiles) == pytest.approx(0.60)
+
+    assert w.build("transmission_line", cx + 1, cy)["ok"] is True
+    assert w.build("transmission_line", cx + 2, cy)["ok"] is True
+    assert w.build("transmission_line", cx + 3, cy)["ok"] is True
+
+    state_solar = next(t for t in w.state_dict()["tiles"] if t["id"] == solar_tile.id)
+    assert state_solar["is_grid_connected"] is True
+    assert state_solar["grid_factor"] == pytest.approx(1.0)
+
+
+def test_tile_views_expose_consumer_and_substation_power_features():
+    w = _fresh_world()
+    cx = w.config.world_w // 2
+    cy = w.config.world_h // 2
+
+    house = w.build("house", cx + 1, cy)
+    assert house["ok"] is True
+    house_tile = next(t for t in w.state.tiles if t.id == house["result"]["id"])
+    town_hall = next(t for t in w.state.tiles if t.type == "town_hall")
+
+    assert is_active_substation(town_hall, w.state.tiles) is True
+    assert has_power_connection(house_tile, w.state.tiles) is True
+
+    state_tiles = w.state_dict()["tiles"]
+    state_house = next(t for t in state_tiles if t["id"] == house_tile.id)
+    state_town_hall = next(t for t in state_tiles if t["type"] == "town_hall")
+    assert state_house["has_power_connection"] is True
+    assert state_house["connected_to_power"] is True
+    assert state_town_hall["is_active_substation"] is True
+    assert state_town_hall["connected_to_power"] is True
+
+    commercial = w.build("commercial", cx, cy + 1)
+    assert commercial["ok"] is True, commercial
+    assert commercial["result"]["connected_to_power"] is True
+
+    industrial = w.build("industrial", cx - 1, cy)
+    assert industrial["ok"] is True, industrial
+    assert industrial["result"]["connected_to_power"] is True
 
 
 # -- Treasury accounting -----------------------------------------------------

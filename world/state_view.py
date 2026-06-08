@@ -29,6 +29,14 @@ from world.economy import (
     industrial_revenue_for_tile,
     occupancy_ratio,
 )
+from world.grid import (
+    POWER_CONNECTION_FIELD_TYPES,
+    connected_to_power,
+    grid_factor,
+    has_power_connection,
+    is_active_substation,
+    is_grid_connected,
+)
 from world.power import PLANT_TYPES
 from world.subsurface import INJECTION_KWH_PER_BBL, injector_supports
 
@@ -130,15 +138,26 @@ def tile_view(t: Tile, world: World) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     if t.type == "industrial":
         row = _industrial_row(state, t)
+        extra["has_power_connection"] = has_power_connection(t, state.tiles)
     elif t.type == "commercial":
         row = _commercial_row(state, t)
         extra["residents_in_radius"] = _residents_in_radius(state, t)
+        extra["has_power_connection"] = has_power_connection(t, state.tiles)
+    elif t.type == "house":
+        row = _ZERO_ROW
+        extra["has_power_connection"] = has_power_connection(t, state.tiles)
     elif t.type in PLANT_TYPES:
         row = _plant_row(state, t)
+        extra["is_grid_connected"] = is_grid_connected(t, state.tiles)
+        extra["grid_factor"] = grid_factor(t, state.tiles)
     elif t.type == "refinery":
         row = _refinery_row(state, t)
     else:
         row = _ZERO_ROW
+    if t.type in {"substation", "town_hall"}:
+        extra["is_active_substation"] = is_active_substation(t, state.tiles)
+    if t.type in POWER_CONNECTION_FIELD_TYPES:
+        extra["connected_to_power"] = connected_to_power(t, state.tiles)
     return {
         "id": t.id,
         "type": t.type,
