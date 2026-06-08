@@ -14,6 +14,7 @@ corner-touching equipment still counts as connected.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from world.state import Tile
 
@@ -23,8 +24,9 @@ TRANSMISSION_TYPES: frozenset[str] = frozenset({"transmission_line", "substation
 ACTIVE_SUBSTATION_TYPES: frozenset[str] = frozenset({"substation", "town_hall"})
 PLANT_TYPES: frozenset[str] = frozenset({"solar_farm", "wind_turbine", "coal_plant", "gas_peaker"})
 CONSUMER_TYPES: frozenset[str] = frozenset({"house", "commercial", "industrial"})
+POWER_CONSUMER_TILE_TYPES: frozenset[str] = CONSUMER_TYPES | frozenset({"town_hall", "refinery"})
 POWER_CONNECTION_FIELD_TYPES: frozenset[str] = (
-    TRANSMISSION_TYPES | CONSUMER_TYPES | frozenset({"town_hall"})
+    TRANSMISSION_TYPES | CONSUMER_TYPES | frozenset({"battery", "town_hall"})
 )
 
 LOCAL_DISTRIBUTION_RADIUS: int = 2
@@ -173,7 +175,16 @@ def is_grid_connected(tile: Tile, tiles: Iterable[Tile]) -> bool:
 
 def grid_factor(tile: Tile, tiles: Iterable[Tile]) -> float:
     """Plant output delivery factor for the transmission v1 rule."""
-    return 1.0 if is_grid_connected(tile, tiles) else DISCONNECTED_GRID_FACTOR
+    return 1.0 if power_source_connected(tile, tiles) else DISCONNECTED_GRID_FACTOR
+
+
+def grid_factor_with_consumers(
+    tile: Tile,
+    tiles: Iterable[Tile],
+    wells: Iterable[Any] = (),
+) -> float:
+    """Plant output delivery factor using the consumer-aware production rule."""
+    return 1.0 if power_source_connected(tile, tiles, wells) else DISCONNECTED_GRID_FACTOR
 
 
 def has_power_connection(tile: Tile, tiles: Iterable[Tile]) -> bool:
@@ -236,6 +247,44 @@ def powered_transmission_line_positions(tiles: Iterable[Tile]) -> set[tuple[int,
     return seen
 
 
+def _line_component_from_starts(
+    starts: set[tuple[int, int]], by_pos: dict[tuple[int, int], Tile]
+) -> set[tuple[int, int]]:
+    seen: set[tuple[int, int]] = set(starts)
+    stack: list[tuple[int, int]] = list(starts)
+    while stack:
+        x, y = stack.pop()
+        for dx, dy in _ORTHO:
+            pos = (x + dx, y + dy)
+            if pos in seen:
+                continue
+            neighbor = by_pos.get(pos)
+            if neighbor is None or neighbor.type != "transmission_line":
+                continue
+            seen.add(pos)
+            stack.append(pos)
+    return seen
+
+
+def _well_near(x: int, y: int, wells: Iterable[Any], radius: int) -> bool:
+    for well in wells:
+        wx = getattr(well, "x", None)
+        wy = getattr(well, "y", None)
+        if wx is None or wy is None:
+            continue
+        if max(abs(x - wx), abs(y - wy)) <= radius:
+            return True
+    return False
+
+
+def _consumer_tile_near(x: int, y: int, tiles: Iterable[Tile], radius: int) -> bool:
+    return any(
+        t.type in POWER_CONSUMER_TILE_TYPES
+        and max(abs(x - t.x), abs(y - t.y)) <= radius
+        for t in tiles
+    )
+
+
 def connected_to_power(tile: Tile, tiles: Iterable[Tile]) -> bool:
     """Common wire-format power-connection flag for grid-relevant tiles."""
     if tile.type == "transmission_line":
@@ -264,4 +313,68 @@ def connected_to_power(tile: Tile, tiles: Iterable[Tile]) -> bool:
             if other.type in ACTIVE_SUBSTATION_TYPES and connected_to_power(other, tiles):
                 return True
         return False
+    if tile.type == "battery":
+        by_pos: dict[tuple[int, int], Tile] = {(t.x, t.y): t for t in tiles}
+        for dx, dy in _ADJACENT_8:
+            neighbor = by_pos.get((tile.x + dx, tile.y + dy))
+            if neighbor is not None and neighbor.type in PLANT_TYPES:
+                return True
+        for other in tiles:
+            if max(abs(tile.x - other.x), abs(tile.y - other.y)) > POWER_SERVICE_RADIUS:
+                continue
+            if other.type in ACTIVE_SUBSTATION_TYPES and connected_to_power(other, tiles):
+                return True
+        return False
     return False
+
+
+def generator_has_consumer(
+    tile: Tile,
+    tiles: Iterable[Tile],
+    wells: Iterable[Any] = (),
+) -> bool:
+    """True iff a generator has at least one local or network-reached consumer."""
+    if tile.type not in PLANT_TYPES:
+        return False
+
+    tiles_list = list(tiles)
+    if _consumer_tile_near(tile.x, tile.y, tiles_list, POWER_SERVICE_RADIUS):
+        return True
+    if _well_near(tile.x, tile.y, wells, POWER_SERVICE_RADIUS):
+        return True
+
+    by_pos: dict[tuple[int, int], Tile] = {(t.x, t.y): t for t in tiles_list}
+    starts = {
+        (tile.x + dx, tile.y + dy)
+        for dx, dy in _ADJACENT_8
+        if (line := by_pos.get((tile.x + dx, tile.y + dy))) is not None
+        and line.type == "transmission_line"
+    }
+    if not starts:
+        return False
+
+    component = _line_component_from_starts(starts, by_pos)
+    for x, y in component:
+        if _well_near(x, y, wells, 1):
+            return True
+        for dx, dy in _ADJACENT_8:
+            pos = (x + dx, y + dy)
+            neighbor = by_pos.get(pos)
+            if neighbor is not None and neighbor.type == "industrial":
+                return True
+            if neighbor is None or neighbor.type not in ACTIVE_SUBSTATION_TYPES:
+                continue
+            if _consumer_tile_near(neighbor.x, neighbor.y, tiles_list, POWER_SERVICE_RADIUS):
+                return True
+            if _well_near(neighbor.x, neighbor.y, wells, POWER_SERVICE_RADIUS):
+                return True
+    return False
+
+
+def power_source_connected(
+    tile: Tile,
+    tiles: Iterable[Tile],
+    wells: Iterable[Any] = (),
+) -> bool:
+    """True iff a generator can export to at least one consumer."""
+    return generator_has_consumer(tile, tiles, wells)

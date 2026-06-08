@@ -37,6 +37,7 @@ from world import workforce
 from world.catalog import TILE_CATALOG
 from world.economy import refinery_process_kw
 from world.event_effects import heatwave_solar_derate
+from world.grid import connected_to_power
 from world.power import (
     PLANT_TYPES,
     R_BROWNOUT,
@@ -204,12 +205,16 @@ def hourly_tick(
         solar_derate=heatwave_solar_derate(state),
         fuel_cost_per_mwh=state.plant_fuel_cost_per_mwh,
         unsupplied_peaker_ids=unsupplied_peakers,
+        grid_tiles=state.tiles,
+        grid_wells=state.wells,
     )
 
     # Battery dispatch (balance-upgrade-p0 slice 02). Charging from
     # fossil is forbidden by construction: only renewable surplus
     # (solar+wind, after demand) enters batteries.
-    batteries = [t for t in state.tiles if t.type == "battery"]
+    batteries = [
+        t for t in state.tiles if t.type == "battery" and connected_to_power(t, state.tiles)
+    ]
     renewable_supply_kw = by_source.get("solar", 0.0) + by_source.get("wind", 0.0)
     _charges, total_charge_kw, charge_socs = battery_charge_step(
         batteries, renewable_supply_kw, demand_kw

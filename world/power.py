@@ -25,12 +25,13 @@ effect surface of each event is one grep target (CONTEXT.md — Event).
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Any
 
 from world import workforce
 from world.catalog import TILE_CATALOG
 from world.event_effects import demand_surprise_ic_mult, heatwave_residential_mult
-from world.grid import connected_to_power
+from world.grid import connected_to_power, power_source_connected
 from world.snapshots import BalanceState, WeatherNow
 from world.weather import P_solar_kw, turbine_kw
 
@@ -183,6 +184,8 @@ def dispatch(
     solar_derate: float = 1.0,
     fuel_cost_per_mwh: dict[str, float] | None = None,
     unsupplied_peaker_ids: frozenset[str] | None = None,
+    grid_tiles: list[Tile] | None = None,
+    grid_wells: Iterable[Any] = (),
 ) -> tuple[dict[str, float], float, dict[str, float]]:
     """Run the merit-order dispatch for one hour.
 
@@ -213,6 +216,7 @@ def dispatch(
     cloud = weather.cloud_factor
     wind_v = weather.wind_speed_mps
     unsupplied = unsupplied_peaker_ids or frozenset()
+    connection_tiles = grid_tiles if grid_tiles is not None else plants
 
     def _cost(plant_type: str) -> float:
         if fuel_cost_per_mwh is not None and plant_type in fuel_cost_per_mwh:
@@ -220,7 +224,11 @@ def dispatch(
         return TILE_CATALOG[plant_type].fuel_cost_per_mwh
 
     operational = [
-        p for p in plants if p.operational and not (p.type == "gas_peaker" and p.id in unsupplied)
+        p
+        for p in plants
+        if p.operational
+        and power_source_connected(p, connection_tiles, grid_wells)
+        and not (p.type == "gas_peaker" and p.id in unsupplied)
     ]
     solar = [p for p in operational if p.type == "solar_farm"]
     wind = [p for p in operational if p.type == "wind_turbine"]

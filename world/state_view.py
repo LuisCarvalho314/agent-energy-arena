@@ -32,10 +32,11 @@ from world.economy import (
 from world.grid import (
     POWER_CONNECTION_FIELD_TYPES,
     connected_to_power,
-    grid_factor,
+    grid_factor_with_consumers,
     has_power_connection,
     is_active_substation,
     is_grid_connected,
+    power_source_connected,
 )
 from world.power import PLANT_TYPES
 from world.subsurface import INJECTION_KWH_PER_BBL, injector_supports
@@ -149,7 +150,8 @@ def tile_view(t: Tile, world: World) -> dict[str, Any]:
     elif t.type in PLANT_TYPES:
         row = _plant_row(state, t)
         extra["is_grid_connected"] = is_grid_connected(t, state.tiles)
-        extra["grid_factor"] = grid_factor(t, state.tiles)
+        extra["grid_factor"] = grid_factor_with_consumers(t, state.tiles, state.wells)
+        extra["connected_to_power"] = power_source_connected(t, state.tiles, state.wells)
     elif t.type == "refinery":
         row = _refinery_row(state, t)
     else:
