@@ -287,10 +287,12 @@ class World:
         Normal per-day opex still applies.
 
         Layout (default 32x32 world): town hall at (16, 16); coal at
-        (8, 16); roads at (9, 16) .. (15, 16). The road chain
-        satisfies the coal plant's road-adjacency requirement and
-        plugs into the town hall (which counts as road via
-        `grid.ROAD_TYPES`)."""
+        (8, 16); roads at (9, 16) .. (15, 16); transmission lines at
+        (9, 15) .. (15, 15). The road chain satisfies the coal plant's
+        road-adjacency requirement and plugs into the town hall (which
+        counts as road via `grid.ROAD_TYPES`). The transmission line
+        chain keeps the starter coal plant and town hall connected under
+        the transmission-connectivity rules."""
         tx = self.config.world_w // 2
         ty = self.config.world_h // 2
         coal_xy = (tx - 8, ty)
@@ -304,6 +306,24 @@ class World:
                     type="road",
                     x=x,
                     y=ty,
+                    built_day=0,
+                    operational=True,
+                    capex_paid=0.0,
+                    opex_per_day=spec.opex_per_day,
+                    housing_capacity=spec.housing_capacity,
+                    jobs=spec.jobs,
+                    demand_kw=spec.demand_kw,
+                )
+            )
+
+        for x in road_xs:
+            spec = TILE_CATALOG["transmission_line"]
+            self.state.tiles.append(
+                Tile(
+                    id=self._next_tile_id("transmission_line"),
+                    type="transmission_line",
+                    x=x,
+                    y=ty - 1,
                     built_day=0,
                     operational=True,
                     capex_paid=0.0,
