@@ -77,6 +77,38 @@ def summarize_state(
     town_hall = next((t for t in tiles if t.get("type") == "town_hall"), None)
     if town_hall is not None:
         lines.append(f"town_hall@({town_hall.get('x')},{town_hall.get('y')})")
+    grid_tiles = [
+        t
+        for t in tiles
+        if t.get("type")
+        in {
+            "transmission_line",
+            "substation",
+            "town_hall",
+            "house",
+            "commercial",
+            "industrial",
+            "solar_farm",
+            "wind_turbine",
+            "gas_peaker",
+            "coal_plant",
+            "battery",
+        }
+        and "connected_to_power" in t
+    ]
+    if grid_tiles:
+        unpowered = [t for t in grid_tiles if not t.get("connected_to_power")]
+        lines.append(
+            f"power_connectivity: connected={len(grid_tiles) - len(unpowered)}/"
+            f"{len(grid_tiles)} grid-relevant tiles"
+        )
+        if unpowered:
+            lines.append(
+                "unconnected_power_tiles: "
+                + " ".join(
+                    f"{t['type']}#{t['id']}@({t['x']},{t['y']})" for t in unpowered[:18]
+                )
+            )
     # Plant positions are useful for the model when deciding where to
     # demolish / where to place renewables. Keep this compact.
     plants = [t for t in tiles if t.get("type") in _PLANT_TYPES]

@@ -8,7 +8,8 @@ _Avoid_: Game, Simulation, Engine
 
 **Tile**:
 A surface-grid object on the 2D city plane (house, road, plant, refinery,
-industrial, commercial, town hall, battery, pipeline). Lives in
+industrial, commercial, town hall, battery, pipeline, transmission line,
+substation). Lives in
 `state.tiles`. Has a `type`, `(x, y)`, and operational state.
 _Avoid_: Building, Cell, Square
 

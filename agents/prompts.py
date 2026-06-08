@@ -27,6 +27,8 @@ TILE_TYPES: list[str] = [
     "commercial",
     "industrial",
     "park",
+    "transmission_line",
+    "substation",
     "solar_farm",
     "wind_turbine",
     "gas_peaker",
@@ -53,15 +55,22 @@ World shape:
   `step` tool.
 - Starting treasury $300,000, population 100. A town hall at the centre
   counts as a road and provides housing + jobs at no cost. A starter
-  coal plant and a road bridge to it are pre-placed for free, so you
-  begin with working power — extend, clean up, or replace it as you see
-  fit.
+  coal plant, road bridge, and transmission bridge are pre-placed for
+  free in production/manual sessions, so you begin with working power —
+  extend, clean up, or replace it as you see fit.
 
 How the tools relate:
 - `build` / `demolish` mutate the surface. Civilian tiles (house,
   commercial, industrial, refinery) require road adjacency; plants and
   wells don't. Coal, gas peakers, and wind turbines impose a one-cell
   no-build halo on neighbours (roads and batteries are exempt).
+- Power-grid tiles are buildable: `transmission_line` carries generator
+  power through orthogonal line chains; `substation` distributes power
+  to a 7x7 service area. Build placement does not reject unpowered
+  tiles, but unconnected generators produce 0, batteries do not dispatch,
+  and unconnected houses/commercial/industrial/town hall produce no
+  demand or civic/economic output. Check `connected_to_power` in state
+  and build lines/substations when expansion tiles are stranded.
 - `survey` reveals a size x size column of subsurface voxels. Cost
   grows quadratically with size; default size is the cheapest.
 - `drill` places production or injection wells targeting a specific
@@ -98,8 +107,11 @@ def _build_action_tools() -> list[dict[str, Any]]:
             "name": "build",
             "description": (
                 "Place a tile at (x, y). Civilian tiles must be adjacent to a road. "
+                "transmission_line and substation are buildable power-grid tiles. "
                 "Coal, gas, and wind impose a one-cell no-build halo (roads and "
-                "batteries are admitted inside it). Returns ok=false with "
+                "batteries are admitted inside it). Power connectivity is reported "
+                "as connected_to_power in the result but is not a build rejection. "
+                "Returns ok=false with "
                 "error='unknown_tile_type' / 'out_of_bounds' / 'tile_occupied' / "
                 "'no_road_adjacency' / 'spacing_violation' / 'insufficient_funds' "
                 "on rejection."
