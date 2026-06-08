@@ -309,7 +309,11 @@ def daily_emissions_t(world: World) -> float:
     coal_mwh = s.today.coal_kwh / 1000.0
     gas_mwh = s.today.gas_kwh / 1000.0
     refined_bbl = s.today.refined_bbl
-    industrial_flat_co2 = sum(industrial_co2_for_tile(t) for t in s.tiles)
+    industrial_flat_co2 = sum(
+        industrial_co2_for_tile(t)
+        for t in s.tiles
+        if t.type != "industrial" or connected_to_power(t, s.tiles)
+    )
     return (
         coal_mwh * COAL_CO2_T_PER_MWH
         + gas_mwh * GAS_CO2_T_PER_MWH

@@ -66,7 +66,7 @@ _ZERO_ROW = _EconomicsRow()
 
 def _industrial_row(state: WorldState, tile: Tile) -> _EconomicsRow:
     revenue = industrial_revenue_for_tile(state, tile)
-    co2_t = industrial_co2_for_tile(tile)
+    co2_t = industrial_co2_for_tile(tile) if connected_to_power(tile, state.tiles) else 0.0
     carbon_cost = co2_t * state.carbon_price
     return _EconomicsRow(
         revenue=revenue,
@@ -250,6 +250,8 @@ def _residents_in_radius(state: Any, tile: Tile) -> float:
     capacity_in_radius = 0
     for other in state.tiles:
         if other.housing_capacity <= 0:
+            continue
+        if not connected_to_power(other, state.tiles):
             continue
         if max(abs(other.x - tile.x), abs(other.y - tile.y)) <= COMMERCIAL_RADIUS:
             capacity_in_radius += other.housing_capacity

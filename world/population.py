@@ -30,6 +30,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from world import workforce
+from world.grid import connected_to_power
 
 if TYPE_CHECKING:
     from world.sim import World
@@ -70,6 +71,11 @@ COAL_GENERATION_HAPPINESS_COEF: float = 0.05
 # default grid) actually fires on at least nearby residences as the
 # city grows past the town hall.
 COAL_PROXIMITY_RADIUS: int = 5
+
+# Per unpowered civic tile/day happiness penalty. The penalty is averaged by
+# population logic through the capped happiness band, so a few disconnected
+# tiles are annoying and many disconnected tiles are severe.
+UNPOWERED_TILE_HAPPINESS_PENALTY: float = 0.03
 
 # Velocity model anchors (PRD §"Implementation Decisions").
 HAPPINESS_NEUTRAL: float = 1.0
@@ -122,16 +128,40 @@ def update_population(world: World) -> None:
     state = world.state
     config = world.config
 
-    capacity = sum(t.housing_capacity for t in state.tiles)
-    jobs = workforce.total_jobs(state)
+    capacity = sum(
+        t.housing_capacity
+        for t in state.tiles
+        if t.housing_capacity > 0 and connected_to_power(t, state.tiles)
+    )
+    jobs = workforce.total_jobs(state) - sum(
+        t.jobs
+        for t in state.tiles
+        if t.type in ("house", "commercial", "industrial", "town_hall")
+        and not connected_to_power(t, state.tiles)
+    )
     parks = [t for t in state.tiles if t.type == "park"]
     # The town_hall holds the starter pop before any dedicated house exists.
     # The previous formula iterated only over `house` tiles, which left
     # early-game happiness pinned at 1.0 regardless of parks built (no
     # houses → no spatial bonus). Both residential tile types now contribute.
-    residences = [t for t in state.tiles if t.type in ("house", "town_hall")]
+    residences = [
+        t
+        for t in state.tiles
+        if t.type in ("house", "town_hall") and connected_to_power(t, state.tiles)
+    ]
     residence_count = len(residences)
-    noise_sources = [t for t in state.tiles if t.type in ("industrial", "refinery")]
+    noise_sources = [
+        t
+        for t in state.tiles
+        if t.type in ("industrial", "refinery")
+        and (t.type != "industrial" or connected_to_power(t, state.tiles))
+    ]
+    unpowered_civic_tiles = [
+        t
+        for t in state.tiles
+        if t.type in ("house", "commercial", "industrial", "town_hall")
+        and not connected_to_power(t, state.tiles)
+    ]
 
     coal_plants = [t for t in state.tiles if t.type == "coal_plant" and t.operational]
     coal_residences_in_range = sum(
@@ -177,6 +207,7 @@ def update_population(world: World) -> None:
     happiness -= 0.05 * coal_residences_in_range / max(1, residence_count)
     happiness -= COAL_GENERATION_HAPPINESS_COEF * coal_share_today
     happiness -= UNEMPLOYMENT_HAPPINESS_COEF * unemployment_rate
+    happiness -= UNPOWERED_TILE_HAPPINESS_PENALTY * len(unpowered_civic_tiles)
     if not parks:
         happiness -= NO_PARKS_HAPPINESS_PENALTY
     if state.treasury < 0:

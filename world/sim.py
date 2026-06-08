@@ -38,7 +38,7 @@ from world.events import (
     expire_finite_events,
     sample_and_apply_events,
 )
-from world.grid import has_road_adjacency, in_bounds, road_connected_set
+from world.grid import connected_to_power, has_road_adjacency, in_bounds, road_connected_set
 from world.hourly_tick import commit_tick, hourly_tick
 from world.pipelines import build_pipeline_graph, peaker_supplied_ids, route_oil, routing_units
 from world.population import DAILY_TAX_PER_CAPITA, update_population
@@ -776,6 +776,13 @@ class World:
         ]
         orphan_well_ids = [w.id for w in orphan_wells]
         orphan_refinery_ids = [r.id for r in orphan_refineries]
+        unpowered_civic_jobs = sum(
+            t.jobs
+            for t in s.tiles
+            if t.type in ("house", "commercial", "industrial", "town_hall")
+            and not connected_to_power(t, s.tiles)
+        )
+        effective_jobs_total = workforce_total_jobs(s) - unpowered_civic_jobs
         return {
             "seed": s.seed,
             "day": s.day,
@@ -784,9 +791,13 @@ class World:
             "population": int(s.population),
             "employed": workforce_employed(s),
             "unemployed": workforce_unemployed(s),
-            "housing_capacity": sum(t.housing_capacity for t in s.tiles),
-            "jobs_total": workforce_total_jobs(s),
-            "jobs_vacant": max(0, workforce_total_jobs(s) - workforce_employed(s)),
+            "housing_capacity": sum(
+                t.housing_capacity
+                for t in s.tiles
+                if t.housing_capacity > 0 and connected_to_power(t, s.tiles)
+            ),
+            "jobs_total": effective_jobs_total,
+            "jobs_vacant": max(0, effective_jobs_total - workforce_employed(s)),
             "happiness": s.happiness,
             "config": {
                 "world_w": c.world_w,
