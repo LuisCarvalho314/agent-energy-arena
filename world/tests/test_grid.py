@@ -84,6 +84,22 @@ def test_pipeline_does_not_require_road_adjacency():
     assert res["ok"] is True
 
 
+def test_transmission_line_and_substation_are_buildable_placeholders():
+    w = _fresh_world()
+    treasury_before = w.state.treasury
+
+    line = w.build("transmission_line", 5, 5)
+    assert line["ok"] is True, line
+    assert line["result"]["type"] == "transmission_line"
+    assert w.state.treasury == pytest.approx(treasury_before - 1_500)
+
+    substation = w.build("substation", 6, 5)
+    assert substation["ok"] is True, substation
+    assert substation["result"]["type"] == "substation"
+    assert substation["result"]["jobs"] == 3
+    assert w.state.treasury == pytest.approx(treasury_before - 1_500 - 22_000)
+
+
 # -- Treasury accounting -----------------------------------------------------
 
 

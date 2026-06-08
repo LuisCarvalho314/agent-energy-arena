@@ -84,3 +84,23 @@ def test_catalog_wells_array_unchanged_by_subsurface_extension() -> None:
     cat = build_catalog()
     well_types = {w["tile_type"] for w in cat["wells"]}
     assert well_types == {"oil_well", "injection_well"}
+
+
+def test_catalog_exposes_transmission_placeholders() -> None:
+    """Transmission tiles are buildable catalog entries before they affect dispatch."""
+    cat = build_catalog()
+    tiles = {t["tile_type"]: t for t in cat["tiles"]}
+
+    line = tiles["transmission_line"]
+    assert line["capex"] == 1_500
+    assert line["opex_per_day"] == 3
+    assert line["requires_road"] is False
+    assert line["jobs"] == 0
+    assert line["buildable"] is True
+
+    substation = tiles["substation"]
+    assert substation["capex"] == 22_000
+    assert substation["opex_per_day"] == 45
+    assert substation["requires_road"] is False
+    assert substation["jobs"] == 3
+    assert substation["buildable"] is True

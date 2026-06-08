@@ -91,12 +91,18 @@
     industrial: "#ff7a59",
     park: "#3fbf7f",
     pipeline: "#9ec6e8",
+    transmission_line: "#1d8cff",
+    substation: "#1d8cff",
     solar_farm: "#f5d76e",
     wind_turbine: "#6dd5ed",
     coal_plant: "#c97676",
     gas_peaker: "#d09bff",
     battery: "#7be0a3",
     refinery: "#e07a4d",
+  };
+  const TILE_STRIPES = {
+    transmission_line: "#0b0d12",
+    substation: "#ff4b4b",
   };
 
   const PLANT_TYPES = ["solar_farm", "wind_turbine", "coal_plant", "gas_peaker"];
@@ -184,6 +190,36 @@
     return { cw: canvas.width / cols, ch: canvas.height / rows };
   }
 
+  function drawTileFill(tileType, x, y, w, h) {
+    const baseColor = TILE_COLORS[tileType] || "#888";
+    const stripeColor = TILE_STRIPES[tileType];
+    ctx.fillStyle = baseColor;
+    ctx.fillRect(x, y, w, h);
+    if (!stripeColor) return;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    ctx.strokeStyle = stripeColor;
+    ctx.lineWidth = Math.max(2, Math.floor(Math.min(w, h) * 0.14));
+    const gap = Math.max(7, Math.floor(Math.min(w, h) * 0.45));
+    for (let offset = -h; offset < w + h; offset += gap) {
+      ctx.beginPath();
+      ctx.moveTo(x + offset, y + h);
+      ctx.lineTo(x + offset + h, y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function swatchStyle(tileType) {
+    const baseColor = TILE_COLORS[tileType] || "#888";
+    const stripeColor = TILE_STRIPES[tileType];
+    if (!stripeColor) return `background:${baseColor}`;
+    return `background:repeating-linear-gradient(135deg, ${baseColor} 0 5px, ${stripeColor} 5px 8px, ${baseColor} 8px 13px)`;
+  }
+
   function drawGrid() {
     const w = canvas.width;
     const h = canvas.height;
@@ -191,8 +227,7 @@
     ctx.clearRect(0, 0, w, h);
 
     for (const t of tiles) {
-      ctx.fillStyle = TILE_COLORS[t.type] || "#888";
-      ctx.fillRect(t.x * cw, t.y * ch, cw, ch);
+      drawTileFill(t.type, t.x * cw, t.y * ch, cw, ch);
       if (t.type === "town_hall") {
         ctx.fillStyle = "#1a1c22";
         ctx.font = `${Math.floor(ch * 0.6)}px sans-serif`;
@@ -617,6 +652,8 @@
       "industrial",
       "park",
       "pipeline",
+      "transmission_line",
+      "substation",
       "refinery",
       "solar_farm",
       "wind_turbine",
@@ -631,7 +668,7 @@
       li.dataset.type = tt;
       li.className = "buildItem";
       li.innerHTML = `
-        <span class="swatch" style="background:${TILE_COLORS[tt] || "#888"}"></span>
+        <span class="swatch" style="${swatchStyle(tt)}"></span>
         <div class="bi-text">
           <div class="bi-name">${tt}</div>
           <div class="bi-desc">${spec.description}</div>

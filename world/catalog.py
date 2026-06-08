@@ -96,6 +96,27 @@ TILE_CATALOG: dict[str, TileSpec] = {
         requires_road=False,
         description="Crude transport. 4-connected networks route producer crude to refineries on the same network; orphan producers sell raw at $40/bbl; orphan refineries starve.",
     ),
+    "transmission_line": TileSpec(
+        tile_type="transmission_line",
+        capex=1_500,
+        opex_per_day=3,
+        requires_road=False,
+        description=(
+            "Power transmission infrastructure. Buildable placeholder for the "
+            "planned transmission-network mechanic; no dispatch effect yet."
+        ),
+    ),
+    "substation": TileSpec(
+        tile_type="substation",
+        capex=22_000,
+        opex_per_day=45,
+        requires_road=False,
+        description=(
+            "Power-grid interconnection node. Buildable placeholder for the "
+            "planned substation mechanic; no dispatch effect yet."
+        ),
+        jobs=3,
+    ),
     "solar_farm": TileSpec(
         tile_type="solar_farm",
         capex=25_000,
